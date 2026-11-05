@@ -2,9 +2,30 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfiguration,pairedSchedule,makeSyntheticDictionary} from './benchmark-windows-application.mjs';
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
+import {measureHostInput} from './host-input-scenarios.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
 
 function tracePage(events,dropped=0){return {...emptyTrace(),recordingId:'a'.repeat(32),nowUs:'100000',firstSequence:String(events[0]?.sequence??0),nextSequence:String(events.at(-1)?.sequence??0),events,dropped};}
+test('Host input counts bad results and refuses stale payloads after a newer revision', async () => {
+ let latest = 0;
+ const measure = leak => measureHostInput({
+  submit: async () => ++latest,
+  read: async key => ({current: key === latest, result: key === latest || leak ? {reason: 'failed'} : null}),
+  ended: () => true,
+  verify: () => { throw new Error('incorrect fixture'); },
+  summarize, pollMs: 5, rounds: 1,
+ });
+ const scenarios = await measure(false);
+ assert.deepEqual(scenarios.map(scenario => scenario.intervalMs), [null, 100, 20]);
+ assert.equal(scenarios[0].failed, 7);
+ for (const scenario of scenarios) {
+  assert.equal(scenario.attempts, 7);
+  assert.equal(scenario.correct, 0);
+  assert.equal(scenario.failed + scenario.superseded, 7);
+  assert.equal(scenario.firstCorrectResponse, null);
+ }
+ await assert.rejects(measure(true), /stale-host-result/);
+});
 test('synthetic dictionary preserves the ranked seed and fits the actual broker limits', () => {
  const seed = Buffer.from('reading\tsurface\tweight\r\nこうすい\t降水\t90\r\nこうすい\t香水\t30\r\nこうすい\t洪水\t90\r\n');
  const config = benchmarkOptions(['bundle', '--synthetic-rows', '10000']);

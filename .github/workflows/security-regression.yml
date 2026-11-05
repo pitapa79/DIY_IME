@@ -119,6 +119,17 @@ jobs:
           $report = $result | ConvertFrom-Json
           if ($report.provenance.syntheticDictionary.rows -ne 1000 -or -not $report.checks.trueClose) { throw 'Synthetic dictionary run incomplete' }
           @{dictionary=$report.provenance.syntheticDictionary;prepareMs=$report.lifecycle.prepareMs;activateMs=$report.lifecycle.activateMs;latency=$report.summary;phases=$report.diagnostics.phaseSummary;dropped=$report.diagnostics.dropped} | ConvertTo-Json -Depth 8
+      - name: Sequential input and supersession smoke
+        run: |
+          $result = node scripts/benchmark-windows-application.mjs target/windows-app --host-input-rounds 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = $result | ConvertFrom-Json
+          if ($report.scenarios.Count -ne 3 -or $report.scenarios[0].correct -ne 7 -or -not $report.checks.trueClose -or -not $report.checks.allPhysicalEnded -or -not $report.checks.staleResultsSuppressed) { throw 'Incomplete Host input smoke' }
+          foreach ($scenario in $report.scenarios) {
+            if ($scenario.attempts -ne 7 -or $scenario.failed -or $scenario.timedOut -or $scenario.cancelled -or $scenario.correct + $scenario.superseded -ne 7 -or $scenario.byCase.'dictionary-hit'.correct -ne 1) { throw 'Unexpected Host input outcome' }
+          }
+          if ($report.scenarios[2].superseded -eq 0) { throw 'Burst did not exercise supersession' }
+          $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -128,6 +139,7 @@ jobs:
             target/windows-app/bundle-manifest.json
             target/windows-latency-smoke.json
             target/windows-detailed-trace-smoke.json
+            target/windows-host-input-smoke.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

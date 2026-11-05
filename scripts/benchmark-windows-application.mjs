@@ -1,5 +1,6 @@
 import {decodeTracePage} from '../editor/src/executionTrace.ts';
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
+import {measureHostInput} from './host-input-scenarios.mjs';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {readFileSync,writeFileSync,mkdirSync,realpathSync,mkdtempSync,rmSync,lstatSync} from 'node:fs';
@@ -35,6 +36,9 @@ export function physicallyEnded(snapshot){
 }
 export function verifySample(snapshot,expected){
  requireValue(physicallyEnded(snapshot),'not-ended');
+ verifyOutput(snapshot,expected);
+}
+function verifyOutput(snapshot,expected){
  requireValue(snapshot.current===true&&snapshot.result?.reason==='completed'&&snapshot.result.delivery==='complete','unusable-result');
  requireValue(Array.isArray(snapshot.result.causes)&&snapshot.result.causes.length===0,'failed-result');
  requireValue(isDeepStrictEqual(snapshot.result.targets,[{node:'result',port:'out'}]),'wrong-target');
@@ -66,7 +70,7 @@ export function makeSyntheticDictionary(seed, rows) {
 export function benchmarkOptions(argv){
  requireValue(argv.length>0&&!argv[0].startsWith('--'),'usage');
  const result={folder:argv[0],samples:100,warmups:8,pollMs:5,trace:0,progressEvery:0};
- const names={'--samples':'samples','--warmups':'warmups','--poll-ms':'pollMs','--trace':'trace','--progress-every':'progressEvery','--synthetic-rows':'syntheticRows'},seen=new Set();
+ const names={'--samples':'samples','--warmups':'warmups','--poll-ms':'pollMs','--trace':'trace','--progress-every':'progressEvery','--synthetic-rows':'syntheticRows','--host-input-rounds':'hostInputRounds'},seen=new Set();
  for(let i=1;i<argv.length;i+=2){const key=names[argv[i]];requireValue(key&&!seen.has(key)&&/^\d+$/.test(argv[i+1]??''),'usage');seen.add(key);result[key]=Number(argv[i+1]);}
  requireValue(Number.isSafeInteger(result.samples)&&result.samples>=1&&result.samples<=10000,'sample-count');
  requireValue(Number.isSafeInteger(result.warmups)&&result.warmups>=0&&result.warmups<=1000,'warmup-count');
@@ -94,6 +98,11 @@ function verifyBundle(folder){
 export async function benchmark(config){
  let trace=traceConfiguration(config.trace);
  const schedule=config.pairedGroups===undefined?null:pairedSchedule(config.pairedGroups,config.samples);
+ const hostInputRounds=config.hostInputRounds;
+ if(hostInputRounds!==undefined){
+  requireValue(Number.isSafeInteger(hostInputRounds)&&hostInputRounds>=1&&hostInputRounds<=1000,'host-input-rounds');
+  requireValue(!schedule&&!trace.operation&&config.syntheticRows===undefined,'host-input-mode');
+ }
  const progressEvery=config.progressEvery??0;
  requireValue(Number.isSafeInteger(progressEvery)&&progressEvery>=0&&progressEvery<=10000,'progress-interval');
  requireValue(platform()==='win32'&&arch()==='x64','windows-x64-required');
@@ -150,6 +159,27 @@ export async function benchmark(config){
   const activateBegin=performance.now(),activated=await host({method:'activate',reviewId:review.reviewId}),activateMs=performance.now()-activateBegin;
   const plan=activated.state.activePlanVersion;requireValue(typeof plan==='string','active-plan');
   const setupMs=performance.now()-setupBegin;let revision=0,traceCursor='0',traceNextPoll=0;
+  async function submit(text,mode){
+   revision++;
+   if(revision>1)await host({method:'invalidateInput',expectedPlanVersion:plan,revision});
+   const {receipt}=await host({method:'run',request:{startKey:String(revision),expectedPlanVersion:plan,targets:[{node:'result',port:'out'}],input:{revision,text,mode}}});
+   requireValue(receipt.replayed===false,'run-replayed');
+   return receipt.key;
+  }
+  async function read(key){return (await host({method:'getRun',key})).snapshot;}
+  if(hostInputRounds!==undefined){
+   const scenarios=await measureHostInput({
+    submit:text=>submit(text,'compose'),read,ended:physicallyEnded,verify:verifyOutput,
+    summarize,pollMs:config.pollMs,rounds:hostInputRounds,
+   });
+   await call('api/external/connections/'+connection,undefined,'DELETE');await stop();
+   return {formatVersion:1,kind:'bundled-wasm-host-input',provenance:bundle.provenance,
+    environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},
+    measurement:{rounds:hostInputRounds,pollIntervalMs:config.pollMs,trace:'off',clock:'client monotonic',
+     boundary:'before input invalidation through observed current correct response and physical end; includes loopback JSON and polling'},
+    lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs},
+    scenarios,checks:{staleResultsSuppressed:true,allPhysicalEnded:true,trueClose:true}};
+  }
   let profiler;
   const makeDiagnostics=()=>({enabled:trace.operation!==null,mode:trace.mode,pollIntervalMs:150,pages:0,events:0,hostIntervals:0,dropped:0,recordings:0,recordingBoundary:'per-run-outside-sample',browserRenderingIncluded:false,finalDrainOutsideSamples:true,phaseSummary:new PhaseProfiler(trace.mode).summary});
   let diagnostics=makeDiagnostics();
@@ -174,11 +204,9 @@ export async function benchmark(config){
     const started=profiler.observe((await host(trace.operation)).trace);
     requireValue(started.recording&&started.recordingId!==null,'trace-start-not-recording');diagnostics.recordings++;
    }
-   const begin=performance.now();revision++;
-   if(revision>1)await host({method:'invalidateInput',expectedPlanVersion:plan,revision});
-   const {receipt}=await host({method:'run',request:{startKey:String(revision),expectedPlanVersion:plan,targets:[{node:'result',port:'out'}],input:{revision,text:test.text,mode:test.mode}}});
+   const begin=performance.now(),key=await submit(test.text,test.mode);
    const deadline=begin+240000;
-   while(true){const {snapshot}=await host({method:'getRun',key:receipt.key});if(physicallyEnded(snapshot)){
+   while(true){const snapshot=await read(key);if(physicallyEnded(snapshot)){
     const elapsedMs=performance.now()-begin;verifySample(snapshot,test.expected);
     // Stop/read/aggregate outside the measured boundary, separately for each recording.
     if(trace.operation){
@@ -237,6 +265,6 @@ export async function benchmark(config){
  }
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- if(process.argv[2]==='--help')console.log('node scripts/benchmark-windows-application.mjs BUILT_FOLDER [--samples 100] [--warmups 8] [--poll-ms 5] [--trace 0|1|2] [--progress-every 0] [--synthetic-rows 3..10000]');
+ if(process.argv[2]==='--help')console.log('node scripts/benchmark-windows-application.mjs BUILT_FOLDER [--samples 100] [--warmups 8] [--poll-ms 5] [--trace 0|1|2] [--progress-every 0] [--synthetic-rows 3..10000] [--host-input-rounds 1..1000]');
  else{try{console.log(JSON.stringify(await benchmark(benchmarkOptions(process.argv.slice(2)))));}catch(error){console.error('Benchmark failed: '+(error instanceof BenchmarkError?error.code:'unexpected')+'; no successful report emitted');process.exitCode=1;}}
 }
