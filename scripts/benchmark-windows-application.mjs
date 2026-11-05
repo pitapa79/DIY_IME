@@ -2,7 +2,7 @@ import {decodeTracePage} from '../editor/src/executionTrace.ts';
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {readFileSync,realpathSync,mkdtempSync,rmSync,lstatSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,realpathSync,mkdtempSync,rmSync,lstatSync} from 'node:fs';
 import {resolve,join,dirname,isAbsolute,relative} from 'node:path';
 import {tmpdir,platform,arch,release} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -50,10 +50,23 @@ export function pairedSchedule(groups,samples){
  requireValue(Number.isSafeInteger(groups)&&groups>=1&&groups<=3&&Number.isSafeInteger(samples)&&samples>=2&&samples<=10000&&samples%2===0,'paired-count');
  return Array.from({length:groups},(_,g)=>Array.from({length:samples},(_,i)=>({group:g+1,pair:i+1,caseIndex:i%cases.length,modes:(g+i+Math.floor(i/cases.length))%2?[1,0]:[0,1]}))).flat();
 }
+export function makeSyntheticDictionary(seed, rows) {
+ requireValue(Number.isSafeInteger(rows) && rows >= 3 && rows <= 10_000, 'synthetic-dictionary-rows');
+ const lines = seed.toString('utf8').replace(/\r?\n$/, '').split(/\r?\n/);
+ requireValue(lines[0] === 'reading\tsurface\tweight' && lines.length === 4, 'synthetic-dictionary-seed');
+ requireValue(lines.slice(1).every(line => !line.startsWith('試験用')), 'synthetic-dictionary-prefix');
+ const extra = Array.from({length: rows - 3}, (_, i) => {
+  const id = String(i).padStart(5, '0');
+  return `試験用${id}\t合成${id}\t1`;
+ });
+ const bytes = Buffer.from([...lines, ...extra, ''].join('\n'), 'utf8');
+ requireValue(bytes.length <= 1024 * 1024, 'synthetic-dictionary-bytes');
+ return bytes;
+}
 export function benchmarkOptions(argv){
  requireValue(argv.length>0&&!argv[0].startsWith('--'),'usage');
  const result={folder:argv[0],samples:100,warmups:8,pollMs:5,trace:0,progressEvery:0};
- const names={'--samples':'samples','--warmups':'warmups','--poll-ms':'pollMs','--trace':'trace','--progress-every':'progressEvery'},seen=new Set();
+ const names={'--samples':'samples','--warmups':'warmups','--poll-ms':'pollMs','--trace':'trace','--progress-every':'progressEvery','--synthetic-rows':'syntheticRows'},seen=new Set();
  for(let i=1;i<argv.length;i+=2){const key=names[argv[i]];requireValue(key&&!seen.has(key)&&/^\d+$/.test(argv[i+1]??''),'usage');seen.add(key);result[key]=Number(argv[i+1]);}
  requireValue(Number.isSafeInteger(result.samples)&&result.samples>=1&&result.samples<=10000,'sample-count');
  requireValue(Number.isSafeInteger(result.warmups)&&result.warmups>=0&&result.warmups<=1000,'warmup-count');
@@ -84,7 +97,14 @@ export async function benchmark(config){
  const progressEvery=config.progressEvery??0;
  requireValue(Number.isSafeInteger(progressEvery)&&progressEvery>=0&&progressEvery<=10000,'progress-interval');
  requireValue(platform()==='win32'&&arch()==='x64','windows-x64-required');
- const bundle=verifyBundle(config.folder),tempParent=realpathSync(tmpdir()),root=mkdtempSync(join(tempParent,'diyime-latency-')),data=join(root,'data');
+ requireValue(config.syntheticRows === undefined || schedule === null, 'synthetic-dictionary-paired');
+ const bundle=verifyBundle(config.folder);
+ const seed = config.syntheticRows === undefined ? null : readFileSync(join(bundle.base, 'defaults', 'dictionary.tsv'));
+ if (seed) requireValue(hash(seed) === bundle.provenance.dictionarySha256, 'dictionary-mismatch');
+ const synthetic = seed ? makeSyntheticDictionary(seed, config.syntheticRows) : null;
+ const tempParent=realpathSync(tmpdir()),root=mkdtempSync(join(tempParent,'diyime-latency-')),data=join(root,'data');
+ const dictionaryPath = join(data, 'dictionaries', 'dictionary.tsv');
+ const syntheticDictionary = synthetic ? {rows: config.syntheticRows, bytes: synthetic.length, sha256: hash(synthetic)} : null;
  let child,closed,url,beat,launcherEnded=true;
  async function bounded(promise,ms,code){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new BenchmarkError(code)),ms);})]);}finally{clearTimeout(timer);}}
  async function request(path,operation={},method='POST'){
@@ -106,7 +126,12 @@ export async function benchmark(config){
   requireValue(await bounded(closed,120000,'close-timeout')===0,'launcher-exit');clearInterval(beat);child=undefined;
  }
  try{
+  if (synthetic) {
+   mkdirSync(dirname(dictionaryPath), {recursive: true});
+   writeFileSync(dictionaryPath, synthetic, {flag: 'wx', mode: 0o600});
+  }
   const initialReadyMs=await start(),setupBegin=performance.now();
+  if (syntheticDictionary) requireValue(hash(readFileSync(dictionaryPath)) === syntheticDictionary.sha256, 'synthetic-dictionary-changed');
   const connection=(await call('api/external/connections')).connectionId;
   requireValue(typeof connection==='string'&&/^[a-f0-9]{32}$/.test(connection),'connection-id');
   const host=operation=>call('api/external/connections/'+connection+'/request',operation);
@@ -183,6 +208,7 @@ export async function benchmark(config){
   if(trace.mode==='host-detailed')requireValue(diagnostics.hostIntervals>0||diagnostics.dropped>0,'host-detail-missing');
   await call('api/external/connections/'+connection,undefined,'DELETE');await stop();
   const existingCatalogReadyMs=await start();await stop();
+  if (syntheticDictionary) requireValue(hash(readFileSync(dictionaryPath)) === syntheticDictionary.sha256, 'synthetic-dictionary-changed');
   if(schedule){
    const groups=Array.from({length:config.pairedGroups},(_,i)=>{
     const summaries=Object.fromEntries(['off','basic'].map(mode=>[mode,summarize(samples.filter(s=>s.group===i+1&&s.mode===mode).map(s=>s.elapsedMs))]));
@@ -191,7 +217,13 @@ export async function benchmark(config){
    return {formatVersion:1,kind:'bundled-wasm-paired-trace',scope:'small bundled test-dictionary graph; not Reference IME or TSF',provenance:bundle.provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling',pollIntervalMs:config.pollMs,diagnosticPollMs:150,quantile:'nearest rank: sorted[ceil(n*p)-1]',firstRunExcluded:true,warmupsExcluded:true,caseOrder:'same case per adjacent pair; order counterbalanced by group and occurrence of each case',orderVersion:'case-occurrence-v2',recordingBoundary:'per-run-outside-sample',browserRenderingIncluded:false,finalDrainOutsideSamples:true},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,pairs,groups,diagnostics:modes,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allPhysicalEnded:true,trueClose:true,noToolchainPath:true}};
   }
   const byCase=Object.fromEntries(cases.map(c=>[c.id,samples.filter(s=>s.caseId===c.id).map(s=>s.elapsedMs)]).filter(([,v])=>v.length).map(([id,v])=>[id,summarize(v)]));
-  return {formatVersion:1,diagnostics,kind:'bundled-wasm-latency',scope:'small bundled test-dictionary graph; not Reference IME Latency or TSF',provenance:bundle.provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling',pollIntervalMs:config.pollMs,quantile:'nearest rank: sorted[ceil(n*p)-1]',warmupsExcluded:true,firstRunExcluded:true,caseOrder:'fixed round robin',notSteadyStateGuest:'every invocation retains fresh isolated Worker lifecycle'},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,samples,summary:summarize(samples.map(s=>s.elapsedMs)),byCase,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allPhysicalEnded:true,trueClose:true,noToolchainPath:true}};
+  const scope = syntheticDictionary
+   ? 'synthetic dictionary scale diagnostic for the bundled graph'
+   : 'small bundled test-dictionary graph; not Reference IME Latency or TSF';
+  const provenance = syntheticDictionary
+   ? {...bundle.provenance, syntheticDictionary}
+   : bundle.provenance;
+  return {formatVersion:1,diagnostics,kind:'bundled-wasm-latency',scope,provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling',pollIntervalMs:config.pollMs,quantile:'nearest rank: sorted[ceil(n*p)-1]',warmupsExcluded:true,firstRunExcluded:true,caseOrder:'fixed round robin',notSteadyStateGuest:'every invocation retains fresh isolated Worker lifecycle'},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,samples,summary:summarize(samples.map(s=>s.elapsedMs)),byCase,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allPhysicalEnded:true,trueClose:true,noToolchainPath:true}};
  }finally{
   clearInterval(beat);
   if(child&&!launcherEnded){try{await stop();}catch{child.kill();await bounded(closed,10000,'forced-close-timeout');}}
@@ -200,6 +232,6 @@ export async function benchmark(config){
  }
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- if(process.argv[2]==='--help')console.log('node scripts/benchmark-windows-application.mjs BUILT_FOLDER [--samples 100] [--warmups 8] [--poll-ms 5] [--trace 0|1|2] [--progress-every 0] (0=off, 1=basic, 2=Host detailed; progress writes counts to stderr outside samples)');
+ if(process.argv[2]==='--help')console.log('node scripts/benchmark-windows-application.mjs BUILT_FOLDER [--samples 100] [--warmups 8] [--poll-ms 5] [--trace 0|1|2] [--progress-every 0] [--synthetic-rows 3..10000]');
  else{try{console.log(JSON.stringify(await benchmark(benchmarkOptions(process.argv.slice(2)))));}catch(error){console.error('Benchmark failed: '+(error instanceof BenchmarkError?error.code:'unexpected')+'; no successful report emitted');process.exitCode=1;}}
 }
