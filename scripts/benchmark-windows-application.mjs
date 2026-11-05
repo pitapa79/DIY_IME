@@ -109,6 +109,11 @@ export async function benchmark(config){
  async function bounded(promise,ms,code){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new BenchmarkError(code)),ms);})]);}finally{clearTimeout(timer);}}
  async function request(path,operation={},method='POST'){
   const response=await fetch(url+path,{method,signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Origin:url.slice(0,-1)},body:method==='GET'||method==='DELETE'?undefined:JSON.stringify(operation)});
+  if (!response.ok && syntheticDictionary) {
+   const hostMethods = ['definitions', 'prepare', 'approve', 'activate', 'traceRead', 'traceStart', 'traceStop', 'invalidateInput', 'run', 'getRun'];
+   const label = hostMethods.includes(operation?.method) ? operation.method : 'application';
+   fail(`http-response-${label}-${response.status}`);
+  }
   requireValue(response.ok,'http-response');return await response.json();
  }
  async function call(path,operation,method){const value=await request(path,operation,method);requireValue(value.ok===true,'host-response');return value.data;}
