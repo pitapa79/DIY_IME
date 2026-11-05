@@ -81,7 +81,7 @@ try{
   }
   $files=@(Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName | ForEach-Object { @{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })
   $pin=Get-Content (Join-Path $root 'distribution/official/pin.json') -Raw | ConvertFrom-Json
-  $receipt=@{formatVersion=1;sourceRepository='pitapa79/DIY_IME2';sourceCommit=$(if($SourceCommit){$SourceCommit}else{$null});sourceKind=$(if($SourceCommit){'pinned-pipeline'}else{'development-worktree'});nodeVersion='24.22.1';wasmtimeVersion='50.0.1';official=$pin;files=$files}
+  $receipt=@{formatVersion=1;sourceRepository='pitapa79/DIY_IME';sourceCommit=$(if($SourceCommit){$SourceCommit}else{$null});sourceKind=$(if($SourceCommit){'pinned-pipeline'}else{'development-worktree'});nodeVersion='24.22.1';wasmtimeVersion='50.0.1';official=$pin;files=$files}
   $receipt | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $stage 'bundle-manifest.json') -Encoding utf8
   [IO.Directory]::Move($stage,$out)
   Compress-Archive -LiteralPath $out -DestinationPath $archive -CompressionLevel Optimal
