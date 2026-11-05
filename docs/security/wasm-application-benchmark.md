@@ -51,3 +51,7 @@ CIは通常の配布物/launcher検査後、集計と失敗判定のテスト、
 合成データは専用の一時データ領域に作り、結果の `provenance.syntheticDictionary` に行数、バイト数、ハッシュを記録します。配布元の辞書ハッシュは `provenance.dictionarySha256` に残ります。準備・有効化・実行の待ち時間を分け、Workerの工程は独立時計の区間として比較します。少数サンプルの診断なので、実用辞書の品質、候補数の影響、IMEの性能合否は別に評価します。
 
 公開CIでは1,000行の出力と終了を確認します。`--synthetic-rows 10000` では有効化のHTTP 422を再現し、成功レポートは生成されませんでした。失敗した実行には待ち時間の集計がなく、手動での再現に同じオプションを使えます。[公開CIの診断ログ](https://github.com/pitapa79/DIY_IME/actions/runs/42019082667/job/127216983789)
+
+[Issue #14](https://github.com/pitapa79/DIY_IME/issues/14) では、公開配布物の `official.wasm` と Wasmtime 50.0.1 DLLを、既存の `wasm_c_api_probe` で再生しました。辞書ノードの `prepare` に同じ合成TSVをバイト配列として渡し、配布アプリと同じ5,000万fuel・128 MiBで比較しました。3行と1,000行は `prepared: true` を返し、3,000・5,000・7,500・10,000行はすべてWasmtimeが燃料枯渇を返しました。10,000行の290,005 bytesは辞書ファイルの1 MiB上限内です。
+
+配布アプリで観測した10,000行の `activate` は HTTP 422 / `worker-failed` でした。probeは同じゲスト処理の燃料枯渇を再現するための直接呼び出しです。配布アプリの隔離と終了の検査は、同じ配布物で行ったアプリ経由の測定で確認します。試した行数の間に成功・失敗の境界があり、行数だけで任意の辞書の成否を判断できません。[使用した公開配布物](https://github.com/pitapa79/DIY_IME/actions/runs/42010526169)
