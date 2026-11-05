@@ -1,6 +1,6 @@
 # 並行開発とworktreeの運用
 
-共通の承認・マージ・AI自主着手条件は[開発ガバナンス v1.1](development-governance.md)を正本とし、AIの具体的な安全ルールは[AGENTS.md](../AGENTS.md)を参照する。この文書は、同時並行開発の作業場所と引継ぎ手順に限定する。
+共通の承認・マージ・AI自主着手条件は[開発ガバナンス v1.2](development-governance.md)を正本とし、AIの具体的な安全ルールは[AGENTS.md](../AGENTS.md)を参照する。この文書は、同時並行開発の作業場所と引継ぎ手順に限定する。
 
 ## タスクと作業場所
 
@@ -13,7 +13,7 @@
 
 ## 本体とNode側の連携
 
-本体はCore、system、Windows/TSF、Host/Worker/broker、権限、Editor、配布。処理Node側は変換・辞書・候補評価の実装・検査・パッケージ。Nodeで本体APIの変更が必要な場合は、本体Issueで承認・契約変更・検査を行い、その後別のNode側Issue/PRで固定SDKへ反映する。
+本体はCore、system、Windows/TSF、Host/Worker/broker、権限、Editor、配布。処理Node側は変換・辞書・候補評価の実装・検査・パッケージ。Nodeで**公開APIや利用者向け契約の変更**が必要な場合は、本体Issueでメンテナー承認・契約変更・検査を行い、その後別のNode側Issue/PRで固定SDKへ反映する。既存契約を維持する内部実装の変更は、ガバナンスv1.2に従いAIが技術判断する。
 
 Node側を担当するAIは、本体の過去の `src/nodes/<name>/` 実装ガイドを現在の本体の所有ファイルと誤認しない。
 
