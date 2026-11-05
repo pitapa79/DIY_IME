@@ -112,6 +112,13 @@ jobs:
         run: |
           node --input-type=module -e "import assert from 'node:assert/strict'; import {benchmark} from './scripts/benchmark-windows-application.mjs'; const report=await benchmark({folder:'target/windows-app',samples:2,warmups:0,pollMs:5,trace:0,pairedGroups:1}); assert.equal(report.pairs.length,2); assert.equal(report.diagnostics[1].recordings,3); assert.equal(report.checks.trueClose,true);"
           exit $LASTEXITCODE
+      - name: Synthetic dictionary scale diagnostic
+        run: |
+          $result = node scripts/benchmark-windows-application.mjs target/windows-app --samples 6 --warmups 0 --trace 2 --synthetic-rows 1000
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = $result | ConvertFrom-Json
+          if ($report.provenance.syntheticDictionary.rows -ne 1000 -or -not $report.checks.trueClose) { throw 'Synthetic dictionary run incomplete' }
+          @{dictionary=$report.provenance.syntheticDictionary;prepareMs=$report.lifecycle.prepareMs;activateMs=$report.lifecycle.activateMs;latency=$report.summary;phases=$report.diagnostics.phaseSummary;dropped=$report.diagnostics.dropped} | ConvertTo-Json -Depth 8
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

@@ -1,10 +1,23 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfiguration,pairedSchedule} from './benchmark-windows-application.mjs';
+import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfiguration,pairedSchedule,makeSyntheticDictionary} from './benchmark-windows-application.mjs';
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
 
 function tracePage(events,dropped=0){return {...emptyTrace(),recordingId:'a'.repeat(32),nowUs:'100000',firstSequence:String(events[0]?.sequence??0),nextSequence:String(events.at(-1)?.sequence??0),events,dropped};}
+test('synthetic dictionary preserves the ranked seed and fits the actual broker limits', () => {
+ const seed = Buffer.from('reading\tsurface\tweight\r\nこうすい\t降水\t90\r\nこうすい\t香水\t30\r\nこうすい\t洪水\t90\r\n');
+ const config = benchmarkOptions(['bundle', '--synthetic-rows', '10000']);
+ const bytes = makeSyntheticDictionary(seed, config.syntheticRows);
+ const [header, ...entries] = bytes.toString('utf8').trimEnd().split('\n');
+ assert.equal(header, 'reading\tsurface\tweight');
+ assert.deepEqual(entries.slice(0, 3), ['こうすい\t降水\t90', 'こうすい\t香水\t30', 'こうすい\t洪水\t90']);
+ assert.equal(entries.length, 10_000);
+ const filler = entries.slice(3).map(line => line.split('\t')[0]);
+ assert.equal(new Set(filler).size, 9_997);
+ assert(bytes.length <= 1024 * 1024);
+ assert.throws(() => makeSyntheticDictionary(seed, 10_001), /synthetic-dictionary-rows/);
+});
 test('paired comparison balances order while holding the case fixed within each adjacent pair',()=>{
  const schedule=pairedSchedule(3,100);assert.equal(schedule.length,300);
  for(let group=1;group<=3;group++){
