@@ -1,13 +1,13 @@
-# DIY_IME2 実装ガイド
+# DIY_IME 実装ガイド
 
 現在の入口: 利用者は [Windows配布アプリ](security/windows-application-distribution.md) を起動し、公式Wasmパッケージを必要な実行・入力経路・資源許可とともに使う。通常の画面入口は外部Wasm専用で、隔離不能時やHost失敗時にNative処理へ戻らない。
 
 本体CLIの `list-nodes` / `run` / 常駐プロトコルの標準Registryはsystem4のみ。処理Nodeを含む既存グラフは配布アプリの外部Hostで開く。以下の旧Native実装・CLI処理グラフの説明は開発履歴で、処理実装の現行所有者は [DIY_IME2_node](https://github.com/pitapa79/DIY_IME2_node)。Coreの内部検査用 `diy-ime2-test-host` は合成fixtureであり配布しない。
 
-状態: Rustの同期経路と明示v3非同期経路、Reactエディターの表示・編集・実行連携。[実験35ノード](pre-ime-integration-2026-10-30.md)も登録・検査済み。Windows IME として動く段階ではない。
+状態: 現行の配布アプリは外部Wasm処理ノードを使う。同期Native経路・初期実験35ノードに関する以下の記述は、互換性と実装経緯を調べるための**旧試作の説明**であり、現在の製品登録を表さない。Windows IME として動く段階ではない。
 設計文書の未決定事項をすべて確定するものではなく、API は実装結果に応じて改訂する。
 
-IME化に向けてOS登録前に検査できる作業は、[Windows IMEへの実装順序案](windows-ime-next-steps.md)を参照。
+IME化に向けてOS登録前に検査できる作業は、[現在のWindows IME化へのロードマップ](windows-ime-roadmap.md)を参照。
 
 ## 1. コードを読む順番
 
@@ -107,7 +107,7 @@ Serde の公開トレイトを直接使った変換は未検証のデータ構�
 4. 次の `run` から新しい計画を使用する。準備だけでは切り替わらない。
 5. `engine.rollback()` で直前の計画1件へ復帰できる。版番号は増やし、過去の結果を再び有効にはしない。準備中の計画は破棄する。
 
-`engine.is_current(&report)` は現行計画の直近の実行結果かを判定する。このEngine APIは同期経路を維持する。別APIの非同期Coreは[ExecutionService/ExecutionController](execution-p1-handoff.md)を使い、完全キー・入力世代・取消・所有を扱う。CLI/エディターへのprotocol 3接続は後続工程である。
+`engine.is_current(&report)` は現行計画の直近の実行結果かを判定する。このEngine APIは同期経路を維持する。別APIの非同期Coreは[ExecutionService/ExecutionController](execution-service.md)を使い、完全キー・入力世代・取消・所有を扱う。CLI/エディターへのprotocol 3接続は後続工程である。
 
 `&mut Engine` を使う同期 API なので、同じエンジンの実行中に別スレッドが直接編集する方式ではない。グラフ定義は実行計画から独立して編集できるが、スレッド間の更新キューやバックグラウンドでの計画生成は後続段階。IME の未確定文字列・確定・取消に対応した切替境界も未実装。
 

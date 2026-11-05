@@ -1,23 +1,20 @@
-# Security reporting and verification
+# Security policy / 脆弱性の報告
 
-This repository is a prototype. In-process Rust Nodes are trusted code.
-The external Node sandbox, protected Windows IME input, package signing, and a public support policy are not implemented by this document.
+DIY_IMEは開発中のWindows向けIMEプラットフォームです。**現段階でWindows TSFへの統合、日常使用できるIME、正式な安定版・サポート期間を提供しているわけではありません。**
 
-Do not publish passwords, API keys, real input history, private files, or working exploits in public issues.
-Use GitHub private vulnerability reporting if the repository owner has enabled it.
-If no private channel is available, ask the repository owner for a private reporting route without including sensitive details.
-This document does not claim that private reporting is currently enabled or promise a response time.
+現行実装には、外部WasmノードのAppContainer/Wasmtime隔離、明示的な権限付与、取消・終了確認、辞書・ネットワーク・秘密情報のアクセス制御などが含まれます。ただし、これらの存在はあらゆるノードや環境の安全性を保証しません。Windows 10互換性や実IMEの保護入力など、未実装・未検証の領域もあります。
 
-A report should identify the tested commit, operating system, affected boundary, expected and observed behavior,
-and a minimal reproduction using fake input/canary data. Keep evidence limited to what is necessary.
+## 報告方法
 
-The maintainer should:
+- **パスワード、APIキー、実際の入力履歴、個人ファイル、悪用可能な詳細を公開IssueやPRへ投稿しないでください。**
+- GitHubの**Private vulnerability reporting**が利用可能な場合は、その非公開報告機能を使ってください。この文書は機能が有効であることを保証しません。
+- 非公開報告機能が利用できない場合は、機密情報を含めずにメンテナーへ非公開の連絡経路を確認してください。適切な非公開経路が見つからない場合、機密情報を公開投稿することは避けてください。
+- 報告の際は、対象コミット、Windowsバージョン、影響する境界、期待動作と実際の動作、**架空の入力・検査用データ**による最小再現を可能な範囲で記録してください。
 
-1. Acknowledge through the chosen private route and record a minimal, access-limited report.
-2. Reproduce on an isolated test setup with canaries; classify the affected trust boundary and supported configurations.
-3. Link the private fix task and add a regression reproducing the failure without using real secrets.
-4. Review the fix independently, rerun the relevant gates, and confirm source/binary provenance.
-5. Decide release and disclosure timing with the reporter; signing, supported releases, SLA, and publication policy require separate owner decisions.
+## 対応と公開
 
-The [security verification notes](docs/security/ci-audit.md) describe current CI and its limits.
-Passing dependency scans or tests does not prove arbitrary third-party code is safe.
+メンテナーは、報告の機密性と影響範囲を確認し、隔離された環境で再現・回帰検査を行ったうえで修正を検討します。修正と公表の時期は、影響や検証状況を踏まえて判断します。
+
+現時点でサポート対象バージョン、対応期限（SLA）、公開署名、正式なセキュリティ更新保証は定めていません。公開リポジトリのCIが成功したことだけで、第三者Nodeの安全性を保証するものでもありません。
+
+関連資料：[セキュリティ検証・CIの記録](docs/security/ci-audit.md)。

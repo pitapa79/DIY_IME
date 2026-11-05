@@ -1,44 +1,38 @@
-# DIY_IME2 の共通作業ルール
+# DIY_IME AI開発エージェント向けルール
 
-本体の製品Nodeはsystem4のみ。処理Nodeの新規実装・意味の検査は別リポジトリDIY_IME2_nodeで行う。本体のtests/supportと検査用binはCore制御用の合成fixtureで、配布物へ含めない。移行台帳の旧source欄と以下のNode担当手順は、処理Node側の作業に読み替える。正式な契約JSONと固定SDKは期待値を弱めず維持する。
+この文書はCodex・Claudeなどに適用する。**開発権限・承認・マージ条件の正本は[開発ガバナンス v1](docs/development-governance.md)**、人間とAIに共通の参加手順は[CONTRIBUTING.md](CONTRIBUTING.md)とする。相違があれば、権限を拡大する解釈を採用せず、メンテナーに確認する。
 
-この文書は Codex・Claude・その他のエージェントに共通です。担当Issueと合わせて、開始時に以下を読んでください。
+現在の本体は `pitapa79/DIY_IME`。旧 `DIY_IME2` のIssueやコミットは過去の記録であり、新リポジトリへの着手許可ではない。
 
-- [DIY_IME 設計思想](docs/design-philosophy.md)
-- [ノード分類の用語定義](docs/node-classification.md)
-- [並行開発の運用](docs/parallel-development.md)
-- [実用ノード契約 v0.1](docs/node-contracts-v0.1.md)
-- [実行時入力の設計](docs/runtime-input-v0.1.md)
-- 承認済みの小規模ノードを割り当てる場合: [軽量ノード開発キット](docs/lightweight-node-kit.md)
+## 開始時
 
-## 作業単位
+1. 現在のリポジトリ・ブランチ・対象Issue・PR・依存作業を確認する。
+2. [設計思想](docs/design-philosophy.md)、担当に関係する契約、[Windows IME化計画](docs/windows-ime-roadmap.md)、セキュリティ文書を確認する。
+3. 新規作業では現在のmainの完全SHA、目的、受け入れ条件、対象外、担当worktreeを明示する。再開時は既存PRの引継ぎを確認する。
+4. 既存仕様のBug、Documentation、Test、条件を満たすMaintenance/Performanceは自主着手できる。新機能、仕様、信頼境界の決定は承認なしに開始しない。
+5. Issueの起票自体を実装の承認と混同しない。
 
-- 1タスク = 1 Issue = 1ブランチ = 1担当エージェント = 1 PR を基本にする。後日の改善は新しいIssue・ブランチにする。
-- 同じPCでは担当ごとに別worktreeを使う。別PC・クラウドでは別cloneでもよい。同じ作業フォルダーで複数エージェントがブランチを切り替えない。
-- 担当Issueと依頼に記載された範囲を実装する。他ノードの開発や別エージェントの起動は、その作業を依頼された場合に行う。
-- 依頼された実装に必要な通常の編集・検査・コミット・PR作成を進める。担当外の作業や未依頼の並行開発を開始しない。
+## 作業
 
-## ファイルの担当
+- 原則 `1 Issue = 1専用ブランチ/worktree = 1 PR`。他担当のフォルダー・プロセス・未コミット差分には触れない。
+- 本体はCore、system、Host/Worker/broker、権限、Windows/TSF、Editor、配布。外部処理Nodeは別リポジトリ `DIY_IME2_node` 側が担当する。処理Nodeを本体へ戻さない。
+- Node側SDKは固定snapshot。API変更は本体で仕様承認・契約・検査を整えてから別PRで反映する。
+- `tests/support` や合成Hostは検査用で、製品Nodeではない。正式fixture、v1 ABI、既存Graph/Packetをテスト都合で弱めない。
+- 文章候補の `Text / Sequence / Choice` は、将来の全IMEデータ型への制限ではない。
+- 実行Hostの隔離、明示許可、取消、物理的な終了確認、秘密情報・入力の保護を維持する。権限や信頼境界の変更はLevel 3。
+- 無関係な機能をついでに実装しない。契約・仕様が不明なら選択肢を提案して決定を待つ。
 
-- ノード担当は自分の `src/nodes/<name>/`、`tests/nodes_<name>.rs`、`examples/nodes/<name>/` を編集する。
-- `tests/contracts/<name>.json` は合意済みの期待値。実装を通すために期待値を弱めない。変更提案は理由をIssueまたはPRへ書き、契約変更として扱う。
-- `crates/runtime/src/node.rs`、`crates/runtime/src/runtime.rs`、`src/session.rs`、`src/lib.rs`、`src/nodes/mod.rs`、`src/builtins.rs`、エディター共通部分、依存関係・lockファイルは統合担当が扱う。共通基盤タスクの担当には、そのIssueで対象範囲を指定する。
-- 共通ファイルの変更が必要なら依存タスクとして記録する。各ノードのPRに無関係な共通改修を混ぜない。
-- 既存の `demo.*` と `e2e.*` の挙動・保存済みグラフの互換性を維持する。実用ノードを同名で上書きしない。
+## 検査・レビュー・マージ
 
-## 実装と検査
+- [ガバナンスのLevel 1/2/3](docs/development-governance.md#5-変更レベルとマージ権限)を適用し、最も高い影響レベルで扱う。
+- **Level 1のみ**必要な検査と実装担当以外の独立AIレビューが完了し、最新HEADに未解決指摘がなければAIマージ可能。実行・ビルド・テスト・配布に影響しない純粋な文書PRは、[ガバナンスの文書例外](docs/development-governance.md#文書のみの変更に対する検査レビュー例外)の条件を確認したうえでレビューとCIを省略できる。
+- **Level 2**は当面追加確認とメンテナーによるマージ判断、**Level 3**は仕様の事前承認とマージ承認が必要。外部PRも自動マージしない。
+- 実装担当の自己レビューを独立レビューと呼ばない。独立レビュアーが利用できなければ自動マージしない。
+- Rust変更は原則 `cargo test --locked`、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`。UI/bridgeはCLI buildおよび `editor/` のnpm test/build。Windows境界は実Windows検査を追加。
+- CI未起動・タイムアウト・請求拒否・スキップは成功ではない。ローカル検査とCI合格を区別する。純粋な文書変更でCIを省略した場合も、成功したとは報告しない。
+- PRに変更、Issue、開始/HEAD SHA、検査、未検証、互換性・安全性、独立レビューを記録する。最終PRのみ `Closes #番号`、途中は `Refs #番号`。
+- 中断時はPRへ残作業・テスト・引継ぎSHAを残す。担当外PRを勝手にマージしない。
 
-- コアと最初の内蔵ノードはRust、エディターはTypeScript + React。IME対象は当面Windows。
-- 変換・辞書・候補評価の意味はノード側に置く。Engineは入力の受け渡しと実行を担当する。
-- Text / Sequence / Choice を文章候補に使う。IMEのイベント等を将来もこの型に限定する意味ではない。
-- 各ノードの単体テストでは実装自身を登録したRegistryを使える。本体の標準Registryへの登録は統合担当が行う。
-- ノード変更は担当テストを実行する。統合前には `cargo test --locked`、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` を確認する。
-- UI・ブリッジ変更ではRust CLIをビルドし、`editor/` で `npm test` と `npm run build` を実行する。docsのみの変更はリンク・JSON例・差分を確認する。
-- Windowsで実行中のexeを上書きできない場合、別の `CARGO_TARGET_DIR` で検査するか、自分の開発サーバーとコアだけを停止する。他エージェントのプロセスを停止しない。
+## 禁止する自己承認
 
-## 完了と引継ぎ
-
-- PRに対象Issue、変更内容、実行した検査、制限・未対応事項を書く。既定ブランチへのマージで完了するIssueには `Closes #番号`、途中の依存PRには `Refs #番号` を使う。
-- Issueは要望・改善点・タスク・受け入れ条件の記録に使う。ブランチの対応はGitHubのリンクとPRで管理する。
-- 担当交代時はブランチ、コミットSHA、実行済みの検査、残作業をPRへ残す。エージェント名をブランチの寿命に結び付けない。
-- 統合担当が各PRを順番に確認し、登録・UI接続・全体テストを行う。自分の担当以外のPRを独断でマージしない。
+AIは自分の権限、承認条件、マージ条件、CI安全ゲート、ライセンス、公開範囲、第三者コードの取込条件を無断で変更・マージしてはならない。ルール改定はLevel 3。公開設定・旧リポジトリのArchiveは明示指示がある場合のみ。
