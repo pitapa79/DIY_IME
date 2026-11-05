@@ -2,7 +2,7 @@
 
 ユーザーはリポジトリにアクセスできるClaudeへ「CLAUDE.mdを読んで、Issue #番号を開始して」と依頼できます。**現在の作業先は `pitapa79/DIY_IME` です。** 旧 `DIY_IME2` へ誤ってpushしないでください。
 
-権限・承認・マージ条件は[開発ガバナンス v1.1](docs/development-governance.md)、エージェント共通ルールは[AGENTS.md](AGENTS.md)、具体的な並行作業は[docs/parallel-development.md](docs/parallel-development.md)を正本として参照します。このファイルはClaude向けの起動手順だけを定めます。
+権限・承認・マージ条件は[開発ガバナンス v1.2](docs/development-governance.md)、エージェント共通ルールは[AGENTS.md](AGENTS.md)、具体的な並行作業は[docs/parallel-development.md](docs/parallel-development.md)を正本として参照します。このファイルはClaude向けの起動手順だけを定めます。
 
 ## 1. Issueを確認する
 
@@ -14,7 +14,7 @@ git remote -v
 
 - Issueの承認済み仕様、受け入れ条件、依存、既存PR、担当者を確認します。Issueの存在だけで新機能の実装許可があると判断しないでください。
 - 既存仕様内のBug/Documentation/Test、条件を満たすMaintenance/Performanceはガバナンスに従って自主着手できます。
-- 機能追加、仕様変更、権限・隔離等の信頼境界変更には事前承認が必要です。
+- 利用者向け機能・体験、公開契約、許可される権限・隔離等の安全保証を変える場合は事前承認が必要です。既存保証を維持する隔離方式・Worker管理・権限検査などの内部技術判断はAIが担当し、必要な検証を行います。技術的不確実性は未検証のままマージせず、メンテナーに専門的な方式選択を丸投げしません。
 - 旧DIY_IME2のIssue番号は新DIY_IMEのIssue番号ではありません。
 - Node側の個別処理実装は別リポジトリ `DIY_IME2_node` の責務であり、本体へ戻さないでください。Node作業を依頼されたらNodeリポジトリ側の現行ルールを確認してください。
 
