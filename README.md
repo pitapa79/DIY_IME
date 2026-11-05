@@ -61,6 +61,7 @@ Windows固有の隔離・配布テストは別途必要です。上のコマン�
 - [性能目標](docs/performance-goals.md)
 - [ノード・セキュリティ関連文書](docs/security/)
 - [実装ガイド](docs/implementation-guide.md)
+- [開発運用ルール v1](docs/development-governance.md)
 - [開発参加の案内](CONTRIBUTING.md)
 - [脆弱性の報告](SECURITY.md)
 - [AI開発エージェント向けルール](AGENTS.md)
