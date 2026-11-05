@@ -2,7 +2,7 @@
 
 ユーザーはリポジトリにアクセスできるClaudeへ「CLAUDE.mdを読んで、Issue #番号を開始して」と依頼できます。**現在の作業先は `pitapa79/DIY_IME` です。** 旧 `DIY_IME2` へ誤ってpushしないでください。
 
-権限・承認・マージ条件は[開発ガバナンス v1](docs/development-governance.md)、エージェント共通ルールは[AGENTS.md](AGENTS.md)、具体的な並行作業は[docs/parallel-development.md](docs/parallel-development.md)を正本として参照します。このファイルはClaude向けの起動手順だけを定めます。
+権限・承認・マージ条件は[開発ガバナンス v1.1](docs/development-governance.md)、エージェント共通ルールは[AGENTS.md](AGENTS.md)、具体的な並行作業は[docs/parallel-development.md](docs/parallel-development.md)を正本として参照します。このファイルはClaude向けの起動手順だけを定めます。
 
 ## 1. Issueを確認する
 
@@ -33,8 +33,8 @@ git worktree list
 - 担当範囲のみ実装し、正式な契約・セキュリティ境界を弱めないでください。依存変更が必要ならIssue/PRで分離します。
 - 早い段階でDraft PRを作成し、変更、検査結果、残作業を記録します。
 - Rust、Editor、Windows境界の必要な検査はガバナンスとAGENTS.mdに従います。
-- 自己レビューは独立レビューに数えません。Codexなど別のAIへ独立レビューを依頼する場合も、担当範囲と許可条件を守ってください。実行への影響がない純粋な文書PRのみ、ガバナンスに定めた条件で独立レビューとCIを省略できます。
-- **Level 1のみ**共通条件を満たす場合にAIマージ可能。Level 2はメンテナーのマージ判断が必要、Level 3は事前の仕様承認とマージ承認が必要です。外部PRは自動マージしません。
+- 最新のPR差分を自己点検し、その結果と不確実性を記録してください。独立レビューは原則任意です。必要な場合は別Codexセッションなどの差分中心のレビューを利用できますが、Claudeや別モデルを必須としません。文書のみのCI例外はガバナンスに従います。
+- **Level 1・2は**共通条件を満たす場合にAIマージ可能。Level 3は事前の仕様承認とマージ時のメンテナー承認が必要です。外部PRは自動マージしません。
 - 中断する場合、HEAD SHA、成功/失敗した検査、未完了作業をPRに残してください。
 
 既存の軽量Nodeキットや旧初期タスクの手順は、現在の本体への新Node追加の許可ではありません。
