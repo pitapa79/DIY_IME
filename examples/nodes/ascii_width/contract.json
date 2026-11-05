@@ -1,0 +1,13 @@
+{
+  "kind":"experimental.ascii-width","version":1,
+  "cases":[
+    {"input":"ABCxyz09!~","expected":"ＡＢＣｘｙｚ０９！～"},
+    {"input":" a\tb\n","expected":"　ａ\tｂ\n"},
+    {"input":"ＡＢＣｘｙｚ０９！～　","config":{"mode":"halfwidth","space":true},"expected":"ABCxyz09!~ "},
+    {"input":" a　","config":{"mode":"fullwidth","space":false},"expected":" ａ　"},
+    {"input":" Ａ　","config":{"mode":"halfwidth","space":false},"expected":" A　"},
+    {"input":"カナ漢字😀a。","expected":"カナ漢字😀ａ。"},
+    {"input":"Ａ　😀","expected":"Ａ　😀"},
+    {"input":"","expected":""}
+  ]
+}

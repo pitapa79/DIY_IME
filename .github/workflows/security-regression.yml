@@ -1,0 +1,155 @@
+name: Security regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-core-editor:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.1'
+          package-manager-cache: false
+      - name: Install project Rust
+        run: |
+          rustup toolchain install 1.90.0-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set 1.90.0-x86_64-pc-windows-gnu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = rustup which rustc
+          $toolchain = Split-Path (Split-Path $compiler)
+          $linker = Join-Path $toolchain 'lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe'
+          if (-not (Test-Path -LiteralPath $linker)) { throw 'Project GNU linker unavailable' }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$linker" >> $env:GITHUB_ENV
+      - name: Rust contracts and examples
+        run: |
+          cargo test --locked --all-targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --doc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked --all-targets -- -D warnings
+          exit $LASTEXITCODE
+      - name: Actual AppContainer Worker canaries
+        run: |
+          cargo build --locked --example appcontainer_worker_probe --example worker_pipe_probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target/debug/examples/appcontainer_worker_probe.exe canary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target/debug/examples/appcontainer_worker_probe.exe timeout
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target/debug/examples/worker_pipe_probe.exe suite
+          exit $LASTEXITCODE
+      - name: Install Wasm test target
+        run: rustup target add wasm32-unknown-unknown --toolchain 1.90.0-x86_64-pc-windows-gnu
+      - name: Real v3 Wasm ownership and policy
+        run: ./scripts/check-wasm-v3.ps1
+      - name: Node-independent Core boundary
+        run: ./scripts/check-core-boundary.ps1
+      - name: Build actual Editor Hosts
+        run: |
+          cargo build --locked --bin diy-ime2 --example execution_broker_gate --example execution_transport_fixtures
+          exit $LASTEXITCODE
+      - name: Install locked Editor dependencies
+        working-directory: editor
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          exit $LASTEXITCODE
+      - name: Editor regression
+        working-directory: editor
+        run: |
+          npm test -- --maxWorkers=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          exit $LASTEXITCODE
+      # Separate real-process checks: no retry hides a failure.
+      - name: Repeat external Host lifecycle canary
+        working-directory: editor
+        run: |
+          for ($trial = 1; $trial -le 3; $trial++) {
+            Write-Output "External Host lifecycle trial $trial / 3"
+            npm test -- tests/external-real.test.ts -t 'executes a consented installed package' --maxWorkers=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Dependency advisories
+        run: ./scripts/security-audit.ps1
+      - name: Build standalone Windows application
+        run: |
+          $nodeRoot = Split-Path (Get-Command node).Source
+          $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE 'target/tools/wasmtime50/wasmtime-v50.0.1-x86_64-windows-c-api'
+          ./scripts/build-windows-distribution.ps1 -OutputDirectory (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app') -NodeRuntimeRoot $nodeRoot -WasmtimeRoot $runtimeRoot -SourceCommit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Built application and launcher ownership
+        run: |
+          node scripts/check-windows-distribution.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app')
+          exit $LASTEXITCODE
+      - name: Bundled graph latency measurement (smoke only)
+        run: |
+          node --test scripts/benchmark-windows-application.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/benchmark-windows-application.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app') --samples 6 --warmups 0 | Set-Content target/windows-latency-smoke.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/benchmark-windows-application.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app') --samples 6 --warmups 0 --trace 2 | Set-Content target/windows-detailed-trace-smoke.json -Encoding utf8
+          exit $LASTEXITCODE
+      - name: Preserve verified Windows application
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-application-${{ github.sha }}
+          path: |
+            target/windows-app.zip
+            target/windows-app/bundle-manifest.json
+            target/windows-latency-smoke.json
+            target/windows-detailed-trace-smoke.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Preserve synthetic compiler comparison canaries
+        run: |
+          $files = @('target/debug/examples/wasm_v3_probe.exe','target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm')
+          $hashes = @($files | ForEach-Object { @{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} })
+          @{source=$env:GITHUB_SHA;syntheticOnly=$true;files=$hashes} | ConvertTo-Json -Depth 5 | Set-Content target/compiler-comparison-provenance.json -Encoding utf8
+          $off = Get-Content target/windows-latency-smoke.json -Raw | ConvertFrom-Json
+          $detailed = Get-Content target/windows-detailed-trace-smoke.json -Raw | ConvertFrom-Json
+          @{kind='compiler-candidate-smoke-only';source=$env:GITHUB_SHA;off=$off.summary;detailed=$detailed.summary;phases=$detailed.diagnostics.phaseSummary;dropped=$detailed.diagnostics.dropped;checks=$detailed.checks} | ConvertTo-Json -Depth 8
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: wasm-compiler-canaries-${{ github.sha }}
+          path: |
+            target/debug/examples/wasm_v3_probe.exe
+            target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            target/compiler-comparison-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Record source and binary provenance
+        if: always()
+        run: |
+          "## Verification provenance" >> $env:GITHUB_STEP_SUMMARY
+          "Source: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          rustc --version >> $env:GITHUB_STEP_SUMMARY
+          node --version >> $env:GITHUB_STEP_SUMMARY
+          foreach ($path in @('Cargo.lock','editor/package-lock.json','target/debug/diy-ime2.exe','target/debug/examples/execution_broker_gate.exe','target/debug/examples/execution_transport_fixtures.exe')) {
+            if (Test-Path -LiteralPath $path) {
+              $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+              "$path SHA256 $hash" >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+          if (Test-Path -LiteralPath 'target/security-audit/summary.json') {
+            Get-Content target/security-audit/summary.json >> $env:GITHUB_STEP_SUMMARY
+          }

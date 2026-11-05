@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "e2e.input",
+      "version": 1,
+      "config": {
+        "mode": "fixed",
+        "text": "kin'en"
+      }
+    },
+    {
+      "id": "romaji",
+      "kind": "text.romaji-to-hiragana",
+      "version": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": "input",
+        "port": "out"
+      },
+      "to": {
+        "node": "romaji",
+        "port": "in"
+      }
+    }
+  ]
+}

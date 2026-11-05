@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "nodes": [
+    {"id":"primary","kind":"example.primary-success","version":1},
+    {"id":"original","kind":"example.original","version":1},
+    {"id":"recover","kind":"text.recover-original","version":1}
+  ],
+  "edges": [
+    {"from":{"node":"primary","port":"out"},"to":{"node":"recover","port":"primary"}},
+    {"from":{"node":"original","port":"out"},"to":{"node":"recover","port":"original"}}
+  ]
+}

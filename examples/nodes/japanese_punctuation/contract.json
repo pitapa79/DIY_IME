@@ -1,0 +1,11 @@
+{
+  "kind":"experimental.japanese-punctuation","version":1,
+  "cases":[
+    {"input":"a、b。c，d．","expected":"a、b。c、d。"},
+    {"input":"a、b。c，d．","config":{"style":"fullwidth"},"expected":"a，b．c，d．"},
+    {"input":"a、b。c，d．","config":{"style":"ascii"},"expected":"a,b.c,d."},
+    {"input":"3.14,a.b!？\n😀","expected":"3.14,a.b!？\n😀"},
+    {"input":"「が、😀。」\n","config":{"style":"ascii"},"expected":"「が,😀.」\n"},
+    {"input":"","expected":""}
+  ]
+}

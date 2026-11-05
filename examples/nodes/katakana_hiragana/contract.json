@@ -1,0 +1,19 @@
+{
+  "kind": "experimental.katakana-hiragana",
+  "version": 1,
+  "defaultConfig": {},
+  "cases": [
+    {"id":"basic","packet":{"version":1,"root":{"type":"text","text":"カタカナ"}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"かたかな"}}}},
+    {"id":"small-voiced-iteration","packet":{"version":1,"root":{"type":"text","text":"ァヴヵヶヽヾ"}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"ぁゔゕゖゝゞ"}}}},
+    {"id":"mixed","packet":{"version":1,"root":{"type":"text","text":"アA1漢字ー・😀"}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"あA1漢字ー・😀"}}}},
+    {"id":"empty","packet":{"version":1,"root":{"type":"text","text":""}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}}},
+    {"id":"no-output","inputStatus":"no-output","expected":{"status":"no-output"}},
+    {"id":"combining-not-normalized","packet":{"version":1,"root":{"type":"text","text":"カ\u3099"}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"か\u3099"}}}},
+    {"id":"unchanged-meta","packet":{"version":1,"root":{"type":"text","text":"かな","meta":{"reading":"かな","sourceSpan":[0,2]}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"かな","meta":{"reading":"かな","sourceSpan":[0,2]}}}}},
+    {"id":"changed-meta-dropped","packet":{"version":1,"root":{"type":"text","text":"カナ","meta":{"reading":"かな","sourceSpan":[0,2]}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"かな"}}}},
+    {"id":"sequence-rejected","packet":{"version":1,"root":{"type":"sequence","items":[]}},"expected":{"status":"error","code":"invalid-root"}},
+    {"id":"choice-rejected","packet":{"version":1,"root":{"type":"choice","options":[]}},"expected":{"status":"error","code":"invalid-root"}},
+    {"id":"invalid-version","packet":{"version":2,"root":{"type":"text","text":"カナ"}},"expected":{"status":"error","code":"invalid-packet"}},
+    {"id":"invalid-config","config":{"normalize":true},"packet":{"version":1,"root":{"type":"text","text":"カナ"}},"expected":{"status":"error","code":"invalid-config"}}
+  ]
+}

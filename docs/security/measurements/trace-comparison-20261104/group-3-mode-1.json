@@ -1,0 +1,569 @@
+{
+  "formatVersion": 1,
+  "diagnostics": {
+    "enabled": true,
+    "mode": "basic",
+    "pollIntervalMs": 150,
+    "pages": 3462,
+    "events": 3161,
+    "hostIntervals": 0,
+    "dropped": 0,
+    "recordings": 109,
+    "recordingBoundary": "per-run-outside-sample",
+    "browserRenderingIncluded": false,
+    "finalDrainOutsideSamples": true,
+    "phaseSummary": {
+      "hostCoverage": "disabled",
+      "workerCoverage": "received-intervals-only",
+      "host": {},
+      "worker": {}
+    }
+  },
+  "kind": "bundled-wasm-latency",
+  "scope": "small bundled test-dictionary graph; not Reference IME Latency or TSF",
+  "provenance": {
+    "bundleManifestSha256": "cbb502dec2cb9b0aa5d786a937b073541984ce8d12f062f6bc3dd0829b469132",
+    "sourceCommit": "4d3c6588f21024b446fcecded8cb55efee95913a",
+    "sourceKind": "pinned-pipeline",
+    "nodeVersion": "24.22.1",
+    "wasmtimeVersion": "50.0.1",
+    "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+    "graphSha256": "56c160e624a48a91e7d9d83cc1f542ba0684d4c3deddaf8de063539f78f545d0",
+    "dictionarySha256": "a56700bfe5748f9f16f3f244965103371ff61655374f2a3bf79be1e5df919c31",
+    "workerSha256": "a5a1cdec6173fb30f2ad653b8b3133aea3218f04ec6bee83331a6bec9a6017bf",
+    "runtimeSha256": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+  },
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "osRelease": "10.0.19045",
+    "driverNode": "24.22.1"
+  },
+  "measurement": {
+    "clock": "Node performance.now milliseconds",
+    "boundary": "before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling",
+    "pollIntervalMs": 5,
+    "quantile": "nearest rank: sorted[ceil(n*p)-1]",
+    "warmupsExcluded": true,
+    "firstRunExcluded": true,
+    "caseOrder": "fixed round robin",
+    "notSteadyStateGuest": "every invocation retains fresh isolated Worker lifecycle"
+  },
+  "lifecycle": {
+    "initialReadyMs": 112096.35239999928,
+    "setupMs": 11580.852899999358,
+    "prepareMs": 10131.23109999951,
+    "approveMs": 7.0816999999806285,
+    "activateMs": 1027.6766999997199,
+    "existingCatalogReadyMs": 2351.558299999684,
+    "firstRun": {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4951.121700000018
+    }
+  },
+  "warmups": [
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4905.562900000252
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4854.469200000167
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4970.792700000107
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4862.592399999499
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4841.42389999982
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4889.197599999607
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4900.93509999942
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5821.922800000757
+    }
+  ],
+  "samples": [
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5975.831399999559
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 7253.839099999517
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 8885.544999999925
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 7190.481100000441
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 5269.452000000514
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 6314.5175000000745
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5038.3989000003785
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5539.770600000396
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 6028.88860000018
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5096.800199999474
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 6627.199000000022
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 7488.225800000131
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5786.326299999841
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5718.9216000000015
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 5393.05709999986
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5895.402599999681
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4947.925299999304
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 5093.915300000459
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4890.3224999997765
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4776.490100000054
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4828.519399999641
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4831.56510000024
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4897.81520000007
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 5305.968000000343
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4788.568700000644
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4989.723600000143
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 6312.755299999379
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5034.821200000122
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 5798.921200000681
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 5004.685699999332
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5998.195100000128
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5063.110000000335
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4811.4824999999255
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5919.197399999946
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 5579.887400000356
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 5788.72559999954
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5110.544100000523
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5111.515100000426
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 5013.637400000356
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4814.925099999644
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4875.003200000152
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 5360.99980000034
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5491.461899999529
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 6464.373600000516
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 5223.511699999683
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5450.830699999817
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4802.457400000654
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4864.083099999465
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4838.266499999911
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4857.457399999723
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4838.024900000542
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 5022.315600000322
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4829.615600000136
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4810.19560000021
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4898.798400000669
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4912.535099999979
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4840.0191000001505
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4900.459199999459
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4823.120600000024
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4794.237499999814
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5031.914400000125
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4873.208599999547
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4860.849600000307
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4897.782200000249
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 5229.128199999221
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4984.29889999982
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4951.3623000001535
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4871.953199999407
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 5339.94820000045
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4891.902800000273
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4819.902299999259
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4907.153500000015
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5074.18990000058
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4966.922899999656
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4970.135000000708
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4803.582499999553
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4898.454299999401
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4891.8069000002
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4907.708299999125
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4965.339700000361
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4928.242400000803
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4935.275399999693
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4988.36409999989
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4900.9402999999
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4913.4319000002
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 5437.910099999979
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4804.916299999692
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4850.124300000258
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4972.481599999592
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4814.738899999298
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 5061.240599999204
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4818.2523000007495
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4778.449500000104
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4834.644700000063
+    },
+    {
+      "caseId": "pending-prefix",
+      "elapsedMs": 4860.027099999599
+    },
+    {
+      "caseId": "finalize-n",
+      "elapsedMs": 4852.568299999461
+    },
+    {
+      "caseId": "dictionary-hit",
+      "elapsedMs": 4933.976000000723
+    },
+    {
+      "caseId": "unknown-reading",
+      "elapsedMs": 4992.0218000002205
+    },
+    {
+      "caseId": "unicode-literal",
+      "elapsedMs": 4846.7017999999225
+    },
+    {
+      "caseId": "empty-data",
+      "elapsedMs": 4798.784799999557
+    }
+  ],
+  "summary": {
+    "count": 100,
+    "minMs": 4776.490100000054,
+    "p50Ms": 4951.3623000001535,
+    "p95Ms": 6464.373600000516,
+    "p99Ms": 7488.225800000131,
+    "maxMs": 8885.544999999925
+  },
+  "byCase": {
+    "dictionary-hit": {
+      "count": 17,
+      "minMs": 4788.568700000644,
+      "p50Ms": 5031.914400000125,
+      "p95Ms": 5998.195100000128,
+      "p99Ms": 5998.195100000128,
+      "maxMs": 5998.195100000128
+    },
+    "unknown-reading": {
+      "count": 17,
+      "minMs": 4776.490100000054,
+      "p50Ms": 4989.723600000143,
+      "p95Ms": 7253.839099999517,
+      "p99Ms": 7253.839099999517,
+      "maxMs": 7253.839099999517
+    },
+    "unicode-literal": {
+      "count": 17,
+      "minMs": 4778.449500000104,
+      "p50Ms": 4928.242400000803,
+      "p95Ms": 8885.544999999925,
+      "p99Ms": 8885.544999999925,
+      "maxMs": 8885.544999999925
+    },
+    "empty-data": {
+      "count": 17,
+      "minMs": 4798.784799999557,
+      "p50Ms": 4900.459199999459,
+      "p95Ms": 7190.481100000441,
+      "p99Ms": 7190.481100000441,
+      "maxMs": 7190.481100000441
+    },
+    "pending-prefix": {
+      "count": 16,
+      "minMs": 4802.457400000654,
+      "p50Ms": 4898.454299999401,
+      "p95Ms": 6627.199000000022,
+      "p99Ms": 6627.199000000022,
+      "maxMs": 6627.199000000022
+    },
+    "finalize-n": {
+      "count": 16,
+      "minMs": 4794.237499999814,
+      "p50Ms": 4907.153500000015,
+      "p95Ms": 7488.225800000131,
+      "p99Ms": 7488.225800000131,
+      "maxMs": 7488.225800000131
+    }
+  },
+  "checks": {
+    "bundleHashes": true,
+    "definitions": 52,
+    "officialPackages": 48,
+    "exactGraph": true,
+    "explicitSessionConsent": true,
+    "allOutputsVerified": true,
+    "allPhysicalEnded": true,
+    "trueClose": true,
+    "noToolchainPath": true
+  }
+}

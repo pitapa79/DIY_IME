@@ -1,0 +1,152 @@
+{
+  "phases": {
+    "hostCoverage": "complete",
+    "workerCoverage": "received-intervals-only",
+    "host": {
+      "host-request": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "1354",
+        "minUs": "21",
+        "maxUs": "115"
+      },
+      "worker-staging": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "429070",
+        "minUs": "11903",
+        "maxUs": "65230"
+      },
+      "worker-process": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "25416383",
+        "minUs": "882927",
+        "maxUs": "956268"
+      },
+      "worker-cleanup": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "171003",
+        "minUs": "5236",
+        "maxUs": "7777"
+      }
+    },
+    "worker": {
+      "main": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "24581844",
+        "minUs": "851503",
+        "maxUs": "922331"
+      },
+      "dll-load": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "818796",
+        "minUs": "26318",
+        "maxUs": "39645"
+      },
+      "module-read": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "24299",
+        "minUs": "705",
+        "maxUs": "1308"
+      },
+      "input-read": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "1163",
+        "minUs": "37",
+        "maxUs": "69"
+      },
+      "engine-setup": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "9416",
+        "minUs": "276",
+        "maxUs": "507"
+      },
+      "compile": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "23694485",
+        "minUs": "820458",
+        "maxUs": "891369"
+      },
+      "instantiate": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "4801",
+        "minUs": "140",
+        "maxUs": "262"
+      },
+      "guest-setup": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "1861",
+        "minUs": "58",
+        "maxUs": "89"
+      },
+      "guest-call": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "5279",
+        "minUs": "94",
+        "maxUs": "436"
+      },
+      "reply-read": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "406",
+        "minUs": "11",
+        "maxUs": "26"
+      },
+      "reply-write": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "1458",
+        "minUs": "44",
+        "maxUs": "83"
+      },
+      "cleanup": {
+        "completed": 28,
+        "incomplete": 0,
+        "totalUs": "10696",
+        "minUs": "248",
+        "maxUs": "625"
+      }
+    }
+  },
+  "off": {
+    "count": 6,
+    "minMs": 3567.397100000002,
+    "p50Ms": 3642.633799999996,
+    "p95Ms": 3714.9420999999857,
+    "p99Ms": 3714.9420999999857,
+    "maxMs": 3714.9420999999857
+  },
+  "detailed": {
+    "count": 6,
+    "minMs": 3683.9214999999967,
+    "p50Ms": 3728.7646999999997,
+    "p95Ms": 3776.021399999998,
+    "p99Ms": 3776.021399999998,
+    "maxMs": 3776.021399999998
+  },
+  "checks": {
+    "bundleHashes": true,
+    "definitions": 52,
+    "officialPackages": 48,
+    "exactGraph": true,
+    "explicitSessionConsent": true,
+    "allOutputsVerified": true,
+    "allPhysicalEnded": true,
+    "trueClose": true,
+    "noToolchainPath": true
+  },
+  "dropped": 0,
+  "source": "598b7cbf7e89e454a04df908227715e86be11973",
+  "kind": "compiler-candidate-smoke-only"
+}

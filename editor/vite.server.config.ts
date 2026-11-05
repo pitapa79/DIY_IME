@@ -1,0 +1,2 @@
+import { defineConfig } from 'vite';
+export default defineConfig({ build: { ssr: 'server/application-entry.ts', outDir: 'dist-server', emptyOutDir: true, rollupOptions: { output: { entryFileNames: 'server.mjs' } } } });

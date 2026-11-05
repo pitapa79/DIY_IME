@@ -1,0 +1,19 @@
+{
+  "contractVersion": "0.1",
+  "nodeKind": "text.stringify",
+  "defaultConfig": {},
+  "cases": [
+    {"id":"text-meta-is-omitted","packet":{"version":1,"root":{"type":"text","text":"𠮷30%","meta":{"reading":"よし","sourceSpan":[0,4]}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"𠮷30%"}}}},
+    {"id":"nested-order-and-whitespace","packet":{"version":1,"root":{"type":"sequence","items":[{"type":"text","text":"本日"},{"type":"sequence","items":[{"type":"text","text":"の "},{"type":"text","text":"降水確率"}]},{"type":"text","text":"は30%です\n𠮷👩‍💻"}]}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"本日の 降水確率は30%です\n𠮷👩‍💻"}}}},
+    {"id":"empty-text","packet":{"version":1,"root":{"type":"text","text":""}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}}},
+    {"id":"empty-sequence","packet":{"version":1,"root":{"type":"sequence","items":[]}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}}},
+    {"id":"nested-empty-sequences","packet":{"version":1,"root":{"type":"sequence","items":[{"type":"sequence","items":[]},{"type":"text","text":"a"},{"type":"sequence","items":[{"type":"sequence","items":[]}]}]}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"a"}}}},
+    {"id":"unresolved-single-choice","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"本日"},"score":100}]}},"expected":{"status":"error","code":"unresolved-choice"}},
+    {"id":"empty-choice-is-an-error","packet":{"version":1,"root":{"type":"choice","options":[]}},"expected":{"status":"error","code":"unresolved-choice"}},
+    {"id":"nested-choice-discards-partial-text","packet":{"version":1,"root":{"type":"sequence","items":[{"type":"text","text":"prefix"},{"type":"choice","options":[]}]}},"expected":{"status":"error","code":"unresolved-choice"}},
+    {"id":"unsupported-packet-version","packet":{"version":2,"root":{"type":"text","text":"a"}},"expected":{"status":"error","code":"invalid-packet"}},
+    {"id":"invalid-text-span","packet":{"version":1,"root":{"type":"text","text":"𠮷","meta":{"sourceSpan":[2,1]}}},"expected":{"status":"error","code":"invalid-packet"}},
+    {"id":"unknown-config-key","packet":{"version":1,"root":{"type":"text","text":"a"}},"config":{"separator":" "},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"no-output","inputStatus":"no-output","expected":{"status":"no-output"}}
+  ]
+}

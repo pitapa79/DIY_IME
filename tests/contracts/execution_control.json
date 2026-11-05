@@ -1,0 +1,2915 @@
+{
+  "format": "scenario-v2",
+  "contractVersion": "0.2",
+  "implementationStatus": "contract-only; no production execution asserted",
+  "clock": "virtual-monotonic-ms; array order is event linearization order at equal atMs",
+  "aliases": "r1/r2 and job names are test handles bound to issued opaque keys/permits; not wire identifiers",
+  "policyStatus": "test-only; no product node registration",
+  "resourceProfiles": {
+    "bounded": {
+      "maxActiveRuns": 4,
+      "maxPhysicalJobs": 2,
+      "maxObservers": 8,
+      "maxQueuedJobs": 4,
+      "maxQueuedInputBytes": 65536,
+      "maxRetainedRuns": 4,
+      "maxRetainedBytes": 262144,
+      "maxResultBytesPerRun": 16384,
+      "retentionMs": 1000,
+      "cancelGraceMs": 5,
+      "maxDedupeEntries": 4,
+      "maxTombstones": 4,
+      "queueWaitMs": null
+    },
+    "oneSlot": {
+      "maxActiveRuns": 4,
+      "maxPhysicalJobs": 1,
+      "maxObservers": 8,
+      "maxQueuedJobs": 1,
+      "maxQueuedInputBytes": 65536,
+      "maxRetainedRuns": 4,
+      "maxRetainedBytes": 262144,
+      "maxResultBytesPerRun": 16384,
+      "retentionMs": 1000,
+      "cancelGraceMs": 5,
+      "maxDedupeEntries": 4,
+      "maxTombstones": 4,
+      "queueWaitMs": 10
+    },
+    "noTombstones": {
+      "maxActiveRuns": 4,
+      "maxPhysicalJobs": 2,
+      "maxObservers": 8,
+      "maxQueuedJobs": 4,
+      "maxQueuedInputBytes": 65536,
+      "maxRetainedRuns": 4,
+      "maxRetainedBytes": 262144,
+      "maxResultBytesPerRun": 16384,
+      "retentionMs": 1000,
+      "cancelGraceMs": 5,
+      "maxDedupeEntries": 4,
+      "maxTombstones": 0,
+      "queueWaitMs": null
+    },
+    "noQueue": {
+      "maxActiveRuns": 4,
+      "maxPhysicalJobs": 1,
+      "maxObservers": 8,
+      "maxQueuedJobs": 0,
+      "maxQueuedInputBytes": 65536,
+      "maxRetainedRuns": 4,
+      "maxRetainedBytes": 262144,
+      "maxResultBytesPerRun": 16384,
+      "retentionMs": 1000,
+      "cancelGraceMs": 5,
+      "maxDedupeEntries": 4,
+      "maxTombstones": 4,
+      "queueWaitMs": 10
+    }
+  },
+  "workloads": {
+    "single": {
+      "jobs": [
+        "main"
+      ],
+      "policy": "test-all-targets",
+      "targets": [
+        "main.out"
+      ]
+    },
+    "race": {
+      "jobs": [
+        "fast",
+        "slow"
+      ],
+      "policy": "test-first-data",
+      "targets": [
+        "selection.out"
+      ]
+    },
+    "waitBoth": {
+      "jobs": [
+        "fast",
+        "slow"
+      ],
+      "policy": "test-sync-join",
+      "targets": [
+        "joined.out"
+      ]
+    },
+    "fallback": {
+      "jobs": [
+        "main",
+        "original"
+      ],
+      "policy": "test-recover-main-error",
+      "targets": [
+        "recovery.out"
+      ]
+    },
+    "shared": {
+      "jobs": [
+        "shared",
+        "fast"
+      ],
+      "policy": "test-one-target-selects-fast-other-target-needs-shared",
+      "targets": [
+        "selection.out",
+        "shared.out"
+      ]
+    },
+    "observer": {
+      "jobs": [
+        "main"
+      ],
+      "policy": "test-wait-for-input-or-explicit-timer",
+      "targets": [
+        "observer.out"
+      ]
+    },
+    "fanout": {
+      "jobs": [
+        "seed",
+        "a",
+        "b"
+      ],
+      "policy": "test-sync-fanout-join",
+      "targets": [
+        "joined.out"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "A01-normal-completion",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "complete"
+        },
+        "physicalJobs": 0,
+        "acceptedRuns": 1
+      }
+    },
+    {
+      "id": "A02-pending-is-not-no-output",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 5,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running",
+          "hasResult": false
+        },
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "A03-first-data-cancels-unneeded",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "race"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "fast",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "速い"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "delivery": "complete",
+          "selectedJob": "fast"
+        },
+        "physicalJobs": 1,
+        "cancelRequested": [
+          "r1/slow"
+        ]
+      }
+    },
+    {
+      "id": "A04-normal-merge-waits-all",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "waitBoth"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "fast",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "速い"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 3,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running",
+          "hasResult": false
+        },
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "A05-shared-job-keeps-owner",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "shared"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "fast",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running",
+          "hasResult": false
+        },
+        "physicalJobs": 1,
+        "cancelRequested": []
+      }
+    },
+    {
+      "id": "A06-wake-without-new-input",
+      "area": "observation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "observer"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 0,
+          "op": "wait-observer",
+          "run": "r1",
+          "wakeAfterMs": 5
+        },
+        {
+          "atMs": 5,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "timerFrames": 1,
+        "observerWakeTimesMs": [
+          5
+        ]
+      }
+    },
+    {
+      "id": "A07-poll-does-not-reobserve",
+      "area": "observation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "observer"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "poll",
+          "run": "r1"
+        },
+        {
+          "atMs": 1,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "additionalObserverCalls": 0,
+        "planRevisionUnchanged": true
+      }
+    },
+    {
+      "id": "T01-before-run-deadline",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 100,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 99,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "complete"
+        },
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "T02-exact-run-deadline",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 100,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 100,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "expired",
+          "delivery": "expired"
+        },
+        "physicalJobs": 0,
+        "completionAdopted": false
+      }
+    },
+    {
+      "id": "T03-after-run-deadline",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 100,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 101,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "delivery": "expired"
+        },
+        "physicalJobs": 0,
+        "completionAdopted": false
+      }
+    },
+    {
+      "id": "T04-worker-timestamp-does-not-backdate",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 100,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 100,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "workerReportedMs": 90
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "expired"
+        },
+        "completionAdopted": false,
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "T05-job-deadline-can-recover",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "fallback"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 100,
+          "jobBudgets": [
+            {
+              "nodeId": "main",
+              "budgetMs": 10
+            }
+          ]
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "original",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "原文"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 10,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "recovered"
+        },
+        "causeCodes": [
+          "deadline-exceeded"
+        ],
+        "physicalJobs": 1,
+        "cancelRequested": [
+          "r1/main"
+        ]
+      }
+    },
+    {
+      "id": "T06-unlimited-does-not-expire",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1000000,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running",
+          "hasResult": false
+        },
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "T07-clock-jump-processes-deadline-and-grace",
+      "area": "time",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 10,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 30,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "expired"
+        },
+        "physicalJobs": 1,
+        "stalledJobs": [
+          "r1/main"
+        ],
+        "notices": [
+          {
+            "atMs": 10,
+            "code": "run-expired"
+          },
+          {
+            "atMs": 15,
+            "code": "stalled"
+          }
+        ]
+      }
+    },
+    {
+      "id": "C01-cancel-before-completion-same-time",
+      "area": "cancellation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "cancelled",
+          "delivery": "cancelled"
+        },
+        "physicalJobs": 0,
+        "completionAdopted": false
+      }
+    },
+    {
+      "id": "C02-complete-before-cancel-same-time",
+      "area": "cancellation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 2,
+          "op": "cancel",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "complete"
+        },
+        "cancelReply": "already-terminal",
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "C03-repeat-cancel-no-double-release",
+      "area": "cancellation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 3,
+          "op": "cancel-ack",
+          "run": "r1",
+          "job": "main",
+          "physicallyFinished": true
+        },
+        {
+          "atMs": 4,
+          "op": "cancel-ack",
+          "run": "r1",
+          "job": "main",
+          "physicallyFinished": true
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled"
+        },
+        "physicalJobs": 0,
+        "reclaimedJobs": 1
+      }
+    },
+    {
+      "id": "C04-ack-of-receipt-is-not-termination",
+      "area": "cancellation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "cancel-ack",
+          "run": "r1",
+          "job": "main",
+          "physicallyFinished": false
+        },
+        {
+          "atMs": 7,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled"
+        },
+        "physicalJobs": 1,
+        "stalledJobs": [
+          "r1/main"
+        ]
+      }
+    },
+    {
+      "id": "G01-input-invalidation-rejects-old-result",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "invalidate-input",
+          "revision": 9
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled",
+          "current": false
+        },
+        "physicalJobs": 0,
+        "completionAdopted": false,
+        "planRevisionUnchanged": true
+      }
+    },
+    {
+      "id": "G02-prepare-does-not-invalidate",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "prepare",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "complete",
+          "current": true
+        },
+        "activePlanVersion": "3"
+      }
+    },
+    {
+      "id": "G03-activate-invalidates-but-reclaims-old-job",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "prepare",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 2,
+          "op": "activate",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 3,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled",
+          "current": false
+        },
+        "physicalJobs": 0,
+        "activePlanVersion": "4",
+        "completionAdopted": false
+      }
+    },
+    {
+      "id": "G04-rollback-never-resurrects-version",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "prepare",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 2,
+          "op": "activate",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 3,
+          "op": "rollback"
+        },
+        {
+          "atMs": 4,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled",
+          "current": false
+        },
+        "activePlanVersion": "5",
+        "physicalJobs": 0,
+        "completionAdopted": false
+      }
+    },
+    {
+      "id": "G05-other-epoch-is-not-old-job-ack",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "sessionEpoch": "fedcba9876543210fedcba9876543210"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled"
+        },
+        "physicalJobs": 1,
+        "notices": [
+          {
+            "atMs": 2,
+            "code": "ignored-completion"
+          }
+        ]
+      }
+    },
+    {
+      "id": "G06-duplicate-completion-reclaims-once",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 3,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "complete"
+        },
+        "physicalJobs": 0,
+        "reclaimedJobs": 1
+      }
+    },
+    {
+      "id": "G07-revision-content-conflict",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "start",
+          "run": "r2",
+          "startKey": "2",
+          "input": {
+            "revision": 8,
+            "text": "別の本文",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "errors": [
+          "input-conflict"
+        ],
+        "r1": {
+          "state": "running"
+        }
+      }
+    },
+    {
+      "id": "G08-fixed-run-survives-input-update",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "runBudgetMs": null,
+          "jobBudgets": [],
+          "fixed": true
+        },
+        {
+          "atMs": 1,
+          "op": "invalidate-input",
+          "revision": 9
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "complete",
+          "current": true
+        },
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "R01-cancelled-work-keeps-capacity",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "oneSlot",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 6,
+          "op": "advance-clock"
+        },
+        {
+          "atMs": 7,
+          "op": "start",
+          "run": "r2",
+          "startKey": "2",
+          "input": {
+            "revision": 9,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 8,
+          "op": "start",
+          "run": "r3",
+          "startKey": "3",
+          "input": {
+            "revision": 10,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 2,
+        "physicalJobs": 1,
+        "queuedJobs": 1,
+        "errors": [
+          "busy"
+        ],
+        "latestInputRevision": 9
+      }
+    },
+    {
+      "id": "R02-queue-expiry-before-same-time-slot-return",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "oneSlot",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "start",
+          "run": "r2",
+          "startKey": "2",
+          "input": {
+            "revision": 9,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 12,
+          "op": "cancel-ack",
+          "run": "r1",
+          "job": "main",
+          "physicallyFinished": true
+        }
+      ],
+      "expected": {
+        "r1": {
+          "delivery": "cancelled"
+        },
+        "r2": {
+          "delivery": "failed"
+        },
+        "causeCodes": [
+          "queue-expired"
+        ],
+        "physicalJobs": 0,
+        "queuedJobs": 0,
+        "r2StartedJobs": 0
+      }
+    },
+    {
+      "id": "R03-oversized-result-is-not-success",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete-oversized",
+          "run": "r1",
+          "job": "main",
+          "bytes": 20000
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "failed",
+          "delivery": "failed"
+        },
+        "errors": [
+          "result-limit"
+        ],
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "R04-invalid-profile-refuses-new-controller",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "configure",
+          "overrides": {
+            "maxPhysicalJobs": 0
+          }
+        }
+      ],
+      "expected": {
+        "controllerCreated": false,
+        "errors": [
+          "invalid-resource-policy"
+        ],
+        "acceptedRuns": 0
+      }
+    },
+    {
+      "id": "B01-same-start-is-idempotent",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "repeat-start",
+          "run": "r1",
+          "startKey": "1",
+          "samePayload": true
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "replayed": true,
+        "sameRunKey": true,
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "B02-start-key-with-changed-payload",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "repeat-start",
+          "run": "r1",
+          "startKey": "1",
+          "samePayload": false
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "errors": [
+          "start-conflict"
+        ],
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "B03-lost-response-can-be-queried",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": [],
+          "dropReply": true
+        },
+        {
+          "atMs": 1,
+          "op": "get-start",
+          "startKey": "1"
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "sameRunKey": true,
+        "automaticResubmissions": 0,
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "B04-key-after-retention-cannot-relaunch",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 1001,
+          "op": "advance-clock"
+        },
+        {
+          "atMs": 1002,
+          "op": "repeat-start",
+          "run": "r1",
+          "startKey": "1",
+          "samePayload": true
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "errors": [
+          "start-key-retired"
+        ],
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "B05-expired-result-is-explicitly-gone",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 1001,
+          "op": "advance-clock"
+        },
+        {
+          "atMs": 1002,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "result-gone"
+        ],
+        "automaticResubmissions": 0,
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "B06-tombstone-loss-does-not-prove-not-started",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "noTombstones",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 1001,
+          "op": "advance-clock"
+        },
+        {
+          "atMs": 1002,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "run-unknown"
+        ],
+        "automaticResubmissions": 0,
+        "acceptedRuns": 1
+      }
+    },
+    {
+      "id": "B07-reconnect-rejects-old-run-key",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "disconnect"
+        },
+        {
+          "atMs": 2,
+          "op": "reconnect",
+          "sessionEpoch": "fedcba9876543210fedcba9876543210"
+        },
+        {
+          "atMs": 3,
+          "op": "poll",
+          "run": "r1",
+          "sessionEpoch": "0123456789abcdef0123456789abcdef"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "session-conflict"
+        ],
+        "automaticResubmissions": 0,
+        "sessionEpoch": "fedcba9876543210fedcba9876543210",
+        "previousResultKnown": false
+      }
+    },
+    {
+      "id": "B08-v2-does-not-negotiate-v3-implicitly",
+      "area": "compatibility",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "v2-prepare-error-aware"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "unsupported-capability"
+        ],
+        "planRevisionUnchanged": true,
+        "acceptedRuns": 0
+      }
+    },
+    {
+      "id": "B09-u64-ids-stay-strings",
+      "area": "validation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "validate-id",
+          "value": "18446744073709551615"
+        },
+        {
+          "atMs": 0,
+          "op": "validate-id",
+          "value": "18446744073709551616"
+        },
+        {
+          "atMs": 0,
+          "op": "validate-id",
+          "value": "01"
+        },
+        {
+          "atMs": 0,
+          "op": "validate-id",
+          "value": 9007199254740992
+        }
+      ],
+      "expected": {
+        "acceptedValues": [
+          "18446744073709551615"
+        ],
+        "rejectedValues": [
+          "18446744073709551616",
+          "01",
+          9007199254740992
+        ]
+      }
+    },
+    {
+      "id": "T08-invalid-budget-is-pre-admission",
+      "area": "validation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "validate-budgets",
+          "values": [
+            0,
+            -1,
+            0.5,
+            "100",
+            9007199254740992
+          ]
+        }
+      ],
+      "expected": {
+        "errors": [
+          "invalid-deadline"
+        ],
+        "rejectedValues": [
+          0,
+          -1,
+          0.5,
+          "100",
+          9007199254740992
+        ],
+        "acceptedRuns": 0,
+        "planRevisionUnchanged": true
+      }
+    },
+    {
+      "id": "T09-duration-overflow-is-rejected",
+      "area": "validation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single",
+        "clockDomain": "checked-add-overflow-test",
+        "nativeRemainingMs": 5
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": 10,
+          "jobBudgets": []
+        }
+      ],
+      "expected": {
+        "errors": [
+          "invalid-deadline"
+        ],
+        "acceptedRuns": 0
+      }
+    },
+    {
+      "id": "B10-replay-is-not-revalidated-against-new-plan",
+      "area": "transport",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 2,
+          "op": "prepare",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 3,
+          "op": "activate",
+          "planAlias": "next"
+        },
+        {
+          "atMs": 4,
+          "op": "repeat-start",
+          "run": "r1",
+          "startKey": "1",
+          "samePayload": true
+        },
+        {
+          "atMs": 5,
+          "op": "poll",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "replayed": true,
+        "sameRunKey": true,
+        "activePlanVersion": "4",
+        "r1": {
+          "delivery": "complete",
+          "current": false
+        }
+      }
+    },
+    {
+      "id": "A08-node-no-output-is-a-resolved-result",
+      "area": "completion",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "no-output"
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "no-output"
+        },
+        "physicalJobs": 0
+      }
+    },
+    {
+      "id": "C05-cancel-before-worker-start",
+      "area": "cancellation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single",
+        "deferWorkerStart": true
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 0,
+          "op": "cancel",
+          "run": "r1"
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "terminal",
+          "delivery": "cancelled"
+        },
+        "physicalJobs": 0,
+        "queuedJobs": 0,
+        "startedJobs": 0
+      }
+    },
+    {
+      "id": "G09-mismatched-plan-cannot-reclaim",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "keyOverride": {
+            "planVersion": "4"
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1,
+        "completionAdopted": false,
+        "reclaimedJobs": 0
+      }
+    },
+    {
+      "id": "G09-mismatched-run-cannot-reclaim",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "keyOverride": {
+            "runId": "999"
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1,
+        "completionAdopted": false,
+        "reclaimedJobs": 0
+      }
+    },
+    {
+      "id": "G09-mismatched-input-cannot-reclaim",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "keyOverride": {
+            "inputRevision": 9
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1,
+        "completionAdopted": false,
+        "reclaimedJobs": 0
+      }
+    },
+    {
+      "id": "G09-mismatched-delivery-cannot-reclaim",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "keyOverride": {
+            "deliveryGeneration": "99"
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1,
+        "completionAdopted": false,
+        "reclaimedJobs": 0
+      }
+    },
+    {
+      "id": "G09-mismatched-job-cannot-reclaim",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          },
+          "keyOverride": {
+            "jobId": "999"
+          }
+        }
+      ],
+      "expected": {
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1,
+        "completionAdopted": false,
+        "reclaimedJobs": 0
+      }
+    },
+    {
+      "id": "G10-get-run-does-not-retarget-a-key",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "poll",
+          "run": "r1",
+          "keyOverride": {
+            "planVersion": "4"
+          }
+        }
+      ],
+      "expected": {
+        "errors": [
+          "run-key-conflict"
+        ],
+        "r1": {
+          "state": "running"
+        },
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "R05-zero-queue-refuses-before-admission",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "noQueue",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "cancel",
+          "run": "r1"
+        },
+        {
+          "atMs": 2,
+          "op": "start",
+          "run": "r2",
+          "startKey": "2",
+          "input": {
+            "revision": 9,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "errors": [
+          "busy"
+        ],
+        "physicalJobs": 1,
+        "queuedJobs": 0,
+        "latestInputRevision": 8
+      }
+    },
+    {
+      "id": "R06-later-ready-work-may-fail-without-unaccepting-run",
+      "area": "resources",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "noQueue",
+        "workload": "fanout"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r1",
+          "job": "seed",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 3,
+          "op": "complete",
+          "run": "r1",
+          "job": "a",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "結果"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 1,
+        "r1": {
+          "state": "terminal",
+          "reason": "completed",
+          "delivery": "failed"
+        },
+        "causeCodes": [
+          "resource-busy"
+        ],
+        "physicalJobs": 0,
+        "startedJobs": 2
+      }
+    },
+    {
+      "id": "T10-clock-backwards-does-not-change-state",
+      "area": "validation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single",
+        "allowClockBackwardsAttempt": true
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 4,
+          "op": "advance-clock"
+        },
+        {
+          "atMs": 3,
+          "op": "advance-clock"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "invalid-clock"
+        ],
+        "r1": {
+          "state": "running"
+        },
+        "clockMs": 4,
+        "physicalJobs": 1
+      }
+    },
+    {
+      "id": "G11-same-input-keeps-separate-runs",
+      "area": "generation",
+      "initial": {
+        "sessionEpoch": "0123456789abcdef0123456789abcdef",
+        "planVersion": "3",
+        "latestInputRevision": 8,
+        "resourceProfile": "bounded",
+        "workload": "single"
+      },
+      "events": [
+        {
+          "atMs": 0,
+          "op": "start",
+          "run": "r1",
+          "startKey": "1",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 1,
+          "op": "start",
+          "run": "r2",
+          "startKey": "2",
+          "input": {
+            "revision": 8,
+            "text": "かな😀",
+            "mode": "compose"
+          },
+          "runBudgetMs": null,
+          "jobBudgets": []
+        },
+        {
+          "atMs": 2,
+          "op": "complete",
+          "run": "r2",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "新しい要求"
+              }
+            }
+          }
+        },
+        {
+          "atMs": 3,
+          "op": "complete",
+          "run": "r1",
+          "job": "main",
+          "value": {
+            "status": "data",
+            "packet": {
+              "version": 1,
+              "root": {
+                "type": "text",
+                "text": "前の要求"
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "acceptedRuns": 2,
+        "differentRunKeys": true,
+        "r1": {
+          "delivery": "complete",
+          "current": true
+        },
+        "r2": {
+          "delivery": "complete",
+          "current": true
+        },
+        "physicalJobs": 0
+      }
+    }
+  ]
+}

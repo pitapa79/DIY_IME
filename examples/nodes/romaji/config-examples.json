@@ -1,0 +1,6 @@
+{
+  "$comment": "text.romaji-to-hiragana@1 の設定例。設定は2キーとも必須で、部分マージはしない。",
+  "default": {"overrides": [], "unknown": "preserve"},
+  "strict-unknown": {"overrides": [], "unknown": "error"},
+  "with-override": {"overrides": [{"from": "ka", "to": "ヵ"}, {"from": "qa", "to": "くぁ"}], "unknown": "preserve"}
+}

@@ -1,0 +1,103 @@
+{
+  "kind": "experimental.text-replace",
+  "version": 1,
+  "status": "experimental-unregistered",
+  "defaultConfig": {
+    "from": "置換前",
+    "to": "置換後"
+  },
+  "cases": [
+    {
+      "input": "置換前🙂置換前",
+      "expected": "置換後🙂置換後"
+    },
+    {
+      "input": "",
+      "config": {
+        "from": "a",
+        "to": "b"
+      },
+      "expected": ""
+    },
+    {
+      "input": "aaa",
+      "config": {
+        "from": "aa",
+        "to": "x"
+      },
+      "expected": "xa"
+    },
+    {
+      "input": "a.a*",
+      "config": {
+        "from": ".",
+        "to": "$1"
+      },
+      "expected": "a$1a*"
+    },
+    {
+      "input": "ねこ猫ねこ",
+      "config": {
+        "from": "ねこ",
+        "to": "犬"
+      },
+      "expected": "犬猫犬"
+    },
+    {
+      "input": "🙂a🙂",
+      "config": {
+        "from": "🙂",
+        "to": "𠮷"
+      },
+      "expected": "𠮷a𠮷"
+    },
+    {
+      "input": "ABCabc",
+      "config": {
+        "from": "abc",
+        "to": "x"
+      },
+      "expected": "ABCx"
+    },
+    {
+      "input": "éé",
+      "config": {
+        "from": "é",
+        "to": "E"
+      },
+      "expected": "éE"
+    },
+    {
+      "input": "line1\r\nline2\n",
+      "config": {
+        "from": "\r\n",
+        "to": "\n"
+      },
+      "expected": "line1\nline2\n"
+    },
+    {
+      "input": "aaaa",
+      "config": {
+        "from": "a",
+        "to": ""
+      },
+      "expected": ""
+    },
+    {
+      "input": "a",
+      "config": {
+        "from": "a",
+        "to": "aa"
+      },
+      "expected": "aa"
+    },
+    {
+      "input": "猫",
+      "config": {
+        "from": "猫",
+        "to": "猫"
+      },
+      "expected": "猫"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+/target/
+/editor/node_modules/
+/editor/dist/
+/editor/coverage/
+/editor/.vite/
+
+/editor/dist-server/

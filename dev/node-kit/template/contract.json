@@ -1,0 +1,43 @@
+{
+  "purpose": "kit-validation-only",
+  "nodeKind": "kit.__NAME__",
+  "defaultConfig": {},
+  "cases": [
+    {
+      "id": "text",
+      "input": {"status":"data","packet":{"version":1,"root":{"type":"text","text":"確認"}}},
+      "expected": {"status":"data","packet":{"version":1,"root":{"type":"text","text":"確認"}}}
+    },
+    {
+      "id": "empty-text-is-data",
+      "input": {"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}},
+      "expected": {"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}}
+    },
+    {
+      "id": "no-output",
+      "input": {"status":"no-output"},
+      "expected": {"status":"no-output"}
+    },
+    {
+      "id": "sequence-is-not-text",
+      "input": {"status":"data","packet":{"version":1,"root":{"type":"sequence","items":[]}}},
+      "expected": {"status":"error","code":"invalid-root"}
+    },
+    {
+      "id": "choice-is-not-text",
+      "input": {"status":"data","packet":{"version":1,"root":{"type":"choice","options":[]}}},
+      "expected": {"status":"error","code":"invalid-root"}
+    },
+    {
+      "id": "invalid-version",
+      "input": {"status":"data","packet":{"version":2,"root":{"type":"text","text":"a"}}},
+      "expected": {"status":"error","code":"invalid-packet"}
+    },
+    {
+      "id": "invalid-config",
+      "config": {"unexpected":1},
+      "input": {"status":"data","packet":{"version":1,"root":{"type":"text","text":"a"}}},
+      "expected": {"status":"error","code":"invalid-config"}
+    }
+  ]
+}

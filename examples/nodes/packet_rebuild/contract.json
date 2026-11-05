@@ -1,0 +1,83 @@
+{
+  "kind": "experimental.packet-rebuild",
+  "version": 1,
+  "defaultConfig": {
+    "mode": "wrap-sequence"
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "text",
+        "text": "a"
+      },
+      "config": {
+        "mode": "wrap-sequence"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "text",
+        "text": "a"
+      },
+      "config": {
+        "mode": "wrap-choice"
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 9
+          }
+        ]
+      },
+      "config": {
+        "mode": "unwrap-single"
+      },
+      "expected": {
+        "type": "text",
+        "text": "a"
+      }
+    },
+    {
+      "input": {
+        "type": "sequence",
+        "items": []
+      },
+      "config": {
+        "mode": "unwrap-single"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": []
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

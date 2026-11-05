@@ -1,0 +1,132 @@
+{
+  "kind": "experimental.choice-threshold",
+  "version": 1,
+  "defaultConfig": {
+    "minimum": 0,
+    "unscored": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "minimum": 3,
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "minimum": 10,
+        "unscored": 10
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "minimum": 0,
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

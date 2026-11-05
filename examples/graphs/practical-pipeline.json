@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "input.text",
+      "version": 1
+    },
+    {
+      "id": "hiragana",
+      "kind": "text.romaji-to-hiragana",
+      "version": 1
+    },
+    {
+      "id": "segments",
+      "kind": "e2e.segment",
+      "version": 1
+    },
+    {
+      "id": "kanji",
+      "kind": "e2e.kana-kanji",
+      "version": 1
+    },
+    {
+      "id": "select",
+      "kind": "text.select-candidates",
+      "version": 1
+    },
+    {
+      "id": "result",
+      "kind": "text.stringify",
+      "version": 1
+    },
+    {
+      "id": "output",
+      "kind": "e2e.output",
+      "version": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": "input",
+        "port": "out"
+      },
+      "to": {
+        "node": "hiragana",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "hiragana",
+        "port": "out"
+      },
+      "to": {
+        "node": "segments",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "segments",
+        "port": "out"
+      },
+      "to": {
+        "node": "kanji",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "kanji",
+        "port": "out"
+      },
+      "to": {
+        "node": "select",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "select",
+        "port": "out"
+      },
+      "to": {
+        "node": "result",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "result",
+        "port": "out"
+      },
+      "to": {
+        "node": "output",
+        "port": "in"
+      }
+    }
+  ]
+}

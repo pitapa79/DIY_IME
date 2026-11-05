@@ -1,0 +1,23 @@
+{
+  "kind":"experimental.choice-build","version":1,"defaultConfig":{"options":[]},
+  "cases":[
+    {"id":"empty-default","expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[]}}}},
+    {"id":"configured-options","config":{"options":[{"value":{"type":"text","text":"設定"},"score":0.5},{"value":{"type":"sequence","items":[]}}]},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"設定"},"score":0.5},{"value":{"type":"sequence","items":[]}}]}}}},
+    {"id":"a-then-b","inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"a"}}},"b":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"b"}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"a"}},{"value":{"type":"text","text":"b"}}]}}}},
+    {"id":"config-before-inputs","config":{"options":[{"value":{"type":"text","text":"seed"},"score":2}]},"inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"a"}}},"b":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"b"}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"seed"},"score":2},{"value":{"type":"text","text":"a"}},{"value":{"type":"text","text":"b"}}]}}}},
+    {"id":"no-output-omitted","inputs":{"a":{"status":"no-output"},"b":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"b"}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"b"}}]}}}},
+    {"id":"all-no-output","inputs":{"a":{"status":"no-output"},"b":{"status":"no-output"}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[]}}}},
+    {"id":"nested-choice-not-flattened","inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"内側"},"score":-3}]}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"choice","options":[{"value":{"type":"text","text":"内側"},"score":-3}]}}]}}}},
+    {"id":"sequence-and-meta-kept","inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"sequence","items":[{"type":"text","text":"𠮷😀","meta":{"reading":"よし","sourceSpan":[1,3]}}]}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"sequence","items":[{"type":"text","text":"𠮷😀","meta":{"reading":"よし","sourceSpan":[1,3]}}]}}]}}}},
+    {"id":"empty-text-is-option","inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"text","text":""}}}},"expected":{"status":"data","packet":{"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":""}}]}}}},
+    {"id":"missing-options","config":{},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"null-config","config":null,"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"null-options","config":{"options":null},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"unknown-config-key","config":{"options":[],"unknown":0},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"null-score","config":{"options":[{"value":{"type":"text","text":"x"},"score":null}]},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"invalid-config-meta","config":{"options":[{"value":{"type":"text","text":"x","meta":{"sourceSpan":[3,1]}}}]},"expected":{"status":"error","code":"invalid-config"}},
+    {"id":"invalid-input-version","inputs":{"a":{"status":"data","packet":{"version":2,"root":{"type":"text","text":"a"}}}},"expected":{"status":"error","code":"invalid-packet"}},
+    {"id":"invalid-input-meta","inputs":{"a":{"status":"data","packet":{"version":1,"root":{"type":"text","text":"a","meta":{"sourceSpan":[3,1]}}}}},"expected":{"status":"error","code":"invalid-packet"}},
+    {"id":"invalid-config-candidate","config":{"options":[{"value":{"type":"text","text":1}}]},"expected":{"status":"error","code":"invalid-config"}}
+  ]
+}

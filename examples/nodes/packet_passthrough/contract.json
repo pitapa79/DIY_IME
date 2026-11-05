@@ -1,0 +1,58 @@
+{
+  "kind": "experimental.packet-passthrough",
+  "version": 1,
+  "defaultConfig": {},
+  "cases": [
+    {
+      "input": {
+        "type": "text",
+        "text": "😀"
+      },
+      "config": {},
+      "expected": {
+        "type": "text",
+        "text": "😀"
+      }
+    },
+    {
+      "input": {
+        "type": "sequence",
+        "items": []
+      },
+      "config": {},
+      "expected": {
+        "type": "sequence",
+        "items": []
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 1
+          }
+        ]
+      },
+      "config": {},
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 1
+          }
+        ]
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

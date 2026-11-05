@@ -1,0 +1,21 @@
+{
+  "runtimeSha256": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+  "syntheticOnly": true,
+  "files": [
+    {
+      "path": "target/release/examples/wasm_v3_probe.exe",
+      "sha256": "e79e94965c9c6ec55620ce2ccb9fc05ccb5be287cd5a73144ea6c815e391b404"
+    },
+    {
+      "path": "target/canary-artifact-41852130188/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm",
+      "sha256": "049ffec4f7a94b6ab84e33e244d6689da0e9a0b2f80e84ae8aad7158f27a8289"
+    }
+  ],
+  "candidateWorkers": "verified-candidate-bundles.json",
+  "rust": "1.90.0-x86_64-pc-windows-gnu",
+  "probeSource": "d87c1787b45b23779bfc3a7b379d03e229c6849e",
+  "formatVersion": 1,
+  "fixtureSource": "643b6386df737e42bf7f628206bf27070d5a7c67",
+  "baselineWorkerSha256": "a5a1cdec6173fb30f2ad653b8b3133aea3218f04ec6bee83331a6bec9a6017bf",
+  "probeProfile": "release"
+}

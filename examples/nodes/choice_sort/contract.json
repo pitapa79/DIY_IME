@@ -1,0 +1,96 @@
+{
+  "kind": "experimental.choice-sort",
+  "version": 1,
+  "defaultConfig": {
+    "direction": "descending",
+    "unscored": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "direction": "ascending",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "direction": "descending",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

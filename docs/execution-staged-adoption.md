@@ -1,0 +1,27 @@
+# 検証と採用の分離（P1-3h）
+
+[Issue #148](https://github.com/pitapa79/DIY_IME2/issues/148)、親[#133](https://github.com/pitapa79/DIY_IME2/issues/133)。[明示時計の制御所有者](execution-pump.md)に実時計を接続する前提として、検証やControl callbackの前後で時刻を確認できる境界を追加する。既存のobserve/complete_work/poll_one/pollは準備と即時採用の互換wrapperを維持する。
+
+## Controlの準備と採用
+
+ControlObserver.prepareはFrameを検証し、短いcallbackと出力検証を行う。不透明なPreparedObservationを返し、observer leaseを解放しない。prepareによってそのFrameが呼び出された記録は進むが、Graphは解決せず、Wait期限もまだ登録しない。
+
+commitで最新Frameと同じobserverのtokenであることを確認する。Waitはこの採用時刻から加算する。callback前の時刻を基準にしない。加算不能ならinvalid-deadlineのNodeErrorへ解決する。Finishedだけがleaseを解放する。別observer、古いFrame、後退する採用時刻を拒否する。tokenは複製できず、破棄だけではGraphを解決しない。
+
+GraphExecutionのprepare_observationは実入力を取得し、結果collectorの検証まで済ませる。commit_observationで同じGraph所有者・active observer・入力解決状態を照合する。途中で入力が解決したらobservation-staleとなり、observerを保持したまま新しいInput Frameを準備できる。取消・不要枝・終端後の古い判断を採用しない。正式な採用では検証済みの不変Packet木を再走査しない。
+
+## 仕事完了の準備と採用
+
+DispatchQueue.prepare_eventは真正なworker通知を一件読む。worker側の終了確認により実物理枠は返せるが、未採用の論理結果の仕事期限を保持する。GraphExecution.prepare_completionはopaque WorkerCompletionのキー/束縛/出力を検証して、不透明な準備済み結果を返す。Graphにはまだ記録しない。
+
+ホストはこの間に時刻を読み直し、期限/取消/失効を処理する。その後、必ず同じQueueへcommit_eventする。間に失効した仕事のexecutionは除去し、真正な終了通知の回収だけを残す。Queue内の準備中通知は一件に制限し、未採用tokenがある間のprepare_eventはdispatch-event-pending、旧poll_oneはNoneとなる。別Queueへのcommitは拒否する。tokenを誤って破棄しても次の読取りは可能になるが、その結果は採用されないため、信頼した所有者は意図した破棄でもcommit_eventを通す。
+
+Queueのcommitが論理結果を受理した場合だけ、Graphへcommit_completionする。結果は同じGraphの同じactive jobだけに記録できる。検証中に期限/取消でGraphが解決・終端したなら、古いGraph tokenを破棄する。誤った別Graphや重複tokenは拒否する。低水準Rust APIを混用してこの順序を迂回しない。外部からIDだけでtokenを構築できない。
+
+## 次の接続と検査
+
+この工程自体は実時計サービスではない。Pumpは引き続き明示時計で動き、既存wrapperを使う。次工程で、準備→時刻再確認→期限処理→採用を単一の制御所有者へ接続し、native時計、入場/hand-offの正しい起点、Controller交換後のサービス寿命を実装する。通信v3/UI/54fixture全適合/TSFは未完成。製品ノード・標準Registry・旧Engine/session v2・Graph/Packet/fixtureは変更しない。
+
+`tests/execution_staged.rs`は実Registry/worker/Controlで、遅い採用時刻に基づくWait、leaseの保持、入力変更後の判断、別Graph/observer/Queue、古い/重複token、取消後の結果、panic、採用時加算不能、物理終了済みでも未採用の仕事期限を検査する。既存の部品/Pump/同期経路の全検査も行う。
+
+戻す場合は新受理を停止し、生存仕事の終了を確認して本PRをrevertする。

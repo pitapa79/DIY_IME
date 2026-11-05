@@ -1,0 +1,70 @@
+{
+  "kind": "experimental.text-extract",
+  "version": 1,
+  "defaultConfig": {
+    "start": 0,
+    "end": null
+  },
+  "cases": [
+    {
+      "input": "A😀がB",
+      "config": {
+        "start": 1,
+        "end": 3
+      },
+      "expected": "😀か"
+    },
+    {
+      "input": "abc",
+      "config": {
+        "start": 1,
+        "end": null
+      },
+      "expected": "bc"
+    },
+    {
+      "input": "abc",
+      "config": {
+        "start": 2,
+        "end": 2
+      },
+      "expected": ""
+    },
+    {
+      "input": "",
+      "config": {
+        "start": 0,
+        "end": null
+      },
+      "expected": ""
+    },
+    {
+      "input": "é",
+      "config": {
+        "start": 1,
+        "end": 2
+      },
+      "expected": "́"
+    }
+  ],
+  "errorCases": [
+    {
+      "input": "a",
+      "config": {
+        "start": 2,
+        "end": null
+      },
+      "error": "invalid-range"
+    }
+  ],
+  "invalidConfigs": [
+    {
+      "start": 3,
+      "end": 1
+    },
+    {
+      "start": -1,
+      "end": null
+    }
+  ]
+}

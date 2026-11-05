@@ -1,0 +1,84 @@
+{
+  "kind": "experimental.score-multiply",
+  "version": 1,
+  "defaultConfig": {
+    "value": 1
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": -2
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            }
+          }
+        ]
+      },
+      "config": {
+        "value": -2
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 4
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "value": 2
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    }
+  ],
+  "errorCases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "x"
+            },
+            "score": 1e+308
+          }
+        ]
+      },
+      "config": {
+        "value": 1e+308
+      },
+      "error": "invalid-score"
+    }
+  ],
+  "invalidConfigs": []
+}

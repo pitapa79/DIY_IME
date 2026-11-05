@@ -1,0 +1,459 @@
+{
+  "contract": "contracts/execution_control.json",
+  "meaning": "direct-core and direct-private-core execute all expected fields at their real Core boundary; related-only is evidence, not full fixture conformance",
+  "cases": [
+    {
+      "id": "A01-normal-completion",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a01_normal"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A02-pending-is-not-no-output",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a02_pending"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A03-first-data-cancels-unneeded",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a03_first_data"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A04-normal-merge-waits-all",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a04_all_inputs"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A05-shared-job-keeps-owner",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a05_shared_demand"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A06-wake-without-new-input",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a06_timer"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A07-poll-does-not-reobserve",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a07_pure_poll"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T01-before-run-deadline",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t01_before"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T02-exact-run-deadline",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t02_exact"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T03-after-run-deadline",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t03_after"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T04-worker-timestamp-does-not-backdate",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t04_no_backdate"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T05-job-deadline-can-recover",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t05_recovery"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T06-unlimited-does-not-expire",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t06_unlimited"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T07-clock-jump-processes-deadline-and-grace",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/pump.rs#formal_run_deadline_and_grace_fixture"
+      ],
+      "remaining": "一度の時計ジャンプをcfg(test)のCore遷移記録で照合。製品ログ/通信v3の完成を意味しない。"
+    },
+    {
+      "id": "C01-cancel-before-completion-same-time",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#c01_cancel_first"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "C02-complete-before-cancel-same-time",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#c02_complete_first"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "C03-repeat-cancel-no-double-release",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#c03_repeat_cancel"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "C04-ack-of-receipt-is-not-termination",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#c04_ack_is_not_end"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G01-input-invalidation-rejects-old-result",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g01_invalidate"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G02-prepare-does-not-invalidate",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g02_prepare"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G03-activate-invalidates-but-reclaims-old-job",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g03_activate"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G04-rollback-never-resurrects-version",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g04_rollback"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G05-other-epoch-is-not-old-job-ack",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G06-duplicate-completion-reclaims-once",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g06_duplicate_completion"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G07-revision-content-conflict",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g07_input_conflict"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G08-fixed-run-survives-input-update",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g08_fixed_run"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R01-cancelled-work-keeps-capacity",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r01_cancelled_capacity"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R02-queue-expiry-before-same-time-slot-return",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r02_queue_expiry"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R03-oversized-result-is-not-success",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r03_result_limit"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R04-invalid-profile-refuses-new-controller",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r04_invalid_profile"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B01-same-start-is-idempotent",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b01_replay"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B02-start-key-with-changed-payload",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b02_replay_conflict"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B03-lost-response-can-be-queried",
+      "status": "related-only",
+      "evidence": [
+        "tests/execution_service.rs#input_replays_and_plan_switches_keep_the_same_service_contract"
+      ],
+      "remaining": "Core単独の分類はrelated-onlyを保持。別欄transportで正式イベント/全expectedを検査する。全54件のwire適合を意味しない。",
+      "transport": {
+        "status": "fixture-http",
+        "evidence": [
+          "editor/tests/execution-transport-fixtures.test.ts#formal_b03"
+        ],
+        "boundary": "実HTTPで開始応答bodyを採用せずget-start。実producerのキー/開始数/物理枠と全expectedを照合。OSから実発行したepochへ固定fixture epochを束縛する。"
+      }
+    },
+    {
+      "id": "B04-key-after-retention-cannot-relaunch",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b04_retired_start"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B05-expired-result-is-explicitly-gone",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b05_result_gone"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B06-tombstone-loss-does-not-prove-not-started",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b06_result_unknown"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B07-reconnect-rejects-old-run-key",
+      "status": "related-only",
+      "evidence": [
+        "tests/execution_service.rs#dropping_all_handles_then_reopening_reuses_the_old_budget_and_completion_receiver"
+      ],
+      "remaining": "Core単独の分類はrelated-onlyを保持。別欄transportで正式イベント/全expectedを検査する。全54件のwire適合を意味しない。",
+      "transport": {
+        "status": "fixture-http",
+        "evidence": [
+          "editor/tests/execution-transport-fixtures.test.ts#formal_b07"
+        ],
+        "boundary": "実HTTPの明示Session削除/新規Sessionで再接続し、同じHost内の新epoch/旧キー拒否と全expectedを照合。TCP断やbridge再起動の同一視はしない。"
+      }
+    },
+    {
+      "id": "B08-v2-does-not-negotiate-v3-implicitly",
+      "status": "related-only",
+      "evidence": [
+        "tests/execution_workers.rs#execution_declarations_are_opt_in_and_legacy_engine_and_session_reject_new_kinds"
+      ],
+      "remaining": "Core単独の分類はrelated-onlyを保持。別欄transportで正式イベント/全expectedを検査する。全54件のwire適合を意味しない。",
+      "transport": {
+        "status": "fixture-v2-cli",
+        "evidence": [
+          "editor/tests/execution-transport-fixtures.test.ts#formal_b08"
+        ],
+        "boundary": "検査Registryを渡した既存v2 codecの実子プロセス。error-aware prepare拒否と全expectedを照合。v3専用初期epoch/input revisionをv2へ追加しない。"
+      }
+    },
+    {
+      "id": "B09-u64-ids-stay-strings",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b09_exact_ids"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T08-invalid-budget-is-pre-admission",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t08_invalid_budgets"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T09-duration-overflow-is-rejected",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t09_checked_add_limit"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "B10-replay-is-not-revalidated-against-new-plan",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#b10_replay_after_activation"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "A08-node-no-output-is-a-resolved-result",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#a08_no_output"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "C05-cancel-before-worker-start",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_prestart_fixture_skips_both_sync_and_deferred_callbacks"
+      ],
+      "remaining": "私有開始ゲートでsync/deferred双方を検査。通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G09-mismatched-plan-cannot-reclaim",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G09-mismatched-run-cannot-reclaim",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G09-mismatched-input-cannot-reclaim",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G09-mismatched-delivery-cannot-reclaim",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G09-mismatched-job-cannot-reclaim",
+      "status": "direct-private-core",
+      "evidence": [
+        "crates/runtime/src/execution_control/worker.rs#formal_private_fixture_cases"
+      ],
+      "remaining": "私有通知認証のcfg(test)検査。公開の偽造通知入口や通信v3の完成を意味しない。"
+    },
+    {
+      "id": "G10-get-run-does-not-retarget-a-key",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g10_wrong_key"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R05-zero-queue-refuses-before-admission",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r05_no_queue"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "R06-later-ready-work-may-fail-without-unaccepting-run",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#r06_later_fanout"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "T10-clock-backwards-does-not-change-state",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#t10_backward_clock"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    },
+    {
+      "id": "G11-same-input-keeps-separate-runs",
+      "status": "direct-core",
+      "evidence": [
+        "tests/execution_fixtures.rs#g11_distinct_runs"
+      ],
+      "remaining": "通信v3/実CLIの適合をこのCore検査だけで主張しない。"
+    }
+  ]
+}

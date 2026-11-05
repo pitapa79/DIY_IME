@@ -1,0 +1,61 @@
+{
+  "kind": "experimental.json-escape",
+  "version": 1,
+  "defaultConfig": {
+    "mode": "escape"
+  },
+  "cases": [
+    {
+      "input": "a\n\"\\",
+      "config": {
+        "mode": "escape"
+      },
+      "expected": "a\\n\\\"\\\\"
+    },
+    {
+      "input": "a\\n\\\"\\\\",
+      "config": {
+        "mode": "unescape"
+      },
+      "expected": "a\n\"\\"
+    },
+    {
+      "input": "\\uD83D\\uDE00",
+      "config": {
+        "mode": "unescape"
+      },
+      "expected": "😀"
+    },
+    {
+      "input": "かな😀",
+      "config": {
+        "mode": "escape"
+      },
+      "expected": "かな😀"
+    },
+    {
+      "input": "",
+      "config": {
+        "mode": "escape"
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [
+    {
+      "input": "\\q",
+      "config": {
+        "mode": "unescape"
+      },
+      "error": "invalid-escape"
+    },
+    {
+      "input": "\\uD800",
+      "config": {
+        "mode": "unescape"
+      },
+      "error": "invalid-escape"
+    }
+  ],
+  "invalidConfigs": []
+}

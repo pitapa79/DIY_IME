@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": "input", "kind": "demo.packet", "version": 1,
+      "config": { "packet": { "version": 1, "root": { "type": "text", "text": "hello" } } } },
+    { "id": "branch", "kind": "demo.branch", "version": 1, "config": { "take": "yes" } },
+    { "id": "selected", "kind": "demo.uppercase", "version": 1 },
+    { "id": "inactive", "kind": "demo.identity", "version": 1 }
+  ],
+  "edges": [
+    { "from": { "node": "input", "port": "out" }, "to": { "node": "branch", "port": "in" } },
+    { "from": { "node": "branch", "port": "yes" }, "to": { "node": "selected", "port": "in" } },
+    { "from": { "node": "branch", "port": "no" }, "to": { "node": "inactive", "port": "in" } }
+  ]
+}

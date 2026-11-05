@@ -1,0 +1,16 @@
+{
+  "kind":"experimental.sentence-split",
+  "version":1,
+  "cases":[
+    {"input":"","expected":[""]},
+    {"input":"一文。次！最後？","expected":["一文。","次！","最後？"]},
+    {"input":"あ！？!?い。。う","expected":["あ！？!?","い。。","う"]},
+    {"input":"！？先頭。","expected":["！？","先頭。"]},
+    {"input":"終端なし😀","expected":["終端なし😀"]},
+    {"input":"a。\nb!\n","expected":["a。","\nb!","\n"]},
+    {"input":"a。b!","config":{"terminators":""},"expected":["a。b!"]},
+    {"input":"a😀😀b\nc","config":{"terminators":"😀\n"},"expected":["a😀😀","b\n","c"]},
+    {"input":"がが","config":{"terminators":"゙"},"expected":["が","が"]},
+    {"input":"a!!b?","config":{"terminators":"!!"},"expected":["a!!","b?"]}
+  ]
+}

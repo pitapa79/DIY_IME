@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "demo.packet",
+      "version": 1,
+      "config": {
+        "packet": {
+          "version": 1,
+          "root": {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "choice",
+                "options": [
+                  { "score": 85, "value": { "type": "text", "text": "hello" } },
+                  { "score": 15, "value": { "type": "text", "text": "world" } }
+                ]
+              },
+              { "type": "text", "text": " 𠮷" }
+            ]
+          }
+        }
+      }
+    },
+    { "id": "uppercase", "kind": "demo.uppercase", "version": 1 },
+    { "id": "result", "kind": "demo.select-text", "version": 1 }
+  ],
+  "edges": [
+    { "from": { "node": "input", "port": "out" }, "to": { "node": "uppercase", "port": "in" } },
+    { "from": { "node": "uppercase", "port": "out" }, "to": { "node": "result", "port": "in" } }
+  ]
+}

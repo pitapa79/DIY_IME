@@ -1,0 +1,22 @@
+{
+  "kind": "experimental.choice-deduplicate",
+  "version": 1,
+  "config": {},
+  "cases": [
+    {
+      "name": "first-score-and-order",
+      "input": {"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"かな"},"score":1},{"value":{"type":"text","text":"仮名"},"score":3},{"value":{"type":"text","text":"かな"},"score":99}]}},
+      "expected": {"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"かな"},"score":1},{"value":{"type":"text","text":"仮名"},"score":3}]}}
+    },
+    {
+      "name": "empty-choice-is-data",
+      "input": {"version":1,"root":{"type":"choice","options":[]}},
+      "expected": {"version":1,"root":{"type":"choice","options":[]}}
+    },
+    {
+      "name": "meta-distinguishes-values",
+      "input": {"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"生","meta":{"reading":"なま"}}},{"value":{"type":"text","text":"生","meta":{"reading":"せい"}}},{"value":{"type":"text","text":"生","meta":{"reading":"なま"}},"score":10}]}},
+      "expected": {"version":1,"root":{"type":"choice","options":[{"value":{"type":"text","text":"生","meta":{"reading":"なま"}}},{"value":{"type":"text","text":"生","meta":{"reading":"せい"}}}]}}
+    }
+  ]
+}

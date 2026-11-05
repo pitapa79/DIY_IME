@@ -1,0 +1,68 @@
+{
+  "kind": "experimental.whitespace-collapse",
+  "version": 1,
+  "defaultConfig": {
+    "replacement": " ",
+    "trim": false
+  },
+  "cases": [
+    {
+      "input": " a \t\nb　 ",
+      "config": {
+        "replacement": " ",
+        "trim": false
+      },
+      "expected": " a b "
+    },
+    {
+      "input": " a  b ",
+      "config": {
+        "replacement": "-",
+        "trim": true
+      },
+      "expected": "a-b"
+    },
+    {
+      "input": " \t\n",
+      "config": {
+        "replacement": "X",
+        "trim": false
+      },
+      "expected": "X"
+    },
+    {
+      "input": " \t\n",
+      "config": {
+        "replacement": "X",
+        "trim": true
+      },
+      "expected": ""
+    },
+    {
+      "input": "a b",
+      "config": {
+        "replacement": "",
+        "trim": false
+      },
+      "expected": "ab"
+    },
+    {
+      "input": "😀​かな",
+      "config": {
+        "replacement": " ",
+        "trim": false
+      },
+      "expected": "😀​かな"
+    },
+    {
+      "input": "",
+      "config": {
+        "replacement": " ",
+        "trim": false
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

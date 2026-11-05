@@ -1,0 +1,245 @@
+{
+  "formatVersion": 1,
+  "scope": "small bundled test-dictionary graph; not Reference IME or TSF",
+  "provenance": {
+    "bundleManifestSha256": "cbb502dec2cb9b0aa5d786a937b073541984ce8d12f062f6bc3dd0829b469132",
+    "sourceCommit": "4d3c6588f21024b446fcecded8cb55efee95913a",
+    "sourceKind": "pinned-pipeline",
+    "nodeVersion": "24.22.1",
+    "wasmtimeVersion": "50.0.1",
+    "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+    "graphSha256": "56c160e624a48a91e7d9d83cc1f542ba0684d4c3deddaf8de063539f78f545d0",
+    "dictionarySha256": "a56700bfe5748f9f16f3f244965103371ff61655374f2a3bf79be1e5df919c31",
+    "workerSha256": "a5a1cdec6173fb30f2ad653b8b3133aea3218f04ec6bee83331a6bec9a6017bf",
+    "runtimeSha256": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+  },
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "osRelease": "10.0.19045",
+    "driverNode": "24.22.1"
+  },
+  "groups": [
+    {
+      "group": 1,
+      "order": [
+        "off",
+        "basic",
+        "host-detailed"
+      ],
+      "runs": [
+        {
+          "mode": "off",
+          "summary": {
+            "count": 100,
+            "minMs": 4782.942299999995,
+            "p50Ms": 4983.56409999996,
+            "p95Ms": 6892.9302000000025,
+            "p99Ms": 7658.530200000037,
+            "maxMs": 9706.517700000026
+          },
+          "diagnostics": {
+            "enabled": false,
+            "mode": "off",
+            "pollIntervalMs": 150,
+            "pages": 0,
+            "events": 0,
+            "hostIntervals": 0,
+            "dropped": 0,
+            "recordings": 0,
+            "recordingBoundary": "per-run-outside-sample",
+            "browserRenderingIncluded": false,
+            "finalDrainOutsideSamples": true,
+            "phaseSummary": {
+              "hostCoverage": "disabled",
+              "workerCoverage": "received-intervals-only",
+              "host": {},
+              "worker": {}
+            }
+          },
+          "file": "group-1-mode-0.json"
+        },
+        {
+          "mode": "basic",
+          "summary": {
+            "count": 100,
+            "minMs": 4771.005699999863,
+            "p50Ms": 4981.624500000151,
+            "p95Ms": 6286.2373000001535,
+            "p99Ms": 6803.157499999972,
+            "maxMs": 7088.894199999981
+          },
+          "diagnostics": {
+            "enabled": true,
+            "mode": "basic",
+            "pollIntervalMs": 150,
+            "pages": 3489,
+            "events": 3161,
+            "hostIntervals": 0,
+            "dropped": 0,
+            "recordings": 109,
+            "recordingBoundary": "per-run-outside-sample",
+            "browserRenderingIncluded": false,
+            "finalDrainOutsideSamples": true,
+            "phaseSummary": {
+              "hostCoverage": "disabled",
+              "workerCoverage": "received-intervals-only",
+              "host": {},
+              "worker": {}
+            }
+          },
+          "file": "group-1-mode-1.json"
+        },
+        {
+          "mode": "host-detailed",
+          "summary": {
+            "count": 100,
+            "minMs": 4848.38459999999,
+            "p50Ms": 5150.625400000019,
+            "p95Ms": 7219.47350000008,
+            "p99Ms": 9345.668400000082,
+            "maxMs": 10395.142200000118
+          },
+          "diagnostics": {
+            "enabled": true,
+            "mode": "host-detailed",
+            "pollIntervalMs": 150,
+            "pages": 3663,
+            "events": 11881,
+            "hostIntervals": 1744,
+            "dropped": 0,
+            "recordings": 109,
+            "recordingBoundary": "per-run-outside-sample",
+            "browserRenderingIncluded": false,
+            "finalDrainOutsideSamples": true,
+            "phaseSummary": {
+              "hostCoverage": "complete",
+              "workerCoverage": "received-intervals-only",
+              "host": {
+                "host-request": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "38301",
+                  "minUs": "31",
+                  "maxUs": "1100"
+                },
+                "worker-staging": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "8047880",
+                  "minUs": "11639",
+                  "maxUs": "76826"
+                },
+                "worker-process": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "590042732",
+                  "minUs": "1048702",
+                  "maxUs": "4586253"
+                },
+                "worker-cleanup": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "6848917",
+                  "minUs": "9652",
+                  "maxUs": "74201"
+                }
+              },
+              "worker": {
+                "main": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "557389517",
+                  "minUs": "996461",
+                  "maxUs": "3935354"
+                },
+                "dll-load": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "81793725",
+                  "minUs": "145594",
+                  "maxUs": "1282135"
+                },
+                "module-read": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "776892",
+                  "minUs": "1077",
+                  "maxUs": "10970"
+                },
+                "input-read": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "32441",
+                  "minUs": "40",
+                  "maxUs": "3130"
+                },
+                "engine-setup": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "191159",
+                  "minUs": "299",
+                  "maxUs": "3232"
+                },
+                "compile": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "473747728",
+                  "minUs": "827269",
+                  "maxUs": "3101130"
+                },
+                "instantiate": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "138626",
+                  "minUs": "177",
+                  "maxUs": "17360"
+                },
+                "guest-setup": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "42495",
+                  "minUs": "60",
+                  "maxUs": "1845"
+                },
+                "guest-call": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "103059",
+                  "minUs": "81",
+                  "maxUs": "5402"
+                },
+                "reply-read": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "8690",
+                  "minUs": "7",
+                  "maxUs": "329"
+                },
+                "reply-write": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "24237",
+                  "minUs": "29",
+                  "maxUs": "2122"
+                },
+                "cleanup": {
+                  "completed": 436,
+                  "incomplete": 0,
+                  "totalUs": "388188",
+                  "minUs": "429",
+                  "maxUs": "6263"
+                }
+              }
+            }
+          },
+          "file": "group-1-mode-2.json"
+        }
+      ],
+      "p95IncreasePercent": {
+        "basic": -8.801668991220147,
+        "host-detailed": 4.737365540130933
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "kind": "experimental.text-concat",
+  "version": 1,
+  "status": "experimental-unregistered",
+  "inputs": {
+    "a": "required ja Text",
+    "b": "required ja Text"
+  },
+  "output": "ja Text",
+  "defaultConfig": {
+    "separator": ""
+  },
+  "metadata": "always omitted",
+  "cases": [
+    {
+      "id": "plain",
+      "a": "日本",
+      "b": "語",
+      "expected": "日本語"
+    },
+    {
+      "id": "both-empty",
+      "a": "",
+      "b": "",
+      "expected": ""
+    },
+    {
+      "id": "empty-left",
+      "a": "",
+      "b": "犬",
+      "expected": "犬"
+    },
+    {
+      "id": "empty-right",
+      "a": "猫",
+      "b": "",
+      "expected": "猫"
+    },
+    {
+      "id": "separator",
+      "a": "猫",
+      "b": "犬",
+      "config": {
+        "separator": " / "
+      },
+      "expected": "猫 / 犬"
+    },
+    {
+      "id": "both-empty-with-separator",
+      "a": "",
+      "b": "",
+      "config": {
+        "separator": ","
+      },
+      "expected": ","
+    },
+    {
+      "id": "empty-left-with-separator",
+      "a": "",
+      "b": "b",
+      "config": {
+        "separator": ","
+      },
+      "expected": ",b"
+    },
+    {
+      "id": "empty-right-with-separator",
+      "a": "a",
+      "b": "",
+      "config": {
+        "separator": ","
+      },
+      "expected": "a,"
+    },
+    {
+      "id": "unicode-supplementary",
+      "a": "𠮷",
+      "b": "🙂",
+      "config": {
+        "separator": "・"
+      },
+      "expected": "𠮷・🙂"
+    },
+    {
+      "id": "combining-not-normalized",
+      "a": "e",
+      "b": "́",
+      "expected": "é"
+    },
+    {
+      "id": "line-endings-preserved",
+      "a": "a\r\n",
+      "b": "b\n",
+      "expected": "a\r\nb\n"
+    },
+    {
+      "id": "separator-is-literal",
+      "a": "a",
+      "b": "b",
+      "config": {
+        "separator": "$1.*\\n"
+      },
+      "expected": "a$1.*\\nb"
+    },
+    {
+      "id": "joiner-is-literal",
+      "a": "👩",
+      "b": "💻",
+      "config": {
+        "separator": "‍"
+      },
+      "expected": "👩‍💻"
+    }
+  ]
+}

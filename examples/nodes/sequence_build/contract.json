@@ -1,0 +1,410 @@
+{
+  "kind": "experimental.sequence-build",
+  "version": 1,
+  "status": "experimental-unregistered",
+  "defaultConfig": {
+    "items": []
+  },
+  "order": "configured items, a root, b root; no flattening",
+  "cases": [
+    {
+      "id": "default-empty",
+      "expected": {
+        "type": "sequence",
+        "items": []
+      }
+    },
+    {
+      "id": "configured-only",
+      "config": {
+        "items": [
+          {
+            "type": "text",
+            "text": "設定"
+          }
+        ]
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "設定"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-only",
+      "a": {
+        "type": "text",
+        "text": "a"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          }
+        ]
+      }
+    },
+    {
+      "id": "b-only-choice",
+      "b": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "甲",
+              "meta": {
+                "reading": "よみ",
+                "sourceSpan": [
+                  3,
+                  7
+                ]
+              }
+            },
+            "score": -2.5
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "乙"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "choice",
+            "options": [
+              {
+                "value": {
+                  "type": "text",
+                  "text": "甲",
+                  "meta": {
+                    "reading": "よみ",
+                    "sourceSpan": [
+                      3,
+                      7
+                    ]
+                  }
+                },
+                "score": -2.5
+              },
+              {
+                "value": {
+                  "type": "text",
+                  "text": "乙"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "configured-a-b-order",
+      "config": {
+        "items": [
+          {
+            "type": "text",
+            "text": "先頭"
+          },
+          {
+            "type": "text",
+            "text": "次"
+          }
+        ]
+      },
+      "a": {
+        "type": "text",
+        "text": "a"
+      },
+      "b": {
+        "type": "text",
+        "text": "b"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "先頭"
+          },
+          {
+            "type": "text",
+            "text": "次"
+          },
+          {
+            "type": "text",
+            "text": "a"
+          },
+          {
+            "type": "text",
+            "text": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "nested-sequences-not-flattened",
+      "a": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          },
+          {
+            "type": "sequence",
+            "items": []
+          }
+        ]
+      },
+      "b": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "b"
+          }
+        ]
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "text",
+                "text": "a"
+              },
+              {
+                "type": "sequence",
+                "items": []
+              }
+            ]
+          },
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "text",
+                "text": "b"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-choice-is-data",
+      "a": {
+        "type": "choice",
+        "options": []
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "choice",
+            "options": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-sequence-is-data",
+      "a": {
+        "type": "sequence",
+        "items": []
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "sequence",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-output-is-omitted",
+      "noOutput": [
+        "a",
+        "b"
+      ],
+      "expected": {
+        "type": "sequence",
+        "items": []
+      }
+    },
+    {
+      "id": "configured-and-b-with-no-output-a",
+      "config": {
+        "items": [
+          {
+            "type": "text",
+            "text": "config"
+          }
+        ]
+      },
+      "noOutput": [
+        "a"
+      ],
+      "b": {
+        "type": "text",
+        "text": "b"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "config"
+          },
+          {
+            "type": "text",
+            "text": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "metadata-scores-and-unicode",
+      "config": {
+        "items": [
+          {
+            "type": "text",
+            "text": "𠮷🙂",
+            "meta": {
+              "reading": "よみ",
+              "sourceSpan": [
+                3,
+                7
+              ]
+            }
+          }
+        ]
+      },
+      "a": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "甲",
+              "meta": {
+                "reading": "よみ",
+                "sourceSpan": [
+                  3,
+                  7
+                ]
+              }
+            },
+            "score": -2.5
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "乙"
+            }
+          }
+        ]
+      },
+      "b": {
+        "type": "text",
+        "text": "é"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "𠮷🙂",
+            "meta": {
+              "reading": "よみ",
+              "sourceSpan": [
+                3,
+                7
+              ]
+            }
+          },
+          {
+            "type": "choice",
+            "options": [
+              {
+                "value": {
+                  "type": "text",
+                  "text": "甲",
+                  "meta": {
+                    "reading": "よみ",
+                    "sourceSpan": [
+                      3,
+                      7
+                    ]
+                  }
+                },
+                "score": -2.5
+              },
+              {
+                "value": {
+                  "type": "text",
+                  "text": "乙"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "é"
+          }
+        ]
+      }
+    },
+    {
+      "id": "configured-nesting-kept",
+      "config": {
+        "items": [
+          {
+            "type": "sequence",
+            "items": []
+          },
+          {
+            "type": "choice",
+            "options": []
+          }
+        ]
+      },
+      "a": {
+        "type": "text",
+        "text": ""
+      },
+      "expected": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "sequence",
+            "items": []
+          },
+          {
+            "type": "choice",
+            "options": []
+          },
+          {
+            "type": "text",
+            "text": ""
+          }
+        ]
+      }
+    }
+  ]
+}

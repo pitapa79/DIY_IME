@@ -1,0 +1,90 @@
+{
+  "proposal": "dictionary-exact-v0.1-unadopted",
+  "dictionary": "entries.tsv",
+  "cases": [
+    {
+      "id": "multiple-candidates-keep-file-order",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "こうすい"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "降水"}, "score": 90},
+        {"value": {"type": "text", "text": "香水"}, "score": 30},
+        {"value": {"type": "text", "text": "洪水"}, "score": 90}
+      ]}}}
+    },
+    {
+      "id": "negative-scores-remain-unscaled",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "かくりつ"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "確率"}, "score": -1},
+        {"value": {"type": "text", "text": "確立"}, "score": -10}
+      ]}}}
+    },
+    {
+      "id": "single-candidate-still-choice-and-no-meta",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "よし", "meta": {"reading": "よし", "sourceSpan": [0, 2]}}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "𠮷"}, "score": 1}
+      ]}}}
+    },
+    {
+      "id": "no-substring-conversion",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "ほんじつです"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "ほんじつです"}}
+      ]}}}
+    },
+    {
+      "id": "unknown-digits-and-symbols",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "30%"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "30%"}}
+      ]}}}
+    },
+    {
+      "id": "empty-is-data",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": ""}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": ""}}
+      ]}}}
+    },
+    {
+      "id": "precomposed-key-matches",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "が"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "蛾"}, "score": 1}
+      ]}}}
+    },
+    {
+      "id": "combining-mark-is-not-normalized",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "か\u3099"}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "か\u3099"}}
+      ]}}}
+    },
+    {
+      "id": "spaces-are-not-trimmed",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": " ほんじつ "}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": " ほんじつ "}}
+      ]}}}
+    },
+    {
+      "id": "unknown-meta-is-omitted",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "未登録", "meta": {"sourceSpan": [4, 7]}}}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"value": {"type": "text", "text": "未登録"}}
+      ]}}}
+    },
+    {"id": "no-output", "input": {"status": "no-output"}, "expected": {"status": "no-output"}},
+    {
+      "id": "sequence-is-not-segmented",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "sequence", "items": []}}},
+      "expected": {"status": "error", "code": "invalid-root"}
+    },
+    {
+      "id": "choice-is-not-selected",
+      "input": {"status": "data", "packet": {"version": 1, "root": {"type": "choice", "options": []}}},
+      "expected": {"status": "error", "code": "invalid-root"}
+    }
+  ]
+}

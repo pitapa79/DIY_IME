@@ -1,0 +1,26 @@
+{
+  "target": "wasm32-unknown-unknown",
+  "actualDefinitionProof": 48,
+  "profile": "release",
+  "rustc": [
+    "rustc 1.90.0 (1159e78c4 2025-09-14)",
+    "binary: rustc",
+    "commit-hash: 1159e78c4747b02ef996e55082b704c09b970588",
+    "commit-date: 2025-09-14",
+    "host: x86_64-pc-windows-gnu",
+    "release: 1.90.0",
+    "LLVM version: 20.1.8"
+  ],
+  "indexSha256": "cec293e118d8618a0c529424f59eaf1928dd6b68501f296172465b6ae3dea284",
+  "producerSha256": "a49f62b3e42d3863fe50f4f802121f32d7e6430ea44f1856ff8c281100ffb481",
+  "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+  "defaultFeatures": true,
+  "pathRemapping": [
+    "workspace=source",
+    "cargo-registry=registry"
+  ],
+  "formatVersion": 1,
+  "sourceCommit": "ed6c97cd8bc22a2a26b4bc71c141fbc4f20e936e",
+  "isolatedProof": true,
+  "sourceRepository": "pitapa79/DIY_IME2_node"
+}

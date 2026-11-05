@@ -1,0 +1,16 @@
+[
+  {
+    "mode": "none",
+    "source": "598b7cbf7e89e454a04df908227715e86be11973",
+    "files": 161,
+    "manifestSha256": "6bf61044888fc1306cbab3e862d5c9b25486ca01d1878ff9d45368de61f5d0c2",
+    "workerSha256": "907f8fc578b3c7509edf62cbeacaff95557a824493c1c310a145e4a4a885872a"
+  },
+  {
+    "mode": "none-serial",
+    "source": "643b6386df737e42bf7f628206bf27070d5a7c67",
+    "files": 161,
+    "manifestSha256": "abc288df56a36cca749a7160f7b30a974e32797caf25a7b1b783ea97b45ac3a9",
+    "workerSha256": "ea1ecfcdf99fcfb2611c3a479f2042ca0f213cb7cdb5e58f573df2968915f229"
+  }
+]

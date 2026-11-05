@@ -1,0 +1,29 @@
+{
+  "contractVersion": "0.1",
+  "nodeKind": "text.select-candidates",
+  "defaultConfig": {"unscored": 0},
+  "cases": [
+    {
+      "id": "local-scores-and-sequence",
+      "packet": {"version": 1, "root": {"type": "choice", "options": [
+        {"score": 2, "value": {"type": "sequence", "items": [{"type": "choice", "options": [{"score": -20, "value": {"type": "text", "text": "先"}}, {"score": -10, "value": {"type": "text", "text": "本日", "meta": {"reading": "ほんじつ", "sourceSpan": [0, 4]}}}]}, {"type": "text", "text": "30%"}]}},
+        {"score": 1, "value": {"type": "choice", "options": [{"score": 9999, "value": {"type": "text", "text": "別候補"}}]}}
+      ]}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "sequence", "items": [{"type": "text", "text": "本日", "meta": {"reading": "ほんじつ", "sourceSpan": [0, 4]}}, {"type": "text", "text": "30%"}]}}}
+    },
+    {
+      "id": "unscored-tie-first",
+      "config": {"unscored": 7},
+      "packet": {"version": 1, "root": {"type": "choice", "options": [{"value": {"type": "text", "text": "先"}}, {"score": 7, "value": {"type": "text", "text": "後"}}]}},
+      "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "先"}}}
+    },
+    {"id": "empty-choice", "packet": {"version": 1, "root": {"type": "choice", "options": []}}, "expected": {"status": "no-output"}},
+    {"id": "empty-sequence", "packet": {"version": 1, "root": {"type": "sequence", "items": []}}, "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "sequence", "items": []}}}},
+    {"id": "empty-text", "packet": {"version": 1, "root": {"type": "text", "text": ""}}, "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": ""}}}},
+    {"id": "chosen-empty-child", "packet": {"version": 1, "root": {"type": "sequence", "items": [{"type": "text", "text": "前"}, {"type": "choice", "options": []}]}}, "expected": {"status": "no-output"}},
+    {"id": "ignored-empty-branch", "packet": {"version": 1, "root": {"type": "choice", "options": [{"score": 1, "value": {"type": "text", "text": "保持"}}, {"score": 0, "value": {"type": "choice", "options": []}}]}}, "expected": {"status": "data", "packet": {"version": 1, "root": {"type": "text", "text": "保持"}}}},
+    {"id": "bad-unscored", "config": {"unscored": "NaN"}, "packet": {"version": 1, "root": {"type": "text", "text": "a"}}, "expected": {"status": "error", "code": "invalid-config"}},
+    {"id": "invalid-packet", "packet": {"version": 2, "root": {"type": "text", "text": "a"}}, "expected": {"status": "error", "code": "invalid-packet"}},
+    {"id": "no-output", "inputStatus": "no-output", "expected": {"status": "no-output"}}
+  ]
+}

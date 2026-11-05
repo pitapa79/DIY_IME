@@ -1,0 +1,66 @@
+{
+  "kind": "experimental.score-set",
+  "version": 1,
+  "defaultConfig": {
+    "value": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            }
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 2
+          }
+        ]
+      },
+      "config": {
+        "value": -1
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": -1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": -1
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "value": 1
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

@@ -1,0 +1,46 @@
+{
+  "kind": "experimental.text-case",
+  "version": 1,
+  "defaultConfig": {
+    "mode": "lower"
+  },
+  "cases": [
+    {
+      "input": "ßかな😀",
+      "config": {
+        "mode": "upper"
+      },
+      "expected": "SSかな😀"
+    },
+    {
+      "input": "İABC",
+      "config": {
+        "mode": "lower"
+      },
+      "expected": "i̇abc"
+    },
+    {
+      "input": "ΟΣ",
+      "config": {
+        "mode": "lower"
+      },
+      "expected": "ος"
+    },
+    {
+      "input": "",
+      "config": {
+        "mode": "upper"
+      },
+      "expected": ""
+    },
+    {
+      "input": "ＡｂＣ",
+      "config": {
+        "mode": "lower"
+      },
+      "expected": "ａｂｃ"
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

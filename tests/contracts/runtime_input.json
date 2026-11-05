@@ -1,0 +1,18 @@
+{
+  "contractVersion": "0.1",
+  "nodeKind": "input.text",
+  "protocol": 2,
+  "defaultConfig": {},
+  "cases": [
+    {"id": "first-input", "input": {"revision": 1, "text": "k", "mode": "compose"}, "expected": {"status": "data", "planVersion": 1, "inputRevision": 1, "packet": {"version": 1, "root": {"type": "text", "text": "k"}}}},
+    {"id": "same-plan-new-input", "input": {"revision": 2, "text": "kya", "mode": "compose"}, "expected": {"status": "data", "planVersion": 1, "inputRevision": 2, "packet": {"version": 1, "root": {"type": "text", "text": "kya"}}}},
+    {"id": "empty-is-data", "input": {"revision": 3, "text": "", "mode": "compose"}, "expected": {"status": "data", "inputRevision": 3, "packet": {"version": 1, "root": {"type": "text", "text": ""}}}},
+    {"id": "unicode", "input": {"revision": 4, "text": "𠮷30%", "mode": "finalize"}, "expected": {"status": "data", "inputRevision": 4, "packet": {"version": 1, "root": {"type": "text", "text": "𠮷30%"}}}},
+    {"id": "no-snapshot", "expected": {"status": "error", "code": "runtime-input-missing"}},
+    {"id": "bad-mode", "input": {"revision": 5, "text": "a", "mode": "other"}, "expected": {"status": "request-error", "code": "invalid-runtime-input"}},
+    {"id": "zero-revision", "input": {"revision": 0, "text": "a", "mode": "compose"}, "expected": {"status": "request-error", "code": "invalid-runtime-input"}},
+    {"id": "null-is-not-omitted", "input": null, "expected": {"status": "request-error", "code": "invalid-runtime-input"}},
+    {"id": "unknown-field", "input": {"revision": 6, "text": "a", "mode": "compose", "extra": true}, "expected": {"status": "request-error", "code": "invalid-runtime-input"}},
+    {"id": "stale-plan", "input": {"revision": 7, "text": "a", "mode": "compose"}, "expectedPlanVersion": 0, "expected": {"status": "request-error", "code": "plan-conflict"}}
+  ]
+}

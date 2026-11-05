@@ -1,0 +1,59 @@
+{
+  "kind": "experimental.sequence-extract",
+  "version": 1,
+  "defaultConfig": {
+    "index": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          },
+          {
+            "type": "choice",
+            "options": [
+              {
+                "value": {
+                  "type": "text",
+                  "text": "かな"
+                },
+                "score": 2
+              }
+            ]
+          }
+        ]
+      },
+      "config": {
+        "index": 1
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "かな"
+            },
+            "score": 2
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "sequence",
+        "items": []
+      },
+      "config": {
+        "index": 0
+      },
+      "expected": null
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

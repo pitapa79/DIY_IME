@@ -1,0 +1,46 @@
+{
+  "kind": "experimental.text-prefix",
+  "version": 1,
+  "defaultConfig": {
+    "count": 1
+  },
+  "cases": [
+    {
+      "input": "A😀かな",
+      "config": {
+        "count": 2
+      },
+      "expected": "A😀"
+    },
+    {
+      "input": "abc",
+      "config": {
+        "count": 0
+      },
+      "expected": ""
+    },
+    {
+      "input": "abc",
+      "config": {
+        "count": 9
+      },
+      "expected": "abc"
+    },
+    {
+      "input": "é",
+      "config": {
+        "count": 1
+      },
+      "expected": "e"
+    },
+    {
+      "input": "",
+      "config": {
+        "count": 3
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

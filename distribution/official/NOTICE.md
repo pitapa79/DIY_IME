@@ -1,0 +1,5 @@
+# Official Wasm dependency notices
+
+Original license/copyright files copied without editing from the exact cached crates listed in the pinned Node source Cargo.lock. provenance.json records the copied file hashes. Runtime dependencies are serde, serde_core, serde_json, itoa, memchr and zmij. The derive/procedural-macro build dependencies are also included for provenance. These files apply to their respective third-party components and do not assign a new license to the DIY_IME2 / DIY_IME2_node project itself.
+
+Source and exact dependency checksums: https://github.com/pitapa79/DIY_IME2_node/blob/ed6c97cd8bc22a2a26b4bc71c141fbc4f20e936e/Cargo.lock . Preserve this directory when distributing the compiled official module. Additional native/application runtime components have their own notices in the complete application bundle.

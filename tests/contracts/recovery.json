@@ -1,0 +1,612 @@
+{
+  "contract": "error-input-contract-v0.1",
+  "kind": "text.recover-original",
+  "version": 1,
+  "implementationStatus": "contract-only; product node not implemented or registered",
+  "cases": [
+    {
+      "id": "F01-error-to-original",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "recovered",
+        "legacySucceeded": false,
+        "recoveries": 1,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F02-primary-before-original-error",
+      "inputs": {
+        "primary": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "主結果"
+            }
+          }
+        },
+        "original": {
+          "status": "error"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": false,
+        "recoveries": 0,
+        "sameAs": "primary"
+      }
+    },
+    {
+      "id": "F03-no-output-default",
+      "inputs": {
+        "primary": {
+          "status": "no-output"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "no-output",
+        "delivery": "no-output",
+        "legacySucceeded": true,
+        "recoveries": 0
+      }
+    },
+    {
+      "id": "F03-explicit-no-output-fallback",
+      "inputs": {
+        "primary": {
+          "status": "no-output"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": true
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": true,
+        "recoveries": 0,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F04-error-no-original",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "no-output"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "error",
+        "delivery": "failed",
+        "legacySucceeded": false,
+        "recoveries": 0,
+        "causes": 1
+      }
+    },
+    {
+      "id": "F04-two-errors",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "error"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "error",
+        "delivery": "failed",
+        "legacySucceeded": false,
+        "recoveries": 0,
+        "causes": 2
+      }
+    },
+    {
+      "id": "F05-empty-text",
+      "inputs": {
+        "primary": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": true,
+        "recoveries": 0,
+        "sameAs": "primary"
+      }
+    },
+    {
+      "id": "F05-recover-empty-text",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "recovered",
+        "legacySucceeded": false,
+        "recoveries": 1,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F05-empty-sequence",
+      "inputs": {
+        "primary": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "sequence",
+              "items": []
+            }
+          }
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": true,
+        "recoveries": 0,
+        "sameAs": "primary"
+      }
+    },
+    {
+      "id": "F05-recover-empty-sequence",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "sequence",
+              "items": []
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "recovered",
+        "legacySucceeded": false,
+        "recoveries": 1,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F05-empty-choice",
+      "inputs": {
+        "primary": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "choice",
+              "options": []
+            }
+          }
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": true,
+        "recoveries": 0,
+        "sameAs": "primary"
+      }
+    },
+    {
+      "id": "F05-recover-empty-choice",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "choice",
+              "options": []
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "recovered",
+        "legacySucceeded": false,
+        "recoveries": 1,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F05-nested",
+      "inputs": {
+        "primary": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "choice",
+                  "options": [
+                    {
+                      "value": {
+                        "type": "text",
+                        "text": "𠮷😀",
+                        "meta": {
+                          "reading": "よし",
+                          "sourceSpan": [
+                            2,
+                            4
+                          ]
+                        }
+                      },
+                      "score": -2.5
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": "\n"
+                }
+              ]
+            }
+          }
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "text",
+              "text": "かな😀",
+              "meta": {
+                "reading": "かな",
+                "sourceSpan": [
+                  0,
+                  3
+                ]
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "complete",
+        "legacySucceeded": true,
+        "recoveries": 0,
+        "sameAs": "primary"
+      }
+    },
+    {
+      "id": "F05-recover-nested",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "data",
+          "packet": {
+            "version": 1,
+            "root": {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "choice",
+                  "options": [
+                    {
+                      "value": {
+                        "type": "text",
+                        "text": "𠮷😀",
+                        "meta": {
+                          "reading": "よし",
+                          "sourceSpan": [
+                            2,
+                            4
+                          ]
+                        }
+                      },
+                      "score": -2.5
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": "\n"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "data",
+        "delivery": "recovered",
+        "legacySucceeded": false,
+        "recoveries": 1,
+        "sameAs": "original"
+      }
+    },
+    {
+      "id": "F06-original-error-after-no-output",
+      "inputs": {
+        "primary": {
+          "status": "no-output"
+        },
+        "original": {
+          "status": "error"
+        }
+      },
+      "config": {
+        "onNoOutput": true
+      },
+      "expected": {
+        "status": "error",
+        "delivery": "failed",
+        "legacySucceeded": false,
+        "recoveries": 0,
+        "causes": 1
+      }
+    },
+    {
+      "id": "F06-original-error-not-selected",
+      "inputs": {
+        "primary": {
+          "status": "no-output"
+        },
+        "original": {
+          "status": "error"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "no-output",
+        "delivery": "no-output",
+        "legacySucceeded": false,
+        "recoveries": 0
+      }
+    },
+    {
+      "id": "F07-both-missing",
+      "inputs": {
+        "primary": {
+          "status": "missing"
+        },
+        "original": {
+          "status": "missing"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "no-output",
+        "delivery": "no-output",
+        "legacySucceeded": true,
+        "recoveries": 0
+      }
+    },
+    {
+      "id": "F07-both-no-output",
+      "inputs": {
+        "primary": {
+          "status": "no-output"
+        },
+        "original": {
+          "status": "no-output"
+        }
+      },
+      "config": {
+        "onNoOutput": true
+      },
+      "expected": {
+        "status": "no-output",
+        "delivery": "no-output",
+        "legacySucceeded": true,
+        "recoveries": 0
+      }
+    },
+    {
+      "id": "F07-missing-original",
+      "inputs": {
+        "primary": {
+          "status": "error"
+        },
+        "original": {
+          "status": "missing"
+        }
+      },
+      "config": {
+        "onNoOutput": false
+      },
+      "expected": {
+        "status": "error",
+        "delivery": "failed",
+        "legacySucceeded": false,
+        "recoveries": 0,
+        "causes": 1
+      }
+    }
+  ]
+}

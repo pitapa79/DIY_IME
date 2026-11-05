@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "input.text",
+      "version": 1
+    },
+    {
+      "id": "kana",
+      "kind": "text.romaji-to-hiragana",
+      "version": 1
+    },
+    {
+      "id": "trim",
+      "kind": "experimental.text-trim",
+      "version": 1
+    },
+    {
+      "id": "katakana",
+      "kind": "experimental.hiragana-katakana",
+      "version": 1
+    },
+    {
+      "id": "text",
+      "kind": "text.stringify",
+      "version": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": "input",
+        "port": "out"
+      },
+      "to": {
+        "node": "kana",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "kana",
+        "port": "out"
+      },
+      "to": {
+        "node": "trim",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "trim",
+        "port": "out"
+      },
+      "to": {
+        "node": "katakana",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "node": "katakana",
+        "port": "out"
+      },
+      "to": {
+        "node": "text",
+        "port": "in"
+      }
+    }
+  ]
+}

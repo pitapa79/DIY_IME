@@ -1,0 +1,53 @@
+{
+  "kind": "experimental.text-trim",
+  "version": 1,
+  "defaultConfig": {
+    "mode": "both"
+  },
+  "cases": [
+    {
+      "input": " \tかな😀　",
+      "config": {
+        "mode": "both"
+      },
+      "expected": "かな😀"
+    },
+    {
+      "input": " a ",
+      "config": {
+        "mode": "start"
+      },
+      "expected": "a "
+    },
+    {
+      "input": " a ",
+      "config": {
+        "mode": "end"
+      },
+      "expected": " a"
+    },
+    {
+      "input": " a\tb\n　",
+      "config": {
+        "mode": "all"
+      },
+      "expected": "ab"
+    },
+    {
+      "input": "​ a ​",
+      "config": {
+        "mode": "both"
+      },
+      "expected": "​ a ​"
+    },
+    {
+      "input": "",
+      "config": {
+        "mode": "both"
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

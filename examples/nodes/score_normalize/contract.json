@@ -1,0 +1,171 @@
+{
+  "kind": "experimental.score-normalize",
+  "version": 1,
+  "defaultConfig": {
+    "method": "softmax",
+    "unscored": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            }
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 0
+          }
+        ]
+      },
+      "config": {
+        "method": "softmax",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 0.5
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": -1e+308
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 0
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 1e+308
+          }
+        ]
+      },
+      "config": {
+        "method": "minmax",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 0
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 0.5
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 1
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 2
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 2
+          }
+        ]
+      },
+      "config": {
+        "method": "minmax",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 0
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 0
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "method": "softmax",
+        "unscored": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

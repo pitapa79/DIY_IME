@@ -1,0 +1,29 @@
+{
+  "contractVersion": "0.1",
+  "nodeKind": "text.romaji-to-hiragana",
+  "defaultConfig": {"overrides": [], "unknown": "preserve"},
+  "cases": [
+    {"id": "unfinished-k", "mode": "compose", "text": "k", "expected": {"status": "data", "text": "", "pending": "k"}},
+    {"id": "unfinished-ky", "mode": "compose", "text": "ky", "expected": {"status": "data", "text": "", "pending": "ky"}},
+    {"id": "complete-kya", "mode": "compose", "text": "kya", "expected": {"status": "data", "text": "きゃ", "pending": ""}},
+    {"id": "unfinished-uppercase", "mode": "compose", "text": "KY", "expected": {"status": "data", "text": "", "pending": "KY"}},
+    {"id": "ambiguous-n", "mode": "compose", "text": "n", "expected": {"status": "data", "text": "", "pending": "n"}},
+    {"id": "final-n", "mode": "finalize", "text": "n", "expected": {"status": "data", "text": "ん", "pending": ""}},
+    {"id": "double-n", "mode": "compose", "text": "nn", "expected": {"status": "data", "text": "ん", "pending": ""}},
+    {"id": "nnya", "mode": "compose", "text": "nnya", "expected": {"status": "data", "text": "んにゃ", "pending": ""}},
+    {"id": "apostrophe", "mode": "finalize", "text": "kin'en", "expected": {"status": "data", "text": "きんえん", "pending": ""}},
+    {"id": "double-consonant", "mode": "compose", "text": "gakkou", "expected": {"status": "data", "text": "がっこう", "pending": ""}},
+    {"id": "issue-1-reading", "mode": "finalize", "text": "honjitunokousuikakurituha30%desu", "expected": {"status": "data", "text": "ほんじつのこうすいかくりつは30%です", "pending": ""}},
+    {"id": "missing-kaku-is-not-inserted", "mode": "finalize", "text": "honjitunokousuirituha30%desu", "expected": {"status": "data", "text": "ほんじつのこうすいりつは30%です", "pending": ""}},
+    {"id": "unicode-and-symbols", "mode": "finalize", "text": "𠮷30.5% desu", "expected": {"status": "data", "text": "𠮷30.5% です", "pending": ""}},
+    {"id": "empty-is-data", "mode": "compose", "text": "", "expected": {"status": "data", "text": "", "pending": ""}},
+    {"id": "unknown-preserve", "mode": "compose", "text": "Q", "expected": {"status": "data", "text": "Q", "pending": ""}},
+    {"id": "unknown-error", "mode": "compose", "text": "q", "config": {"overrides": [], "unknown": "error"}, "expected": {"status": "error", "code": "unsupported-romaji"}},
+    {"id": "final-prefix-preserve", "mode": "finalize", "text": "K", "expected": {"status": "data", "text": "K", "pending": ""}},
+    {"id": "final-prefix-error", "mode": "finalize", "text": "k", "config": {"overrides": [], "unknown": "error"}, "expected": {"status": "error", "code": "incomplete-romaji"}},
+    {"id": "override", "mode": "compose", "text": "ka", "config": {"overrides": [{"from": "ka", "to": "ヵ"}], "unknown": "preserve"}, "expected": {"status": "data", "text": "ヵ", "pending": ""}},
+    {"id": "duplicate-rule", "mode": "compose", "text": "ka", "config": {"overrides": [{"from": "ka", "to": "か"}, {"from": "ka", "to": "ヵ"}], "unknown": "preserve"}, "expected": {"status": "error", "code": "invalid-config"}},
+    {"id": "wrong-root", "mode": "compose", "packet": {"version": 1, "root": {"type": "sequence", "items": []}}, "expected": {"status": "error", "code": "invalid-root"}},
+    {"id": "no-output", "inputStatus": "no-output", "expected": {"status": "no-output"}}
+  ]
+}

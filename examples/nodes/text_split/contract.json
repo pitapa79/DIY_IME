@@ -1,0 +1,111 @@
+{
+  "kind": "experimental.text-split",
+  "version": 1,
+  "status": "experimental-unregistered",
+  "defaultConfig": {
+    "separator": ","
+  },
+  "cases": [
+    {
+      "input": "猫,犬,,🙂,",
+      "expected": [
+        "猫",
+        "犬",
+        "",
+        "🙂",
+        ""
+      ]
+    },
+    {
+      "input": "",
+      "expected": [
+        ""
+      ]
+    },
+    {
+      "input": "abc",
+      "expected": [
+        "abc"
+      ]
+    },
+    {
+      "input": ",",
+      "expected": [
+        "",
+        ""
+      ]
+    },
+    {
+      "input": ",,",
+      "expected": [
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "input": "a.*b.*",
+      "config": {
+        "separator": ".*"
+      },
+      "expected": [
+        "a",
+        "b",
+        ""
+      ]
+    },
+    {
+      "input": "あ🙂い🙂",
+      "config": {
+        "separator": "🙂"
+      },
+      "expected": [
+        "あ",
+        "い",
+        ""
+      ]
+    },
+    {
+      "input": "a\r\nb\r\n",
+      "config": {
+        "separator": "\r\n"
+      },
+      "expected": [
+        "a",
+        "b",
+        ""
+      ]
+    },
+    {
+      "input": "aaa",
+      "config": {
+        "separator": "aa"
+      },
+      "expected": [
+        "",
+        "a"
+      ]
+    },
+    {
+      "input": "aAa",
+      "config": {
+        "separator": "a"
+      },
+      "expected": [
+        "",
+        "A",
+        ""
+      ]
+    },
+    {
+      "input": "é|é",
+      "config": {
+        "separator": "|"
+      },
+      "expected": [
+        "é",
+        "é"
+      ]
+    }
+  ]
+}

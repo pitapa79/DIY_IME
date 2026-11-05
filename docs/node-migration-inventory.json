@@ -1,0 +1,3184 @@
+{
+  "classification": "docs/node-classification.md",
+  "formatVersion": 1,
+  "nodes": [
+    {
+      "assets": [
+        "tests/engine.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "take": {
+              "enum": [
+                "yes",
+                "no"
+              ]
+            }
+          },
+          "required": [
+            "take"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "take": "yes"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": null,
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "demo.branch",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "yes",
+            "language": null,
+            "root": "any"
+          },
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "no",
+            "language": null,
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Branch",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/demo.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/engine.rs",
+        "tests/execution_dispatch.rs",
+        "tests/execution_graph.rs",
+        "tests/execution_results.rs",
+        "tests/prepared_nodes.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": null,
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "demo.identity",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": null,
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Identity",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/demo.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/engine.rs",
+        "tests/execution_ledger.rs",
+        "tests/execution_observers.rs",
+        "tests/execution_pump.rs",
+        "tests/execution_staged.rs",
+        "tests/execution_workers.rs",
+        "tests/experimental_integration.rs",
+        "tests/security_trust_boundary.rs",
+        "tests/transforms.rs"
+      ],
+      "classification": "system",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "packet": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "packet"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "packet": {
+            "root": {
+              "text": "",
+              "type": "text"
+            },
+            "version": 1
+          }
+        },
+        "inputs": [],
+        "kind": "demo.packet",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": null,
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2",
+      "implementation": "PacketSource",
+      "registered": true,
+      "resources": [
+        "fixed-config-input"
+      ],
+      "source": "src/builtins/demo.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/engine.rs",
+        "tests/nodes_candidate_selection.rs",
+        "tests/transforms.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "unscored": 0.0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": null,
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "demo.select-text",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": null,
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SelectText",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/demo.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/engine.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": null,
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "demo.uppercase",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": null,
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Uppercase",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/demo.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/experimental_integration.rs",
+        "tests/nodes_romaji.rs",
+        "tests/security_diagnostic_audit.rs"
+      ],
+      "classification": "system",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "fixed"
+              ]
+            },
+            "text": {
+              "maxLength": 4096,
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "text"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "fixed",
+          "text": "honjitunokousuikakurituha30%desu"
+        },
+        "inputs": [],
+        "kind": "e2e.input",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja-Latn",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2",
+      "implementation": "FixedInput",
+      "registered": true,
+      "resources": [
+        "fixed-config-input"
+      ],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "standard-function",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.kana-kanji",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "KanaKanjiCandidates",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/security_diagnostic_audit.rs"
+      ],
+      "classification": "system",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.output",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2",
+      "implementation": "DebugOutput",
+      "registered": true,
+      "resources": [
+        "stderr-log"
+      ],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/nodes_romaji.rs",
+        "tests/security_diagnostic_audit.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "standard-function",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja-Latn",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.romaji-to-hiragana",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "RomajiToHiragana",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.segment",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Segment",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/nodes_candidate_selection.rs",
+        "tests/nodes_dictionary_exact.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "unscored": 0.0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.select-candidates",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SelectCandidates",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "tests/nodes_stringify.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "e2e.stringify",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Stringify",
+      "registered": true,
+      "resources": [],
+      "source": "src/builtins/initial_e2e.rs",
+      "status": "compatibility"
+    },
+    {
+      "assets": [
+        "examples/nodes/ascii_width",
+        "tests/nodes_ascii_width.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "fullwidth",
+                "halfwidth"
+              ],
+              "type": "string"
+            },
+            "space": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "mode",
+            "space"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "fullwidth",
+          "space": true
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.ascii-width",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "AsciiWidth",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/ascii_width/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/character_filter",
+        "tests/nodes_character_filter.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "class": {
+              "enum": [
+                "ascii-digits",
+                "ascii-letters",
+                "ascii-alphanumeric",
+                "whitespace"
+              ],
+              "type": "string"
+            },
+            "keep": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "class",
+            "keep"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "class": "ascii-digits",
+          "keep": true
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.character-filter",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "CharacterFilter",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/character_filter/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_build",
+        "tests/nodes_choice_build.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "options": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "score": {
+                    "type": "number"
+                  },
+                  "value": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "options"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "options": []
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "a",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          },
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "b",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          }
+        ],
+        "kind": "experimental.choice-build",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceBuild",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_build/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_deduplicate",
+        "tests/experimental_integration.rs",
+        "tests/nodes_choice_deduplicate.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-deduplicate",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceDeduplicate",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_deduplicate/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_extract",
+        "tests/nodes_choice_extract.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "index"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "index": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-extract",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceExtract",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_extract/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_limit",
+        "tests/nodes_choice_limit.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "count": 5
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-limit",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceLimit",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_limit/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_merge",
+        "tests/nodes_choice_merge.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "a",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": false
+          },
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "b",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": false
+          }
+        ],
+        "kind": "experimental.choice-merge",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceMerge",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_merge/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_remove",
+        "tests/nodes_choice_remove.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "indices": {
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "indices"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "indices": []
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-remove",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceRemove",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_remove/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_sort",
+        "tests/nodes_choice_sort.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "direction": {
+              "type": "string"
+            },
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "direction",
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "direction": "descending",
+          "unscored": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-sort",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceSort",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_sort/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_threshold",
+        "tests/nodes_choice_threshold.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "minimum": {
+              "type": "number"
+            },
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "minimum",
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "minimum": 0,
+          "unscored": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-threshold",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceThreshold",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_threshold/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/choice_top_n",
+        "tests/nodes_choice_top_n.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "count",
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "count": 5,
+          "unscored": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.choice-top-n",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ChoiceTopN",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/choice_top_n/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/hiragana_katakana",
+        "tests/nodes_hiragana_katakana.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.hiragana-katakana",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "HiraganaKatakana",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/hiragana_katakana/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/japanese_punctuation",
+        "tests/nodes_japanese_punctuation.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "style": {
+              "enum": [
+                "japanese",
+                "fullwidth",
+                "ascii"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "style"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "style": "japanese"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.japanese-punctuation",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "JapanesePunctuation",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/japanese_punctuation/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/json_escape",
+        "tests/nodes_json_escape.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "escape",
+                "unescape"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "escape"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.json-escape",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "JsonEscape",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/json_escape/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/katakana_hiragana",
+        "tests/nodes_katakana_hiragana.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.katakana-hiragana",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "KatakanaHiragana",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/katakana_hiragana/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/line_endings",
+        "tests/nodes_line_endings.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "style": {
+              "enum": [
+                "lf",
+                "crlf",
+                "cr",
+                "remove"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "style"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "style": "lf"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.line-endings",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "LineEndings",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/line_endings/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/packet_depth_limit",
+        "tests/nodes_packet_depth_limit.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "exceeded": {
+              "type": "string"
+            },
+            "maxDepth": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "maxDepth",
+            "exceeded"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "exceeded": "error",
+          "maxDepth": 32
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.packet-depth-limit",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "PacketDepthLimit",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/packet_depth_limit/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/packet_passthrough",
+        "tests/nodes_packet_passthrough.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.packet-passthrough",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "PacketPassthrough",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/packet_passthrough/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/packet_rebuild",
+        "tests/nodes_packet_rebuild.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "wrap-sequence"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.packet-rebuild",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "PacketRebuild",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/packet_rebuild/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/paragraph_split",
+        "tests/nodes_paragraph_split.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.paragraph-split",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "sequence"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ParagraphSplit",
+      "registered": false,
+      "resources": [],
+      "source": "src/nodes/paragraph_split/mod.rs",
+      "status": "unregistered-prototype"
+    },
+    {
+      "assets": [
+        "examples/nodes/score_add",
+        "tests/nodes_score_add.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "value": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.score-add",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ScoreAdd",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/score_add/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/score_multiply",
+        "tests/nodes_score_multiply.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "value": 1
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.score-multiply",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ScoreMultiply",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/score_multiply/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/score_normalize",
+        "tests/nodes_score_normalize.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "method",
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "method": "softmax",
+          "unscored": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.score-normalize",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ScoreNormalize",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/score_normalize/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/score_set",
+        "tests/nodes_score_set.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "value": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "choice"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.score-set",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "ScoreSet",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/score_set/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/sentence_split",
+        "tests/nodes_sentence_split.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "terminators": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "terminators"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "terminators": "。！？!?"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.sentence-split",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "sequence"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SentenceSplit",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/sentence_split/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/sequence_build",
+        "tests/nodes_sequence_build.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "items": []
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "a",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          },
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "b",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          }
+        ],
+        "kind": "experimental.sequence-build",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "sequence"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SequenceBuild",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/sequence_build/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/sequence_extract",
+        "tests/nodes_sequence_extract.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "index"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "index": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "sequence"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.sequence-extract",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SequenceExtract",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/sequence_extract/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_case",
+        "tests/nodes_text_case.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "upper",
+                "lower"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "lower"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-case",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextCase",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_case/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_concat",
+        "tests/nodes_text_concat.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "separator": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "separator"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "separator": ""
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "a",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          },
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "b",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-concat",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextConcat",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_concat/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_extract",
+        "tests/nodes_text_extract.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "start": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "end": null,
+          "start": 0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-extract",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextExtract",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_extract/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_prefix",
+        "tests/nodes_text_prefix.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "count": 1
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-prefix",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextPrefix",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_prefix/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_replace",
+        "tests/nodes_text_replace.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "from": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "from": "置換前",
+          "to": "置換後"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-replace",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextReplace",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_replace/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_split",
+        "tests/nodes_text_split.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "separator": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "separator"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "separator": ","
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-split",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "sequence"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextSplit",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_split/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_suffix",
+        "tests/nodes_text_suffix.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "count": 1
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-suffix",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextSuffix",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_suffix/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/text_trim",
+        "tests/nodes_text_trim.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "both",
+                "start",
+                "end",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "mode": "both"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.text-trim",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "TextTrim",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/text_trim/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "examples/nodes/whitespace_collapse",
+        "tests/nodes_whitespace_collapse.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "replacement": {
+              "type": "string"
+            },
+            "trim": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "replacement",
+            "trim"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "replacement": " ",
+          "trim": false
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "experimental.whitespace-collapse",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "WhitespaceCollapse",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/whitespace_collapse/mod.rs",
+      "status": "experimental"
+    },
+    {
+      "assets": [
+        "tests/contracts/runtime_input.json",
+        "tests/execution_broker.rs",
+        "tests/execution_broker_cli.rs",
+        "tests/execution_cli_v3.rs",
+        "tests/execution_graph.rs",
+        "tests/execution_session_v3.rs",
+        "tests/experimental_integration.rs",
+        "tests/nodes_dictionary_exact.rs",
+        "tests/nodes_romaji.rs",
+        "tests/runtime_input.rs"
+      ],
+      "classification": "system",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [],
+        "kind": "input.text",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja-Latn",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2",
+      "implementation": "RuntimeTextInput",
+      "registered": true,
+      "resources": [
+        "runtime-input"
+      ],
+      "source": "src/nodes/runtime_input/mod.rs",
+      "status": "practical"
+    },
+    {
+      "assets": [
+        "examples/nodes/dictionary_exact",
+        "tests/contracts/dictionary_exact.json",
+        "tests/nodes_dictionary_exact.rs"
+      ],
+      "classification": "standard-function",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "description": "明示Hostルート基準の相対名。区切りは /",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "path": "dictionary.tsv"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "text.dictionary-exact",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "choice"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "DictionaryExact",
+      "registered": true,
+      "resources": [
+        "prepared-file-read"
+      ],
+      "source": "src/nodes/dictionary_exact/mod.rs",
+      "status": "practical"
+    },
+    {
+      "assets": [
+        "examples/nodes/recovery",
+        "tests/contracts/recovery.json",
+        "tests/error_inputs.rs",
+        "tests/nodes_recovery.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "onNoOutput": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "onNoOutput"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "onNoOutput": false
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "primary",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          },
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "original",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": false
+          }
+        ],
+        "kind": "text.recover-original",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "RecoverOriginal",
+      "registered": false,
+      "resources": [],
+      "source": "src/nodes/recovery/mod.rs",
+      "status": "unregistered-prototype"
+    },
+    {
+      "assets": [
+        "examples/nodes/romaji",
+        "tests/contracts/romaji.json",
+        "tests/experimental_integration.rs",
+        "tests/nodes_dictionary_exact.rs",
+        "tests/nodes_romaji.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "standard-function",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "overrides": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "pattern": "^[a-z']{1,8}$",
+                    "type": "string"
+                  },
+                  "to": {
+                    "maxLength": 16,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "maxItems": 256,
+              "type": "array"
+            },
+            "unknown": {
+              "enum": [
+                "preserve",
+                "error"
+              ]
+            }
+          },
+          "required": [
+            "overrides",
+            "unknown"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "overrides": [],
+          "unknown": "preserve"
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja-Latn",
+              "root": "text"
+            },
+            "required": true
+          }
+        ],
+        "kind": "text.romaji-to-hiragana",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          },
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "pending",
+            "language": "ja-Latn",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "RomajiToHiragana",
+      "registered": true,
+      "resources": [
+        "input-mode-only"
+      ],
+      "source": "src/nodes/romaji/mod.rs",
+      "status": "practical"
+    },
+    {
+      "assets": [
+        "examples/nodes/candidate_selection",
+        "tests/contracts/candidate_selection.json",
+        "tests/experimental_integration.rs",
+        "tests/nodes_candidate_selection.rs",
+        "tests/nodes_dictionary_exact.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "unscored": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "unscored"
+          ],
+          "type": "object"
+        },
+        "defaultConfig": {
+          "unscored": 0.0
+        },
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "text.select-candidates",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "any"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "SelectCandidates",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/candidate_selection/mod.rs",
+      "status": "practical"
+    },
+    {
+      "assets": [
+        "examples/nodes/stringify",
+        "tests/contracts/stringify.json",
+        "tests/experimental_integration.rs",
+        "tests/nodes_stringify.rs",
+        "tests/weather_pipeline.rs"
+      ],
+      "classification": "primitive",
+      "definition": {
+        "configSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "defaultConfig": {},
+        "inputs": [
+          {
+            "port": {
+              "dataType": {
+                "id": "text-packet",
+                "version": 1
+              },
+              "id": "in",
+              "language": "ja",
+              "root": "any"
+            },
+            "required": true
+          }
+        ],
+        "kind": "text.stringify",
+        "outputs": [
+          {
+            "dataType": {
+              "id": "text-packet",
+              "version": 1
+            },
+            "id": "out",
+            "language": "ja",
+            "root": "text"
+          }
+        ],
+        "version": 1
+      },
+      "destination": "DIY_IME2_node",
+      "implementation": "Stringify",
+      "registered": true,
+      "resources": [],
+      "source": "src/nodes/stringify/mod.rs",
+      "status": "practical"
+    }
+  ],
+  "sourceCommit": "bd48903ad6b114a291f5e14bac49e339030d1f39"
+}

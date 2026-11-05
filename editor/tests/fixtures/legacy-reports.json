@@ -1,0 +1,1685 @@
+{
+  "weather": {
+    "nodes": {
+      "hiragana": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "ほんじつのこうすいかくりつは30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "input": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "honjitunokousuikakurituha30%desu",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "kanji": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "本日",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "ほんじつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすいかくりつ",
+                                  "sourceSpan": [
+                                    5,
+                                    13
+                                  ]
+                                },
+                                "text": "降水確率",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 20.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすいかくりつ",
+                                  "sourceSpan": [
+                                    5,
+                                    13
+                                  ]
+                                },
+                                "text": "降水確立",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  },
+                  {
+                    "score": 15.0,
+                    "value": {
+                      "items": [
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "本日",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "ほんじつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "降水",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "こうすい",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "かくりつ",
+                                  "sourceSpan": [
+                                    9,
+                                    13
+                                  ]
+                                },
+                                "text": "確率",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 20.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "かくりつ",
+                                  "sourceSpan": [
+                                    9,
+                                    13
+                                  ]
+                                },
+                                "text": "確立",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "output": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水確率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "result": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水確率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "segments": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "meta": {
+                            "reading": "ほんじつ",
+                            "sourceSpan": [
+                              0,
+                              4
+                            ]
+                          },
+                          "text": "ほんじつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "こうすいかくりつ",
+                            "sourceSpan": [
+                              5,
+                              13
+                            ]
+                          },
+                          "text": "こうすいかくりつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  },
+                  {
+                    "score": 15.0,
+                    "value": {
+                      "items": [
+                        {
+                          "meta": {
+                            "reading": "ほんじつ",
+                            "sourceSpan": [
+                              0,
+                              4
+                            ]
+                          },
+                          "text": "ほんじつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "こうすい",
+                            "sourceSpan": [
+                              5,
+                              9
+                            ]
+                          },
+                          "text": "こうすい",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "かくりつ",
+                            "sourceSpan": [
+                              9,
+                              13
+                            ]
+                          },
+                          "text": "かくりつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "select": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "items": [
+                  {
+                    "meta": {
+                      "reading": "ほんじつ",
+                      "sourceSpan": [
+                        0,
+                        4
+                      ]
+                    },
+                    "text": "本日",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "の",
+                      "sourceSpan": [
+                        4,
+                        5
+                      ]
+                    },
+                    "text": "の",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "こうすいかくりつ",
+                      "sourceSpan": [
+                        5,
+                        13
+                      ]
+                    },
+                    "text": "降水確率",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "は",
+                      "sourceSpan": [
+                        13,
+                        14
+                      ]
+                    },
+                    "text": "は",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "30%",
+                      "sourceSpan": [
+                        14,
+                        17
+                      ]
+                    },
+                    "text": "30%",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "です",
+                      "sourceSpan": [
+                        17,
+                        19
+                      ]
+                    },
+                    "text": "です",
+                    "type": "text"
+                  }
+                ],
+                "type": "sequence"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      }
+    },
+    "planVersion": 1,
+    "runId": 1,
+    "succeeded": true
+  },
+  "weather-negative": {
+    "nodes": {
+      "hiragana": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "ほんじつのこうすいりつは30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "input": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "honjitunokousuirituha30%desu",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "kanji": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "本日",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "ほんじつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "降水",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "こうすい",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "りつ",
+                                  "sourceSpan": [
+                                    9,
+                                    11
+                                  ]
+                                },
+                                "text": "率",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "りつ",
+                                  "sourceSpan": [
+                                    9,
+                                    11
+                                  ]
+                                },
+                                "text": "りつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              11,
+                              12
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              12,
+                              15
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              15,
+                              17
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "output": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "result": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "segments": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "meta": {
+                            "reading": "ほんじつ",
+                            "sourceSpan": [
+                              0,
+                              4
+                            ]
+                          },
+                          "text": "ほんじつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "こうすい",
+                            "sourceSpan": [
+                              5,
+                              9
+                            ]
+                          },
+                          "text": "こうすい",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "りつ",
+                            "sourceSpan": [
+                              9,
+                              11
+                            ]
+                          },
+                          "text": "りつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              11,
+                              12
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              12,
+                              15
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              15,
+                              17
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "select": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "items": [
+                  {
+                    "meta": {
+                      "reading": "ほんじつ",
+                      "sourceSpan": [
+                        0,
+                        4
+                      ]
+                    },
+                    "text": "本日",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "の",
+                      "sourceSpan": [
+                        4,
+                        5
+                      ]
+                    },
+                    "text": "の",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "こうすい",
+                      "sourceSpan": [
+                        5,
+                        9
+                      ]
+                    },
+                    "text": "降水",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "りつ",
+                      "sourceSpan": [
+                        9,
+                        11
+                      ]
+                    },
+                    "text": "率",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "は",
+                      "sourceSpan": [
+                        11,
+                        12
+                      ]
+                    },
+                    "text": "は",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "30%",
+                      "sourceSpan": [
+                        12,
+                        15
+                      ]
+                    },
+                    "text": "30%",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "です",
+                      "sourceSpan": [
+                        15,
+                        17
+                      ]
+                    },
+                    "text": "です",
+                    "type": "text"
+                  }
+                ],
+                "type": "sequence"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      }
+    },
+    "planVersion": 1,
+    "runId": 1,
+    "succeeded": true
+  },
+  "practical": {
+    "nodes": {
+      "hiragana": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "ほんじつのこうすいかくりつは30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          },
+          "pending": {
+            "packet": {
+              "root": {
+                "text": "",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "input": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "honjitunokousuikakurituha30%desu",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "kanji": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "本日",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "ほんじつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすいかくりつ",
+                                  "sourceSpan": [
+                                    5,
+                                    13
+                                  ]
+                                },
+                                "text": "降水確率",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 20.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすいかくりつ",
+                                  "sourceSpan": [
+                                    5,
+                                    13
+                                  ]
+                                },
+                                "text": "降水確立",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  },
+                  {
+                    "score": 15.0,
+                    "value": {
+                      "items": [
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "本日",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "ほんじつ",
+                                  "sourceSpan": [
+                                    0,
+                                    4
+                                  ]
+                                },
+                                "text": "ほんじつ",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "降水",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 10.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "こうすい",
+                                  "sourceSpan": [
+                                    5,
+                                    9
+                                  ]
+                                },
+                                "text": "こうすい",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "options": [
+                            {
+                              "score": 100.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "かくりつ",
+                                  "sourceSpan": [
+                                    9,
+                                    13
+                                  ]
+                                },
+                                "text": "確率",
+                                "type": "text"
+                              }
+                            },
+                            {
+                              "score": 20.0,
+                              "value": {
+                                "meta": {
+                                  "reading": "かくりつ",
+                                  "sourceSpan": [
+                                    9,
+                                    13
+                                  ]
+                                },
+                                "text": "確立",
+                                "type": "text"
+                              }
+                            }
+                          ],
+                          "type": "choice"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "output": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水確率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "result": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "text": "本日の降水確率は30%です",
+                "type": "text"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "segments": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "options": [
+                  {
+                    "score": 85.0,
+                    "value": {
+                      "items": [
+                        {
+                          "meta": {
+                            "reading": "ほんじつ",
+                            "sourceSpan": [
+                              0,
+                              4
+                            ]
+                          },
+                          "text": "ほんじつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "こうすいかくりつ",
+                            "sourceSpan": [
+                              5,
+                              13
+                            ]
+                          },
+                          "text": "こうすいかくりつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  },
+                  {
+                    "score": 15.0,
+                    "value": {
+                      "items": [
+                        {
+                          "meta": {
+                            "reading": "ほんじつ",
+                            "sourceSpan": [
+                              0,
+                              4
+                            ]
+                          },
+                          "text": "ほんじつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "の",
+                            "sourceSpan": [
+                              4,
+                              5
+                            ]
+                          },
+                          "text": "の",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "こうすい",
+                            "sourceSpan": [
+                              5,
+                              9
+                            ]
+                          },
+                          "text": "こうすい",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "かくりつ",
+                            "sourceSpan": [
+                              9,
+                              13
+                            ]
+                          },
+                          "text": "かくりつ",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "は",
+                            "sourceSpan": [
+                              13,
+                              14
+                            ]
+                          },
+                          "text": "は",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "30%",
+                            "sourceSpan": [
+                              14,
+                              17
+                            ]
+                          },
+                          "text": "30%",
+                          "type": "text"
+                        },
+                        {
+                          "meta": {
+                            "reading": "です",
+                            "sourceSpan": [
+                              17,
+                              19
+                            ]
+                          },
+                          "text": "です",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "sequence"
+                    }
+                  }
+                ],
+                "type": "choice"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      },
+      "select": {
+        "diagnostic": null,
+        "outputs": {
+          "out": {
+            "packet": {
+              "root": {
+                "items": [
+                  {
+                    "meta": {
+                      "reading": "ほんじつ",
+                      "sourceSpan": [
+                        0,
+                        4
+                      ]
+                    },
+                    "text": "本日",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "の",
+                      "sourceSpan": [
+                        4,
+                        5
+                      ]
+                    },
+                    "text": "の",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "こうすいかくりつ",
+                      "sourceSpan": [
+                        5,
+                        13
+                      ]
+                    },
+                    "text": "降水確率",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "は",
+                      "sourceSpan": [
+                        13,
+                        14
+                      ]
+                    },
+                    "text": "は",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "30%",
+                      "sourceSpan": [
+                        14,
+                        17
+                      ]
+                    },
+                    "text": "30%",
+                    "type": "text"
+                  },
+                  {
+                    "meta": {
+                      "reading": "です",
+                      "sourceSpan": [
+                        17,
+                        19
+                      ]
+                    },
+                    "text": "です",
+                    "type": "text"
+                  }
+                ],
+                "type": "sequence"
+              },
+              "version": 1
+            },
+            "status": "data"
+          }
+        },
+        "status": "executed"
+      }
+    },
+    "planVersion": 1,
+    "runId": 1,
+    "succeeded": true
+  },
+  "provenance": {
+    "source": "Main PR299 validated native prototype, immutable captured UI fixture only",
+    "semanticVerification": "official Wasm cutover compatibility script runs the same graphs; no production Native dependency",
+    "referenceSourceTree": "b64afbd03b74f5a9a4c40015255b3b9fdf5e4940",
+    "nativeArtifactSha256": "4158885824b86335709c3dff1c37891a4e14eb17d3cd3fdfe68605cec2d044c9"
+  }
+}

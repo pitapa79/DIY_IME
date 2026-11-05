@@ -1,0 +1,78 @@
+{
+  "kind": "experimental.packet-depth-limit",
+  "version": 1,
+  "defaultConfig": {
+    "maxDepth": 32,
+    "exceeded": "error"
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "text",
+        "text": "a"
+      },
+      "config": {
+        "maxDepth": 1,
+        "exceeded": "error"
+      },
+      "expected": {
+        "type": "text",
+        "text": "a"
+      }
+    },
+    {
+      "input": {
+        "type": "sequence",
+        "items": []
+      },
+      "config": {
+        "maxDepth": 1,
+        "exceeded": "error"
+      },
+      "expected": {
+        "type": "sequence",
+        "items": []
+      }
+    },
+    {
+      "input": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          }
+        ]
+      },
+      "config": {
+        "maxDepth": 1,
+        "exceeded": "no-output"
+      },
+      "expected": null
+    }
+  ],
+  "errorCases": [
+    {
+      "input": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "text",
+            "text": "a"
+          }
+        ]
+      },
+      "config": {
+        "maxDepth": 1,
+        "exceeded": "error"
+      },
+      "error": "depth-limit"
+    }
+  ],
+  "invalidConfigs": [
+    {
+      "maxDepth": 0,
+      "exceeded": "error"
+    }
+  ]
+}

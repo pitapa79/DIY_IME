@@ -1,0 +1,60 @@
+{
+  "kind": "experimental.character-filter",
+  "version": 1,
+  "defaultConfig": {
+    "class": "ascii-digits",
+    "keep": true
+  },
+  "cases": [
+    {
+      "input": "A1あ２😀3",
+      "config": {
+        "class": "ascii-digits",
+        "keep": true
+      },
+      "expected": "13"
+    },
+    {
+      "input": "A1あ２😀3",
+      "config": {
+        "class": "ascii-digits",
+        "keep": false
+      },
+      "expected": "Aあ２😀"
+    },
+    {
+      "input": "aZ1é",
+      "config": {
+        "class": "ascii-letters",
+        "keep": true
+      },
+      "expected": "aZ"
+    },
+    {
+      "input": "aZ1é",
+      "config": {
+        "class": "ascii-alphanumeric",
+        "keep": true
+      },
+      "expected": "aZ1"
+    },
+    {
+      "input": " \tか　",
+      "config": {
+        "class": "whitespace",
+        "keep": true
+      },
+      "expected": " \t　"
+    },
+    {
+      "input": "",
+      "config": {
+        "class": "ascii-digits",
+        "keep": true
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

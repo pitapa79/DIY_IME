@@ -1,0 +1,2 @@
+# Preserve compiled artifacts, manifests and their pinned receipts byte for byte.
+distribution/official/** -text

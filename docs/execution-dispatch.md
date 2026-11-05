@@ -1,0 +1,53 @@
+# 初期予約とFIFO待機（P1-3d）
+
+[Issue #140](https://github.com/pitapa79/DIY_IME2/issues/140)、親工程[#133](https://github.com/pitapa79/DIY_IME2/issues/133)。[実グラフの接続](execution-graph.md)に、開始時の一括予約とホストが駆動するDispatchQueueを追加する。[v0.2契約](execution-control-contract-v0.2.md)の一部であり、完成したExecutionControllerや通信v3ではない。製品ノード・標準Registry・旧Engine/session v2・保存Graph/Packetは変更しない。
+
+## 受理前の予約
+
+DispatchQueueは明示したExecutionHostを使い、同じDomainで同時に一つだけ所有できる。複数のLedger/runは同じQueueを共有する。LedgerやGraphが別Hostなら拒否する。新方式のホストはこのQueueを共通窓口とし、低水準WorkerDispatcherの直接利用を混用してFIFOを迂回しない。
+
+`admit`はまず既存の開始キーを照合する。同じpayloadの再送は同じ受理証だけを返し、graph=None、observerも追加仕事もなしとなる。現在のplan/入力や満杯状態を理由に再送を新規開始として評価しない。
+
+新規開始では、要求祖先から既知の初期仕事とすべての初期observerを安定した計画順に抽出する。空き物理枠、待機件数、待機入力bytes、observer枠を、Ledgerのactive run・結果予算・開始payload枠と同じ原子的な予約へ加える。予約完了前にworkerやobserveを呼ばない。容量不足や期限の加算不能では受理せず、旧run/入力世代/開始キー/キュー/保持結果を変更しない。未公開の内部IDには欠番があり得る。
+
+予約後は全初期ノードをグラフへ束縛してから物理仕事を渡す。予約済みleaseは分割してworker/observerへ移譲し、二重に予約しない。スレッド作成失敗は受理取消ではなく、Coreが発行するDispatchEventのNodeErrorとして返す。DispatchEventの構築部分は非公開で、ホストは発行されたイベントを正しいGraphへapplyする。
+
+`AdmittedGraph`は受理証、実Graph、observerハンドル、初期handoff失敗イベントを返す。acceptedは完了ではない。Ledgerのrunning遷移・eventSeq・物理カウント更新は、統合する制御所有者が行う。
+
+## FIFOと後続仕事
+
+既存の待機があれば、新しい仕事は空き物理枠を直接使って追い越さない。`dispatch_queued`が先頭から、待機leaseを物理leaseへ原子的に置換して渡す。枠を返して取り直す空白を作らない。待機なしのmaxQueuedJobs=0も有効で、初期仕事全体を収容できなければbusyにする。要求範囲外の枝のためには予約しない。
+
+`schedule_ready`は受理後に新しく準備できた通常/遅延仕事を同じ順序と窓口へ渡す。容量不足はresource-busyのNodeErrorとし、既存runを未受理へ戻さない。observerは初期予約で作成済みである。後続の一組の仕事IDもまとめて採番し、採番枯渇で途中のイベントを失わない。
+
+`poll`は真正なworker通知を取り込むだけで、次の待機仕事を自動起動しない。ホストがイベントをGraphへ適用し、不要仕事・期限・観測を処理してからdispatch_queuedを呼ぶ。完了通知の物理終了フラグを確認するまで実行枠を返さない。[起床と一通知採用](execution-wakeup.md)で追加したpoll_oneを使えば、一件ごとにGraph/Controlを駆動してから次を採用できる。
+
+## 待機bytesの所有単位
+
+待機bytesは次の正規化JSON bytesの合計であり、実ヒープ量を保証する値ではない。
+
+- 各待機Invocationのメタデータ。inputsのポート名と状態、ErrorSet、hasRuntimeInput、inputRecoveries、inputErrorsを数える。DataのPacket本文は下の共有単位へ分ける。
+- 同じ計画Arc内の同じノード設定Valueは、待機に保持される間一度数える。
+- RuntimeInputの同じArcは一度、Data Packetの同じArcも一度数える。別の所有データを内容が等しいだけで共有扱いにはしない。
+
+共有単位は専用byte leaseを持ち、待機利用者が最後に外れるまで保持する。先頭の仕事がdispatch/cancelされても、別の待機仕事が使っているPacketや設定のbytesを早期解放しない。FIFO内の仕事数と、各共有単位のbytesは別に管理する。Arcの共有は仕事や結果の実行間memoizationを意味しない。
+
+文字列等のスカラーはストリームへ数え、Packet/設定Valueの木は反復走査する。計測のためだけに巨大なJSON文字列を作ったり、Rust内の深いPacketに新しい輸送用深さ制限を課したりしない。輸送不能な最終報告のreport-failedは、既存の結果投影の境界で扱う。
+
+## 取消と待機期限
+
+queuedの取消は実行前の所有を除去し、待機件数と最後のbytesを返す。runningの取消は協調要求だけであり、cancel-requested/stalledも物理枠へ数える。誤った完全キーで別の仕事を取り消さない。Queueを破棄しても、旧worker/permitが生存する間は同じHostの使用枠を消さない。
+
+`cancel_released`はGraphが返した不要仕事のjobIdを対象にし、`cancel_run`は当該runの残存仕事を対象にする。不要observerハンドルの破棄はホスト側が行う。新revisionの開始が成功してLedgerが旧入力runを失効させた場合、Queue内の旧待機を除去し、旧実仕事へ取消を要求する。返されたcancelled_runsを使い、ホストが旧Graph/observerも閉じる。容量不足で新開始が失敗した場合は旧仕事を取消さない。
+
+`expire_queue`はqueueWaitMsの期限に達した仕事を起動せず、queue-expiredのイベントを返す。比較にはDurationの精度を保ち、表示用elapsedMsを使わない。`next_deadline`は次の起床候補の読取りだけである。dispatch_queuedも、既に待機期限が来た仕事を先に失効させ、空いた枠で起動しない。各操作の時計はホストが単調に供給する。
+
+## 検査・残作業・戻し方
+
+`tests/execution_dispatch.rs`は実Registry、worker、遅延permitを使う。原子的な拒否と再試行、再送、observer/bytes上限、Ledger間FIFO、待機なし、共有Packet/設定/入力の最後の所有、不要枝、取消/非協調、後続resource-busy、新入力の受理成否、期限境界と加算不能を確認する。bytesの反復計測と採番枯渇はCore単体検査で扱う。正式fixtureの期待値は変更せず、54件の全適合とは数えない。
+
+この部品は自動起床サービスではない。[明示時計の制御所有者](execution-pump.md)で全期限順序、全Ledgerの時計、eventSeq、物理カウント、履歴付き失効を接続した。ネイティブ時計とController交換時にも同じQueueを維持するサービスは#133に残る。Queueの破棄後に新Queueが旧仕事の個別状態を再構築する機能もない。v3通信・UIは未接続で、低水準APIを完成したv3入場判定として公開しない。
+
+jobBudgetsの起動時加算検査と仕事期限の執行は[後続工程](execution-job-deadlines.md)で接続し、Pumpで待機失効→run期限→仕事期限→観測→取消猶予の採用済み順序へ統合した。
+
+戻す場合は新受理を停止し、生存仕事の終了を確認して本PRをrevertする。先にグラフ結果を捨てただけでは物理終了したことにしない。旧経路を維持する。

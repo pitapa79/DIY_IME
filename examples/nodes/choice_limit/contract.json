@@ -1,0 +1,148 @@
+{
+  "kind": "experimental.choice-limit",
+  "version": 1,
+  "defaultConfig": {
+    "count": 5
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "count": 2
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "count": 0
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "count": 9
+      },
+      "expected": {
+        "type": "choice",
+        "options": []
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            }
+          }
+        ]
+      },
+      "config": {
+        "count": 9
+      },
+      "expected": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

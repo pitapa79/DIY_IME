@@ -1,0 +1,29 @@
+import { capture } from './support/executionTrace';
+import { describe, expect, it } from 'vitest';
+import { decodeTracePage, emptyTrace, exportTrace, importTrace, mergeTrace, TRACE_BYTES, traceRuns, type TraceEvent } from '../src/executionTrace';
+describe('metadata timeline',()=>{
+ it('keeps Worker clocks separate and rejects forged intervals',()=>{
+  const t=capture(),base=t.events[2];t.events=[t.events[0],{...base,sequence:'2',atUs:'1000',event:'worker-interval',worker:{instance:1,phase:'compile',startedUs:'15000',finishedUs:'37000'}}];t.nextSequence='2';
+  expect(importTrace(exportTrace(t)).events[1].worker?.startedUs).toBe('15000');expect(traceRuns(t)[0].rows[0].ended).toBeUndefined();
+  for(const worker of [{instance:0,phase:'compile',startedUs:'1'},{instance:1,phase:'arbitrary-private-string',startedUs:'1'},{instance:1,phase:'compile',startedUs:'9',finishedUs:'8'},{instance:1,phase:'compile',startedUs:'01'},{instance:1,phase:'compile',startedUs:'1',body:'private'}])expect(()=>decodeTracePage({...t,events:[t.events[0],{...t.events[1],worker}]})).toThrow();
+  expect(()=>decodeTracePage({...t,events:[t.events[0],{...t.events[1],event:'node-ready'}]})).toThrow();
+  expect(()=>decodeTracePage({...t,nextSequence:'3',events:[...t.events,{...t.events[1],sequence:'3'}]})).toThrow();
+ });
+ it('round trips typed Host intervals without inventing call completion',()=>{
+  const t=capture(); const base=t.events[2];
+  t.events=[t.events[0],{...base,sequence:'2',atUs:'1000',event:'host-request-started'},{...base,sequence:'3',atUs:'2000',event:'host-request-finished'},{...base,sequence:'4',atUs:'3000',event:'worker-process-started'}];t.nextSequence='4';
+  const decoded=importTrace(exportTrace(t));const [run]=traceRuns(decoded);
+  expect(run.rows[0].ended).toBeUndefined();expect(run.ended).toBeUndefined();expect(run.rows[0].events.map(e=>e.event)).toContain('worker-process-started');
+  const wrong={...t,events:[{...t.events[1],node:undefined,nodeKind:undefined,nodeVersion:undefined}]};expect(()=>decodeTracePage(wrong)).toThrow();
+  expect(()=>decodeTracePage({...t,events:[{...t.events[1],duration:1000}]})).toThrow();
+ });
+ it('keeps Core ready, actual Host response and physical ending distinct',()=>{const [run]=traceRuns(decodeTracePage(capture()));expect(run.ready).toBe(10000n);expect(run.response).toBe(11000n);expect(run.ended).toBe(100100n);expect(run.rows[0].started).toBe(1000n);expect(run.rows[0].ended).toBe(100000n);expect(run.rows[0].resolved).toBe(10000n);});
+ it('does not fabricate an ending or an accepted start for partial records',()=>{const t=capture();t.events=t.events.slice(1,7);t.firstSequence='2';const [run]=traceRuns(decodeTracePage(t));expect(run.accepted).toBe(false);expect(run.ended).toBeUndefined();expect(run.rows[0].ended).toBeUndefined();});
+ it('rejects text, configurations, raw keys and arbitrary diagnostic strings',()=>{for(const key of ['inputText','inputLength','inputHash','config','key','error','path','url']){const t=capture();expect(()=>decodeTracePage({...t,[key]:'PRIVATE-CANARY'})).toThrow();expect(()=>decodeTracePage({...t,events:[{...t.events[0],[key]:'PRIVATE-CANARY'}]})).toThrow();}});
+ it('rejects malformed clocks, unknown events, alias mismatches and backwards time',()=>{for(const patch of [{atUs:'120001'},{sequence:'0'},{sequence:'01'},{event:'runtime-string'},{node:'9:1'},{atUs:'18446744073709551616'},{call:0}]){const t=capture();t.events[3]={...t.events[3],...patch} as TraceEvent;expect(()=>decodeTracePage(t)).toThrow();}const t=capture();t.events[4].atUs='0';expect(()=>decodeTracePage(t)).toThrow();});
+ it('round trips inert captures and refuses extra top-level properties',()=>{const t=capture(false),text=exportTrace(t);expect(importTrace(text)).toEqual(t);expect(()=>importTrace(JSON.stringify({...JSON.parse(text),execute:true}))).toThrow();expect(()=>importTrace('{bad')).toThrow();expect(()=>importTrace(JSON.stringify({format:'diy-ime2-execution-trace',version:1,trace:{...t,events:[{...t.events[0],packet:{text:'PRIVATE'}}]}}))).toThrow();});
+ it('does not merge aliases from different recording generations',()=>{const old=capture();const next={...capture(),recordingId:'b'.repeat(32),events:[],firstSequence:'0',nextSequence:'0'};expect(mergeTrace(old,next).events).toHaveLength(0);expect(mergeTrace(old,next).recordingId).toBe(next.recordingId);expect(mergeTrace(old,emptyTrace())).toEqual(emptyTrace());});
+ it('merges pages by event cursor, not server high water mark',()=>{const t=capture(),first={...t,events:t.events.slice(0,4)},second={...t,events:t.events.slice(4)};const a=mergeTrace(emptyTrace(),first);expect(a.nextSequence).toBe('9');expect(a.events.at(-1)?.sequence).toBe('4');expect(mergeTrace(a,second).events).toEqual(t.events);expect(mergeTrace(mergeTrace(a,second),second).events).toEqual(t.events);});
+ it('bounds serialized history even with worst-case escaped static labels',()=>{const t=capture();t.events=Array.from({length:20000},(_,i)=>({...t.events[3],sequence:String(i+1),atUs:String(i),nodeKind:'\0'.repeat(128)}));t.nextSequence='20000';t.nowUs='20000';const page={...t,events:[{...t.events[3],sequence:'20001',atUs:'20001'}],nextSequence:'20001',nowUs:'20001'};const merged=mergeTrace(t,page);expect(merged.events.length).toBeLessThanOrEqual(20000);expect(new TextEncoder().encode(JSON.stringify(merged)).length).toBeLessThanOrEqual(TRACE_BYTES);expect(()=>exportTrace(merged)).not.toThrow();});
+ it('applies the 60-second display window and 200-run bound',()=>{const t=capture();t.events=Array.from({length:200},(_,i)=>({...t.events[0],run:i+1,sequence:String(i+1)}));t.nextSequence='200';const page={...t,events:[{...t.events[0],run:201,sequence:'201',atUs:'61000000'}],firstSequence:'1',nextSequence:'201',nowUs:'61000000'};const merged=mergeTrace(t,page);expect(merged.events.map(e=>e.run)).toEqual([201]);});
+});

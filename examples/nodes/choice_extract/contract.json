@@ -1,0 +1,100 @@
+{
+  "kind": "experimental.choice-extract",
+  "version": 1,
+  "defaultConfig": {
+    "index": 0
+  },
+  "cases": [
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "index": 1
+      },
+      "expected": {
+        "type": "text",
+        "text": "a"
+      }
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": [
+          {
+            "value": {
+              "type": "text",
+              "text": "b"
+            },
+            "score": 1
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "a"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "c"
+            },
+            "score": 3
+          },
+          {
+            "value": {
+              "type": "text",
+              "text": "u"
+            }
+          }
+        ]
+      },
+      "config": {
+        "index": 99
+      },
+      "expected": null
+    },
+    {
+      "input": {
+        "type": "choice",
+        "options": []
+      },
+      "config": {
+        "index": 0
+      },
+      "expected": null
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}

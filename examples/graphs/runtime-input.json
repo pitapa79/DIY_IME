@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "nodes": [
+    {"id": "input", "kind": "input.text", "version": 1},
+    {"id": "result", "kind": "demo.identity", "version": 1}
+  ],
+  "edges": [
+    {"from": {"node": "input", "port": "out"}, "to": {"node": "result", "port": "in"}}
+  ]
+}

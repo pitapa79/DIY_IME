@@ -1,0 +1,72 @@
+{
+  "nodes": [
+    {
+      "kind": "input.text",
+      "id": "input",
+      "version": 1
+    },
+    {
+      "kind": "text.romaji-to-hiragana",
+      "id": "hiragana",
+      "version": 1
+    },
+    {
+      "kind": "text.dictionary-exact",
+      "id": "dictionary",
+      "version": 1
+    },
+    {
+      "kind": "text.select-candidates",
+      "id": "select",
+      "version": 1
+    },
+    {
+      "kind": "text.stringify",
+      "id": "result",
+      "version": 1
+    }
+  ],
+  "version": 1,
+  "edges": [
+    {
+      "to": {
+        "node": "hiragana",
+        "port": "in"
+      },
+      "from": {
+        "node": "input",
+        "port": "out"
+      }
+    },
+    {
+      "to": {
+        "node": "dictionary",
+        "port": "in"
+      },
+      "from": {
+        "node": "hiragana",
+        "port": "out"
+      }
+    },
+    {
+      "to": {
+        "node": "select",
+        "port": "in"
+      },
+      "from": {
+        "node": "dictionary",
+        "port": "out"
+      }
+    },
+    {
+      "to": {
+        "node": "result",
+        "port": "in"
+      },
+      "from": {
+        "node": "select",
+        "port": "out"
+      }
+    }
+  ]
+}

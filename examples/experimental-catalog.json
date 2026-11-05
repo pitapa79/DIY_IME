@@ -1,0 +1,247 @@
+[
+  {
+    "name": "大文字・小文字変換",
+    "module": "text_case",
+    "kind": "experimental.text-case",
+    "struct": "TextCase",
+    "issue": 57
+  },
+  {
+    "name": "空白除去",
+    "module": "text_trim",
+    "kind": "experimental.text-trim",
+    "struct": "TextTrim",
+    "issue": 58
+  },
+  {
+    "name": "連続空白整理",
+    "module": "whitespace_collapse",
+    "kind": "experimental.whitespace-collapse",
+    "struct": "WhitespaceCollapse",
+    "issue": 59
+  },
+  {
+    "name": "改行処理",
+    "module": "line_endings",
+    "kind": "experimental.line-endings",
+    "struct": "LineEndings",
+    "issue": 60
+  },
+  {
+    "name": "文字列抽出",
+    "module": "text_extract",
+    "kind": "experimental.text-extract",
+    "struct": "TextExtract",
+    "issue": 61
+  },
+  {
+    "name": "前方抽出",
+    "module": "text_prefix",
+    "kind": "experimental.text-prefix",
+    "struct": "TextPrefix",
+    "issue": 62
+  },
+  {
+    "name": "後方抽出",
+    "module": "text_suffix",
+    "kind": "experimental.text-suffix",
+    "struct": "TextSuffix",
+    "issue": 63
+  },
+  {
+    "name": "文字種フィルター",
+    "module": "character_filter",
+    "kind": "experimental.character-filter",
+    "struct": "CharacterFilter",
+    "issue": 64
+  },
+  {
+    "name": "エスケープ・復元",
+    "module": "json_escape",
+    "kind": "experimental.json-escape",
+    "struct": "JsonEscape",
+    "issue": 65
+  },
+  {
+    "name": "ひらがな→カタカナ",
+    "module": "hiragana_katakana",
+    "kind": "experimental.hiragana-katakana",
+    "struct": "HiraganaKatakana",
+    "issue": 52
+  },
+  {
+    "name": "カタカナ→ひらがな",
+    "module": "katakana_hiragana",
+    "kind": "experimental.katakana-hiragana",
+    "struct": "KatakanaHiragana",
+    "issue": 66
+  },
+  {
+    "name": "文字列置換",
+    "module": "text_replace",
+    "kind": "experimental.text-replace",
+    "struct": "TextReplace",
+    "issue": 53
+  },
+  {
+    "name": "文字列分割",
+    "module": "text_split",
+    "kind": "experimental.text-split",
+    "struct": "TextSplit",
+    "issue": 67
+  },
+  {
+    "name": "重複候補削除",
+    "module": "choice_deduplicate",
+    "kind": "experimental.choice-deduplicate",
+    "struct": "ChoiceDeduplicate",
+    "issue": 68
+  },
+  {
+    "name": "文字列連結",
+    "module": "text_concat",
+    "kind": "experimental.text-concat",
+    "struct": "TextConcat",
+    "issue": 110
+  },
+  {
+    "name": "文分割",
+    "module": "sentence_split",
+    "kind": "experimental.sentence-split",
+    "struct": "SentenceSplit",
+    "issue": 118
+  },
+  {
+    "name": "全角・半角変換",
+    "module": "ascii_width",
+    "kind": "experimental.ascii-width",
+    "struct": "AsciiWidth",
+    "issue": 184
+  },
+  {
+    "name": "句読点変換",
+    "module": "japanese_punctuation",
+    "kind": "experimental.japanese-punctuation",
+    "struct": "JapanesePunctuation",
+    "issue": 186
+  },
+  {
+    "name": "上位N件抽出",
+    "module": "choice_top_n",
+    "kind": "experimental.choice-top-n",
+    "struct": "ChoiceTopN",
+    "issue": 69
+  },
+  {
+    "name": "候補並べ替え",
+    "module": "choice_sort",
+    "kind": "experimental.choice-sort",
+    "struct": "ChoiceSort",
+    "issue": 70
+  },
+  {
+    "name": "候補数制限",
+    "module": "choice_limit",
+    "kind": "experimental.choice-limit",
+    "struct": "ChoiceLimit",
+    "issue": 71
+  },
+  {
+    "name": "スコア閾値フィルター",
+    "module": "choice_threshold",
+    "kind": "experimental.choice-threshold",
+    "struct": "ChoiceThreshold",
+    "issue": 72
+  },
+  {
+    "name": "候補削除",
+    "module": "choice_remove",
+    "kind": "experimental.choice-remove",
+    "struct": "ChoiceRemove",
+    "issue": 73
+  },
+  {
+    "name": "スコア付与",
+    "module": "score_set",
+    "kind": "experimental.score-set",
+    "struct": "ScoreSet",
+    "issue": 74
+  },
+  {
+    "name": "スコア加算",
+    "module": "score_add",
+    "kind": "experimental.score-add",
+    "struct": "ScoreAdd",
+    "issue": 75
+  },
+  {
+    "name": "スコア乗算",
+    "module": "score_multiply",
+    "kind": "experimental.score-multiply",
+    "struct": "ScoreMultiply",
+    "issue": 76
+  },
+  {
+    "name": "スコア正規化",
+    "module": "score_normalize",
+    "kind": "experimental.score-normalize",
+    "struct": "ScoreNormalize",
+    "issue": 77
+  },
+  {
+    "name": "Choice展開",
+    "module": "choice_extract",
+    "kind": "experimental.choice-extract",
+    "struct": "ChoiceExtract",
+    "issue": 78
+  },
+  {
+    "name": "Sequence展開",
+    "module": "sequence_extract",
+    "kind": "experimental.sequence-extract",
+    "struct": "SequenceExtract",
+    "issue": 79
+  },
+  {
+    "name": "パススルー",
+    "module": "packet_passthrough",
+    "kind": "experimental.packet-passthrough",
+    "struct": "PacketPassthrough",
+    "issue": 80
+  },
+  {
+    "name": "候補木の深さ制限",
+    "module": "packet_depth_limit",
+    "kind": "experimental.packet-depth-limit",
+    "struct": "PacketDepthLimit",
+    "issue": 81
+  },
+  {
+    "name": "候補木再構築",
+    "module": "packet_rebuild",
+    "kind": "experimental.packet-rebuild",
+    "struct": "PacketRebuild",
+    "issue": 82
+  },
+  {
+    "name": "Choice生成",
+    "module": "choice_build",
+    "kind": "experimental.choice-build",
+    "struct": "ChoiceBuild",
+    "issue": 111
+  },
+  {
+    "name": "候補統合",
+    "module": "choice_merge",
+    "kind": "experimental.choice-merge",
+    "struct": "ChoiceMerge",
+    "issue": 114
+  },
+  {
+    "name": "Sequence生成",
+    "module": "sequence_build",
+    "kind": "experimental.sequence-build",
+    "struct": "SequenceBuild",
+    "issue": 115
+  }
+]

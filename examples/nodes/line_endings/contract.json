@@ -1,0 +1,53 @@
+{
+  "kind": "experimental.line-endings",
+  "version": 1,
+  "defaultConfig": {
+    "style": "lf"
+  },
+  "cases": [
+    {
+      "input": "a\r\nb\rc\n",
+      "config": {
+        "style": "lf"
+      },
+      "expected": "a\nb\nc\n"
+    },
+    {
+      "input": "a\r\nb\n",
+      "config": {
+        "style": "crlf"
+      },
+      "expected": "a\r\nb\r\n"
+    },
+    {
+      "input": "a\nb",
+      "config": {
+        "style": "cr"
+      },
+      "expected": "a\rb"
+    },
+    {
+      "input": "a\r\nb\rc\n",
+      "config": {
+        "style": "remove"
+      },
+      "expected": "abc"
+    },
+    {
+      "input": "😀 か",
+      "config": {
+        "style": "lf"
+      },
+      "expected": "😀 か"
+    },
+    {
+      "input": "",
+      "config": {
+        "style": "lf"
+      },
+      "expected": ""
+    }
+  ],
+  "errorCases": [],
+  "invalidConfigs": []
+}
