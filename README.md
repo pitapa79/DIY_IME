@@ -52,6 +52,8 @@ Windows固有の隔離・配布テストは別途必要です。上のコマン�
 
 ## ドキュメント
 
+現行仕様と歴史的な参考資料の区別は[ドキュメント案内](docs/README.md)を参照してください。新リポジトリへの移行元・履歴の扱いは[移行記録](docs/migration.md)に記載しています。
+
 - [設計思想](docs/design-philosophy.md)
 - [コア設計](docs/core-architecture-v0.1.md)
 - [ノードの分類](docs/node-classification.md)
