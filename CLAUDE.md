@@ -1,75 +1,40 @@
-# DIY_IME2 — Claudeの開始入口
+# DIY_IME — Claudeの作業入口
 
-ユーザーは、リポジトリへアクセスできるClaudeに次の一文で依頼できます。
+ユーザーはリポジトリにアクセスできるClaudeへ「CLAUDE.mdを読んで、Issue #番号を開始して」と依頼できます。**現在の作業先は `pitapa79/DIY_IME` です。** 旧 `DIY_IME2` へ誤ってpushしないでください。
 
-> CLAUDE.mdを読んで、Issue #<番号>を開始して。
+権限・承認・マージ条件は[開発ガバナンス v1](docs/development-governance.md)、エージェント共通ルールは[AGENTS.md](AGENTS.md)、具体的な並行作業は[docs/parallel-development.md](docs/parallel-development.md)を正本として参照します。このファイルはClaude向けの起動手順だけを定めます。
 
-リポジトリは pitapa79/DIY_IME2。以下はClaude自身が行う手順です。
-Codexが記入した長い依頼文を、毎回ユーザーが用意する必要はありません。
-Git・GitHub CLI・Rust・Node.jsを使い、Codex固有のアプリ機能は前提にしません。
+## 1. Issueを確認する
 
-## 1. Issueと開始条件を確認する
-
-[AGENTS.md](AGENTS.md)と、そこに指定された設計思想・並行開発・ノード契約・実行時入力の文書を読む。
-続いて対象Issueの本文・コメント・参照契約・依存PRを確認する。
-
-~~~powershell
-gh issue view <番号> --repo pitapa79/DIY_IME2 --comments
-gh pr list --repo pitapa79/DIY_IME2 --state open
-~~~
-
-- 閉じたIssueは再実装・再オープンしない。完了済みと報告する。追加改善なら新Issueへ分ける。
-- 同じIssueの既存PR・担当開始コメント・worktreeを確認する。他担当が作業中なら重複着手せず引継ぎを確認する。
-- 再開の依頼なら既存PRの引継ぎSHA・残作業を使う。新規タスク用のmain開始手順で上書きしない。
-- ユーザーの開始依頼は、そのIssueの確定済み範囲の実装依頼。未採用の候補・提案を勝手に採用する許可ではない。
-- [軽量キットの適格性](docs/lightweight-node-kit.md)を確認する。仕様、所有パス、正式な期待値、依存が確定していれば自分で準備して進める。開始SHA・専用worktreeは次節で準備し、実装前に全項目を満たす。
-- 不足・矛盾・未解消依存があれば、必要な点だけをユーザーへ報告してCodexへ戻す。推測実装しない。
-- 軽量キットの対象外のタスクは、この手順で担当範囲を広げず、Codexへの割当を依頼する。
-
-## 2. 専用worktreeと開始記録を作る
-
-ユーザーから完全SHA・ブランチ・作業フォルダーが指定されている場合はそれを使う。
-originがpitapa79/DIY_IME2を指すことを確認する。違うリポジトリや既存の未コミット変更を上書きしない。
-指定がない新規タスクはorigin/mainを取得し、開始点の完全SHAを固定する。
-
-~~~powershell
+```powershell
+gh issue view <番号> --repo pitapa79/DIY_IME --comments
+gh pr list --repo pitapa79/DIY_IME --state open
 git remote -v
+```
+
+- Issueの承認済み仕様、受け入れ条件、依存、既存PR、担当者を確認します。Issueの存在だけで新機能の実装許可があると判断しないでください。
+- 既存仕様内のBug/Documentation/Test、条件を満たすMaintenance/Performanceはガバナンスに従って自主着手できます。
+- 機能追加、仕様変更、権限・隔離等の信頼境界変更には事前承認が必要です。
+- 旧DIY_IME2のIssue番号は新DIY_IMEのIssue番号ではありません。
+- Node側の個別処理実装は別リポジトリ `DIY_IME2_node` の責務であり、本体へ戻さないでください。Node作業を依頼されたらNodeリポジトリ側の現行ルールを確認してください。
+
+## 2. 作業場所を確定する
+
+```powershell
 git fetch origin main
 git rev-parse origin/main
 git worktree list
-~~~
+```
 
-このSHAから、新しい codex/<番号>-<変更名> ブランチと専用worktreeを用意する。
-同じ作業フォルダーで他担当のブランチを切り替えない。既存パス・ブランチがあれば上書きやresetをせず、
-対象Issueの途中作業か確認する。以後は専用worktreeだけで編集・検査する。
+既存PRを再開する場合はその引継ぎSHAを優先します。新規タスクは現在のmainの完全SHAから専用のブランチとworktreeを用意し、開始記録をIssue/PRに残します。別担当の作業場所や未コミット変更を上書きしてはいけません。
 
-[短い作業指示の項目](dev/node-kit/claude-task.md)を、Issueと確定済み契約から自分で埋める。
-開始SHA・ブランチ・絶対パス・所有パス・入力/出力/設定/境界・対象テスト・依存を記録する。
-仕様の採否はユーザーが決める。自分で埋めるのは確定済み情報と作業場所であり、未決定仕様ではない。
-Issueへ担当開始と開始SHAをコメントし、上記の情報を最初のPR本文へ残す。
-空欄が残る場合は実装に進まず、不足を報告する。
+## 3. 実装・検査・PR
 
-## 3. 実装・対象テスト・PRを進める
+- 担当範囲のみ実装し、正式な契約・セキュリティ境界を弱めないでください。依存変更が必要ならIssue/PRで分離します。
+- 早い段階でDraft PRを作成し、変更、検査結果、残作業を記録します。
+- Rust、Editor、Windows境界の必要な検査はガバナンスとAGENTS.mdに従います。
+- 自己レビューは独立レビューに数えません。Codexなど別のAIへ独立レビューを依頼する場合も、担当範囲と許可条件を守ってください。
+- **Level 1のみ**共通条件を満たす場合にAIマージ可能。Level 2はメンテナーのマージ判断が必要、Level 3は事前の仕様承認とマージ承認が必要です。外部PRは自動マージしません。
+- 中断する場合、HEAD SHA、成功/失敗した検査、未完了作業をPRに残してください。
 
-新規の小規模ノードは、専用worktreeで必要に応じてキットを生成する。
-
-~~~powershell
-node scripts/new-node-kit.mjs <name>
-cargo test --locked --test nodes_<name>
-~~~
-
-既存ノードの修正では生成せず、担当ファイルを編集する。
-雛形の処理・kind・ja/Text/{}・契約サンプルは製品仕様ではない。
-Issueの承認済み仕様と正式fixtureへ実装・照合テストを合わせる。
-最初の小さな差分をコミット・pushし、実装を仕上げる前にDraft PRを作ってIssueへリンクする。
-
-変更は担当の src/nodes/<name>/、tests/nodes_<name>.rs、examples/nodes/<name>/に限定する。
-正式契約の期待値を弱めない。共通API・依存関係・UI・標準Registryを編集しない。
-別ノードや他エージェントを起動しない。mainへのマージはしない。
-共通変更や未確定仕様が必要になったら、そこでCodexへ戻す。
-
-対象テストを実行し、PRへ変更内容・実行結果・未実行検査・制限・引継ぎSHAを残す。
-完了するPRはCloses #番号、途中の依存PRはRefs #番号を使う。
-独立レビュー・全体test/fmt/clippy・共通登録・統合はCodex/CIへ引き渡す。
-中断時も可能なら途中コミットをpushし、失敗テスト・残作業・未コミット/未push差分をPRへ記録する。
-詳細は[キットの引継ぎ手順](docs/lightweight-node-kit.md)を参照する。
+既存の軽量Nodeキットや旧初期タスクの手順は、現在の本体への新Node追加の許可ではありません。
