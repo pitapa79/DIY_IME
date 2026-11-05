@@ -1,10 +1,27 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfiguration} from './benchmark-windows-application.mjs';
+import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfiguration,pairedSchedule} from './benchmark-windows-application.mjs';
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
 
 function tracePage(events,dropped=0){return {...emptyTrace(),recordingId:'a'.repeat(32),nowUs:'100000',firstSequence:String(events[0]?.sequence??0),nextSequence:String(events.at(-1)?.sequence??0),events,dropped};}
+test('paired comparison balances order while holding the case fixed within each adjacent pair',()=>{
+ const schedule=pairedSchedule(3,100);assert.equal(schedule.length,300);
+ for(let group=1;group<=3;group++){
+  const entries=schedule.filter(p=>p.group===group);assert.equal(entries.length,100);
+  assert.equal(entries.filter(p=>p.modes[0]===0).length,50);
+  assert.equal(entries.filter(p=>p.modes[0]===1).length,50);
+  assert.deepEqual(entries.map(p=>p.pair),Array.from({length:100},(_,i)=>i+1));
+  for(const entry of entries){assert.deepEqual([...entry.modes].sort(),[0,1]);assert.equal(entry.caseIndex,(entry.pair-1)%6);}
+  for(let caseIndex=0;caseIndex<6;caseIndex++){
+   const sameCase=entries.filter(p=>p.caseIndex===caseIndex);
+   assert(Math.abs(sameCase.filter(p=>p.modes[0]===0).length-sameCase.filter(p=>p.modes[0]===1).length)<=1);
+   for(let i=1;i<sameCase.length;i++)assert.notEqual(sameCase[i].modes[0],sameCase[i-1].modes[0]);
+  }
+ }
+ assert.notDeepEqual(schedule[0].modes,schedule[100].modes);
+ for(const [groups,samples] of [[0,100],[4,100],[3,99],[3,0],[3,Infinity]])assert.throws(()=>pairedSchedule(groups,samples),/paired-count/);
+});
 function event(sequence,at,event,node='1:1',worker){return {sequence:String(sequence),atUs:String(at),run:1,plan:1,node,nodeKind:'test.worker',nodeVersion:1,event,...(worker?{worker}:{})};}
 test('profiles concurrent Host intervals across pages and Worker-local clocks independently',()=>{
  const p=new PhaseProfiler('host-detailed');

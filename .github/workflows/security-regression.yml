@@ -108,6 +108,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/benchmark-windows-application.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app') --samples 6 --warmups 0 --trace 2 | Set-Content target/windows-detailed-trace-smoke.json -Encoding utf8
           exit $LASTEXITCODE
+      - name: Adjacent OFF and basic trace comparison smoke
+        run: |
+          node --input-type=module -e "import assert from 'node:assert/strict'; import {benchmark} from './scripts/benchmark-windows-application.mjs'; const report=await benchmark({folder:'target/windows-app',samples:2,warmups:0,pollMs:5,trace:0,pairedGroups:1}); assert.equal(report.pairs.length,2); assert.equal(report.diagnostics[1].recordings,3); assert.equal(report.checks.trueClose,true);"
+          exit $LASTEXITCODE
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
