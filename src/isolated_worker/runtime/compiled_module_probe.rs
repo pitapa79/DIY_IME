@@ -199,8 +199,10 @@ fn invoke(
     }
     let host_us = started.elapsed().as_micros();
     if mode.starts_with("ready-") {
-        let [prepare, delivered_to_result, delivered_to_exit] =
-            receipt.prepared_micros.expect("readiness and delivery");
+        let [prepare, delivered_to_result, delivered_to_exit] = **receipt
+            .prepared_micros
+            .as_ref()
+            .expect("readiness and delivery");
         let [_, _, pipe_join] = receipt.phase_micros.expect("resumed probe");
         println!(
             "{mode} prepare_us={prepare} delivered_to_result_us={delivered_to_result} delivered_to_exit_us={delivered_to_exit} pipe_join_us={pipe_join}"

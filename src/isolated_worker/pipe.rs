@@ -85,7 +85,7 @@ pub struct ExitReceipt {
     #[cfg(test)]
     pub(super) phase_micros: Option<[u128; 3]>,
     #[cfg(test)]
-    pub(super) prepared_micros: Option<[u128; 3]>,
+    pub(super) prepared_micros: Option<Box<[u128; 3]>>,
 }
 impl ExitReceipt {
     pub(super) fn diagnostics(&self) -> Option<&Result<Vec<u8>, ()>> {
@@ -195,11 +195,11 @@ impl<'a> Running<'a> {
             prepared_micros: self.delivery.as_ref().and_then(|delivery| {
                 let clocks = delivery.lock().unwrap();
                 let sent = clocks.sent?;
-                Some([
+                Some(Box::new([
                     (sent - self.launch_started).as_micros(),
                     (clocks.response? - sent).as_micros(),
                     (signalled - sent).as_micros(),
-                ])
+                ]))
             }),
             #[cfg(test)]
             phase_micros: self.resumed.map(|resumed| {
