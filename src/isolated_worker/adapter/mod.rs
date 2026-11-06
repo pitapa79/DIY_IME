@@ -81,20 +81,21 @@ struct Image {
     runtime_files: Arc<std::sync::Mutex<Option<Arc<CodeFiles>>>>,
     module_files: std::sync::Mutex<Option<Arc<CodeFiles>>>,
     code_budget: Arc<CodeBudget>,
-    #[cfg(feature = "compiled-module-probe")]
-    compiled_probe: Arc<std::sync::Mutex<Option<CompiledProbe>>>,
+    compiled: Option<Arc<std::sync::Mutex<CompiledState>>>,
 }
-#[cfg(feature = "compiled-module-probe")]
-struct CompiledProbe {
+struct CompiledAsset {
     files: Arc<CodeFiles>,
     len: usize,
     digest: String,
 }
+enum CompiledState {
+    Pending,
+    Ready(CompiledAsset),
+    Unavailable,
+}
 enum WorkerImage {
     Jit,
-    #[cfg(feature = "compiled-module-probe")]
     Compile,
-    #[cfg(feature = "compiled-module-probe")]
     Reuse(Arc<CodeFiles>, usize, String),
 }
 /// Paths are chosen by trusted Host installation code, never package/Node fields.
@@ -450,9 +451,16 @@ impl WasmArtifact {
             code_budget: Arc::new(CodeBudget::default()),
             runtime_files: Arc::new(std::sync::Mutex::new(None)),
             module_files: std::sync::Mutex::new(None),
-            #[cfg(feature = "compiled-module-probe")]
-            compiled_probe: Arc::new(std::sync::Mutex::new(None)),
+            compiled: None,
         })))
+    }
+    pub(super) fn enable_official_compilation(mut self) -> Self {
+        if !cfg!(feature = "compiled-module-jit-baseline") {
+            Arc::get_mut(&mut self.0)
+                .expect("new Host runtime")
+                .compiled = Some(Arc::new(std::sync::Mutex::new(CompiledState::Pending)));
+        }
+        self
     }
     /// Reuse the captured Host Worker/DLL bytes for another package module.
     pub fn with_module(&self, module: Vec<u8>, policy: WorkerPolicy) -> Result<Self, CoreError> {
@@ -487,8 +495,7 @@ impl WasmArtifact {
             code_budget: self.0.code_budget.clone(),
             runtime_files: self.0.runtime_files.clone(),
             module_files: std::sync::Mutex::new(None),
-            #[cfg(feature = "compiled-module-probe")]
-            compiled_probe: self.0.compiled_probe.clone(),
+            compiled: self.0.compiled.clone(),
         })))
     }
     pub fn identity(&self) -> &str {
@@ -528,43 +535,62 @@ impl WasmArtifact {
             return Err(fail("worker-request", "request exceeds guest wire limit"));
         }
         self.0.requests.fetch_add(1, Ordering::AcqRel);
-        let image = WorkerImage::Jit;
-        #[cfg(feature = "compiled-module-probe")]
-        let image = if self.0.identity.rsplit(':').next()
-            == Some(super::runtime::OFFICIAL_PROBE_HASH)
-            && self.0.policy.fuel_per_call == Some(50_000_000)
-            && self.0.policy.wasm_memory_bytes == Some(128 * 1024 * 1024)
+        let image = self.worker_image(&cancel);
+        self.call_worker(bytes, cancel, invocation, instance, image)
+    }
+
+    fn worker_image(&self, cancel: &CancellationToken) -> WorkerImage {
+        let Some(compiled) = &self.0.compiled else {
+            return WorkerImage::Jit;
+        };
+        if self.0.identity.rsplit(':').next() != Some(super::runtime::OFFICIAL_WASM_HASH)
+            || self.0.policy.fuel_per_call != Some(50_000_000)
+            || self.0.policy.wasm_memory_bytes != Some(128 * 1024 * 1024)
+            || cancel.is_cancelled()
         {
-            let mut captured = self
-                .0
-                .compiled_probe
-                .lock()
-                .map_err(|_| fail("worker-probe", "compiled probe owner unavailable"))?;
-            if captured.is_none() {
-                let artifact =
-                    self.call_worker(Vec::new(), cancel.clone(), None, 0, WorkerImage::Compile)?;
-                let digest = sha256(&artifact)?;
-                let files = Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[("node.cwasm", &artifact)],
-                    &self.0.code_budget,
-                )?);
-                *captured = Some(CompiledProbe {
-                    files,
-                    len: artifact.len(),
-                    digest,
-                });
+            return WorkerImage::Jit;
+        }
+        // A different call preparing the asset does not hold up this call.
+        let Ok(mut captured) = compiled.try_lock() else {
+            return WorkerImage::Jit;
+        };
+        if matches!(*captured, CompiledState::Pending) {
+            let prepared = self.compile_official_asset(cancel);
+            if cancel.is_cancelled() {
+                // Withdrawal must not disable compilation for a later caller.
+                return WorkerImage::Jit;
             }
-            let artifact = captured.as_ref().expect("captured probe artifact");
+            *captured = prepared.map_or(CompiledState::Unavailable, CompiledState::Ready);
+        }
+        if let CompiledState::Ready(artifact) = &*captured {
             WorkerImage::Reuse(
                 artifact.files.clone(),
                 artifact.len,
                 artifact.digest.clone(),
             )
         } else {
-            image
-        };
-        self.call_worker(bytes, cancel, invocation, instance, image)
+            WorkerImage::Jit
+        }
+    }
+
+    fn compile_official_asset(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<CompiledAsset, CoreError> {
+        // This process is compile-only and receives no guest input. A failed
+        // preparation may fall back to JIT; guest execution is never retried.
+        let bytes = self.call_worker(Vec::new(), cancel.clone(), None, 0, WorkerImage::Compile)?;
+        let digest = sha256(&bytes)?;
+        let files = Arc::new(CodeFiles::new(
+            &self.0.workspace,
+            &[("node.cwasm", &bytes)],
+            &self.0.code_budget,
+        )?);
+        Ok(CompiledAsset {
+            files,
+            len: bytes.len(),
+            digest,
+        })
     }
 
     fn call_worker(
@@ -624,19 +650,17 @@ impl WasmArtifact {
         };
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
             WorkerImage::Jit => (raw_module()?, "node.wasm", self.0.module.len(), None),
-            #[cfg(feature = "compiled-module-probe")]
             WorkerImage::Compile => (
                 raw_module()?,
                 "node.wasm",
                 self.0.module.len(),
-                Some("--probe-compile".into()),
+                Some("--compile-official".into()),
             ),
-            #[cfg(feature = "compiled-module-probe")]
             WorkerImage::Reuse(files, len, digest) => (
                 files,
                 "node.cwasm",
                 len,
-                Some(format!("--probe-reuse={digest}")),
+                Some(format!("--compiled-official={digest}")),
             ),
         };
         let mut module_lease = module_files.lease(&profile)?;

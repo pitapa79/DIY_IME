@@ -7,7 +7,7 @@ const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 
 pub(super) fn compile(api: &Api, limits: &Limits, wasm: &[u8]) -> Result<Vec<u8>, String> {
     if digest(wasm)? != OFFICIAL_WASM_HASH {
-        return Err("unsupported probe module".into());
+        return Err("module does not match fixed official Wasm".into());
     }
     // Resolve before allocating engine resources. The DLL is already verified.
     let serialize: unsafe extern "C" fn(P, *mut Bytes) -> P =
@@ -29,7 +29,7 @@ pub(super) fn compile(api: &Api, limits: &Limits, wasm: &[u8]) -> Result<Vec<u8>
             api.check(serialize(module, &mut bytes), ptr::null_mut())?;
             let result = if bytes.data.is_null() || !(1..=MAX_ARTIFACT_BYTES).contains(&bytes.size)
             {
-                Err("probe artifact exceeds bound".into())
+                Err("compiled artifact exceeds bound".into())
             } else {
                 Ok(std::slice::from_raw_parts(bytes.data, bytes.size).to_vec())
             };
@@ -70,13 +70,14 @@ pub(super) fn load<'a>(
 }
 
 fn digest(bytes: &[u8]) -> Result<String, String> {
-    crate::isolated_worker::adapter::sha256(bytes).map_err(|_| "probe SHA-256 failed".into())
+    crate::isolated_worker::adapter::sha256(bytes)
+        .map_err(|_| "compiled asset SHA-256 failed".into())
 }
 
 unsafe fn symbol<T: Copy>(api: &Api, name: &CStr) -> Result<T, String> {
     let pointer = unsafe { super::GetProcAddress(api._library.0, name.as_ptr().cast()) };
     if pointer.is_null() || std::mem::size_of::<T>() != std::mem::size_of_val(&pointer) {
-        return Err("probe API unavailable".into());
+        return Err("compiled module API unavailable".into());
     }
     // SAFETY: callers select the exact export signature from the pinned C API.
     Ok(unsafe { std::mem::transmute_copy(&pointer) })

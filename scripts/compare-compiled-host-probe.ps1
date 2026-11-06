@@ -1,9 +1,11 @@
 param(
   [Parameter(Mandatory)][string]$Bundle,
-  [ValidateRange(1, 1000)][int]$Rounds = 1
+  [ValidateRange(1, 10)][int]$Rounds = 1,
+  [ValidateRange(2, 10)][int]$Sessions = 2
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Sessions % 2 -ne 0) { throw 'Use an even session count to balance order' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $bundlePath = (Resolve-Path -LiteralPath $Bundle).Path
 $manifestPath = Join-Path $bundlePath 'bundle-manifest.json'
@@ -29,7 +31,7 @@ Push-Location $root
 try {
   foreach ($mode in @('reuse', 'jit')) {
     $features = @()
-    if ($mode -eq 'reuse') { $features = @('--features', 'compiled-module-probe') }
+    if ($mode -eq 'jit') { $features = @('--features', 'compiled-module-jit-baseline') }
     cargo build --locked --release --target-dir (Join-Path $root 'target') @features @bins
     if ($LASTEXITCODE -ne 0) { throw "Could not build $mode" }
     $folder = Join-Path $output $mode
@@ -48,11 +50,14 @@ try {
     $copy | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $folder 'bundle-manifest.json') -Encoding utf8
   }
 
-  foreach ($mode in @('jit', 'reuse')) {
-    $folder = Join-Path $output $mode
-    $report = & (Join-Path $folder 'runtime/node.exe') scripts/benchmark-windows-application.mjs $folder --host-input-rounds $Rounds
-    if ($LASTEXITCODE -ne 0) { throw "Host comparison failed for $mode" }
-    $report | Set-Content -LiteralPath (Join-Path $output "$mode.json") -Encoding utf8
+  for ($session = 1; $session -le $Sessions; $session++) {
+    $order = if ($session % 2 -eq 1) { @('jit', 'reuse') } else { @('reuse', 'jit') }
+    foreach ($mode in $order) {
+      $folder = Join-Path $output $mode
+      $report = Join-Path $output "$session-$mode.json"
+      python scripts/measure-windows-benchmark-job.py $folder $report $Rounds
+      if ($LASTEXITCODE -ne 0) { throw "Host comparison failed for session $session $mode" }
+    }
   }
   Write-Output $output
 } finally {
