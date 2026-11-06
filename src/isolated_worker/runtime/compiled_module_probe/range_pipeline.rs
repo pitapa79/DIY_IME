@@ -29,6 +29,9 @@ const PAYLOAD: u8 = ASSET + 1;
 const PAYLOAD_PAGE: usize = 4096;
 const GROUPS: u64 = 2;
 const BAD_PAGE: u8 = 254;
+const CRASH_AFTER_REPLY: u8 = 253;
+const CHECKED_REPLY: u8 = 19;
+const FAULT_EXIT: u32 = 73;
 
 fn key(reading: &str) -> u64 {
     reading.bytes().fold(0u64, |hash, byte| {
@@ -110,7 +113,8 @@ fn child() {
     let mut tag = [0];
     while input.read(&mut tag).unwrap() != 0 {
         let fault = tag[0] == BAD_PAGE;
-        let (reading, _, _) = CASES[if fault { 0 } else { tag[0] as usize }];
+        let crash = tag[0] == CRASH_AFTER_REPLY;
+        let (reading, _, _) = CASES[if fault || crash { 0 } else { tag[0] as usize }];
         let raw = invoke_fresh(&mut official, &limits, &romaji_request(reading));
         let romaji: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(romaji["ok"], true);
@@ -156,6 +160,12 @@ fn child() {
             .unwrap();
         output.write_all(&reply).unwrap();
         output.flush().unwrap();
+        if crash {
+            let mut acknowledgement = [0];
+            input.read_exact(&mut acknowledgement).unwrap();
+            assert_eq!(acknowledgement, [CHECKED_REPLY]);
+            std::process::exit(FAULT_EXIT as i32);
+        }
     }
 }
 
@@ -174,6 +184,7 @@ enum Boundary {
     Protect,
     RevokeDictionary,
     InvalidPayload,
+    CrashAfterReply,
 }
 
 impl Boundary {
@@ -252,11 +263,13 @@ fn exchange(
                 output.read_exact(&mut reply)?;
                 let received = Instant::now();
                 let actual: Value = serde_json::from_slice(&reply)?;
-                let (_, kana, text) = CASES[sample.tag as usize];
-                assert_eq!(
-                    actual,
-                    json!([kana, expected_choice(sample.tag as usize), text])
-                );
+                let tag = if sample.tag == CRASH_AFTER_REPLY {
+                    0
+                } else {
+                    sample.tag as usize
+                };
+                let (_, kana, text) = CASES[tag];
+                assert_eq!(actual, json!([kana, expected_choice(tag), text]));
                 if request == 0 {
                     match boundary {
                         Boundary::Supersede => context.generation += 1,
@@ -280,6 +293,10 @@ fn exchange(
                     bytes,
                     reads,
                 ));
+                if boundary == Boundary::CrashAfterReply {
+                    input.write_all(&[CHECKED_REPLY])?;
+                    input.flush()?;
+                }
                 break;
             }
             if boundary == Boundary::Cancel
@@ -356,20 +373,27 @@ fn run(
         walltime: Some(Duration::from_secs(30)),
         ..RunControl::default()
     };
-    let ended = {
+    let (ended, normal_exit) = {
         let Outcome::Exited(receipt) =
             execute_observed(scope, exe, &args, Vec::new(), &control).unwrap()
         else {
             panic!("missing physical exit receipt")
         };
+        let normal_exit = receipt.reason() == EndReason::Exited
+            && receipt.exit_code() == Some(0)
+            && receipt.output().is_ok()
+            && receipt.input_delivered();
         if boundary.stops_worker() {
             assert!(receipt.output().is_err());
-        } else {
+        } else if boundary == Boundary::CrashAfterReply {
             assert_eq!(receipt.reason(), EndReason::Exited);
-            assert_eq!(receipt.exit_code(), Some(0));
+            assert_eq!(receipt.exit_code(), Some(FAULT_EXIT));
             assert!(receipt.output().is_ok());
+            assert!(receipt.input_delivered());
+        } else {
+            assert!(normal_exit);
         }
-        receipt.signalled_at
+        (receipt.signalled_at, normal_exit)
     };
     let (cpu, peak) = job_usage(&job);
     drop(job);
@@ -377,7 +401,7 @@ fn run(
     profile.delete().unwrap();
     let measured = observations.lock().unwrap();
     let expected = match boundary {
-        Boundary::None => count,
+        Boundary::None | Boundary::CrashAfterReply => count,
         Boundary::Supersede => count - 1,
         _ => 0,
     };
@@ -402,6 +426,19 @@ fn run(
         measured.rejected_replies,
         measured.denied_reads,
     );
+    if boundary == Boundary::CrashAfterReply {
+        let [(_, sent, received, _, _)] = measured.samples.as_slice() else {
+            panic!("missing verified reply");
+        };
+        assert!(ended > *received);
+        assert!(!normal_exit);
+        println!(
+            "reply-exit-boundary retained={retained} correct_reply=1 normal_exit=0 reply_us={} reply_to_exit_us={} exit_code={FAULT_EXIT}",
+            received.duration_since(*sent).as_micros(),
+            ended.duration_since(*received).as_micros(),
+        );
+        return;
+    }
     let withdraw = boundary.stops_worker();
     println!(
         "pipeline-process retained={retained} interval={interval} ready_us={} cpu_100ns={cpu} peak_bytes={peak} withdrawn={withdraw}",
@@ -555,6 +592,22 @@ fn range_pipeline_cost() {
                 .map(|&tag| Sample { tag, planned: None })
                 .collect();
             run(&cache, &exe, (&file, &payload), samples, 0, true, boundary);
+        }
+    }
+    for retained in [false, true] {
+        for _ in 0..5 {
+            run(
+                &cache,
+                &exe,
+                (&file, &payload),
+                vec![Sample {
+                    tag: CRASH_AFTER_REPLY,
+                    planned: None,
+                }],
+                0,
+                retained,
+                Boundary::CrashAfterReply,
+            );
         }
     }
     drop(file);
