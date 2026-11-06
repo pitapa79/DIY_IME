@@ -18,6 +18,8 @@ const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
 
+mod prepared_graph;
+
 fn digest(bytes: &[u8]) -> String {
     crate::isolated_worker::adapter::sha256(bytes).expect("probe SHA-256")
 }
@@ -75,6 +77,16 @@ fn child() {
     let prepared_artifact = mode
         .ends_with("-guest")
         .then(|| fs::read("prepared.cwasm").unwrap());
+    let ready_module = (mode == "ready-module-guest").then(|| {
+        let expected = fs::read_to_string("artifact.sha256").unwrap();
+        compiled_module::prepare_for_probe(
+            api.as_ref().unwrap(),
+            &limits(),
+            prepared_artifact.as_ref().unwrap(),
+            &expected,
+        )
+        .unwrap()
+    });
     if mode.starts_with("ready-") {
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(PROBE_READY).unwrap();
@@ -110,6 +122,20 @@ fn child() {
     } else if mode == "persistent-state" {
         assert!(input.is_empty());
         state_probe(api.as_ref().unwrap())
+    } else if let Some(mut runtime) = ready_module {
+        runtime.instantiate().unwrap();
+        runtime.invoke(&input).unwrap()
+    } else if mode == "ready-module-control-guest" {
+        let expected = fs::read_to_string("artifact.sha256").unwrap();
+        let mut runtime = compiled_module::load(
+            api.as_ref().unwrap(),
+            &limits(),
+            None,
+            prepared_artifact.as_ref().unwrap(),
+            &expected,
+        )
+        .unwrap();
+        runtime.invoke(&input).unwrap()
     } else {
         let api = api.as_ref().unwrap();
         let mut runtime = match mode.as_str() {
@@ -308,7 +334,14 @@ fn invoke(
     }
     if matches!(
         mode,
-        "dll" | "transport" | "ready-dll" | "ready-transport" | "ready-guest" | "cold-guest"
+        "dll"
+            | "transport"
+            | "ready-dll"
+            | "ready-transport"
+            | "ready-guest"
+            | "cold-guest"
+            | "ready-module-guest"
+            | "ready-module-control-guest"
     ) {
         let [launch, running, join] = receipt.phase_micros.expect("resumed probe");
         println!("{mode} launch_us={launch} resumed_to_exit_us={running} pipe_join_us={join}");
@@ -337,7 +370,11 @@ fn invoke(
     assert!(receipt.input_delivered());
     let (cpu_100ns, peak_job_bytes) = usage.expect("successful probe usage");
     println!("{mode} cpu_100ns={cpu_100ns} peak_job_bytes={peak_job_bytes}");
-    let output = receipt.output().unwrap();
+    let (elapsed, reply) = probe_frame(receipt.output().unwrap());
+    Some((host_us, elapsed, reply.to_vec()))
+}
+
+fn probe_frame(output: &[u8]) -> (u64, &[u8]) {
     let start = output
         .windows(MARKER.len())
         .position(|bytes| bytes == MARKER)
@@ -346,11 +383,7 @@ fn invoke(
     let elapsed = u64::from_le_bytes(output[start..start + 8].try_into().unwrap());
     let len = u32::from_le_bytes(output[start + 8..start + 12].try_into().unwrap()) as usize;
     assert!((1..=CAP).contains(&len));
-    Some((
-        host_us,
-        elapsed,
-        output[start + 12..start + 12 + len].to_vec(),
-    ))
+    (elapsed, &output[start + 12..start + 12 + len])
 }
 
 fn job_usage(job: &Job) -> (i64, usize) {
@@ -503,6 +536,20 @@ fn prepared() {
 #[test]
 #[ignore = "requires fixed public Windows bundle and real AppContainer"]
 fn prepared_guest() {
+    compare_ready_guest(["ready-guest", "cold-guest"], &[("kanji", "かんじ")], 12);
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn prepared_module_guest() {
+    compare_ready_guest(
+        ["ready-module-guest", "ready-module-control-guest"],
+        &[("kanji", "かんじ"), ("kya", "きゃ"), ("sushi", "すし")],
+        24,
+    );
+}
+
+fn compare_ready_guest(modes: [&str; 2], cases: &[(&str, &str)], pairs: usize) {
     let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
     let mut naming_profile = Profile::new().unwrap();
     let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming_profile).unwrap();
@@ -518,18 +565,25 @@ fn prepared_guest() {
     let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
     let expected = digest(&artifact);
     let asset = cache.write("prepared.cwasm", &artifact).unwrap();
-    for pair in 0..12 {
+    for pair in 0..pairs {
+        let (input, expected_text) = cases[pair % cases.len()];
         let modes = if pair % 2 == 0 {
-            ["ready-guest", "cold-guest"]
+            modes
         } else {
-            ["cold-guest", "ready-guest"]
+            [modes[1], modes[0]]
         };
         for mode in modes {
-            let (_, _, reply) =
-                invoke(&cache, &exe, mode, vec![42; 32], Some(&expected), false).unwrap();
+            let input = match mode {
+                "ready-guest" | "cold-guest" => vec![42; 32],
+                _ => romaji_request(input),
+            };
+            let (_, _, reply) = invoke(&cache, &exe, mode, input, Some(&expected), false).unwrap();
             let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
             assert_eq!(reply["ok"], true);
-            assert_eq!(reply["data"]["out"]["packet"]["root"]["text"], "かんじ");
+            assert_eq!(
+                reply["data"]["out"]["packet"]["root"]["text"],
+                expected_text
+            );
         }
     }
     for path in [asset, wasm, dll, exe] {

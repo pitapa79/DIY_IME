@@ -413,6 +413,16 @@ impl<'a> Runtime<'a> {
         diagnostics: Option<&'a Recorder>,
         load: impl FnOnce(P, &mut P) -> Result<(), String>,
     ) -> Result<Self, String> {
+        let mut result = Self::prepare_module(api, limits, diagnostics, load)?;
+        result.instantiate()?;
+        Ok(result)
+    }
+    fn prepare_module(
+        api: &'a Api,
+        limits: &Limits,
+        diagnostics: Option<&'a Recorder>,
+        load: impl FnOnce(P, &mut P) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let engine_phase = diagnostics.map(|d| d.span(WorkerTracePhase::EngineSetup));
         let engine = create_engine(api, limits)?;
         let mut result = Self {
@@ -428,7 +438,6 @@ impl<'a> Runtime<'a> {
         result.install_store(limits)?;
         drop(engine_phase);
         load(engine, &mut result.module)?;
-        result.instantiate()?;
         Ok(result)
     }
     fn install_store(&mut self, limits: &Limits) -> Result<(), String> {
