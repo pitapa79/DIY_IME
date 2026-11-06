@@ -28,6 +28,11 @@ const CASES: [(&str, &str, &str); 4] = [
 ];
 const PAYLOAD: u8 = ASSET + 1;
 const PAYLOAD_PAGE: usize = 4096;
+const PAGES_PER_GROUP: usize = 2;
+const GROUP_BYTES: usize = PAYLOAD_PAGE * PAGES_PER_GROUP;
+const LENGTH_BYTES: usize = size_of::<u32>();
+const MAX_PAYLOAD: usize = GROUP_BYTES - LENGTH_BYTES;
+const MAX_REPLY: u64 = 16 * 1024;
 const GROUPS: u64 = 2;
 const BAD_PAGE: u8 = 254;
 const CRASH_AFTER_REPLY: u8 = 253;
@@ -47,7 +52,7 @@ struct CandidateEntry {
 }
 
 fn candidate_for(page: &[u8], reading: &str) -> io::Result<Option<Value>> {
-    if page.len() > PAYLOAD_PAGE {
+    if page.len() > MAX_PAYLOAD {
         return Err(io::Error::other("candidate page exceeds limit"));
     }
     let entries: Vec<CandidateEntry> = serde_json::from_slice(page.trim_ascii_end())?;
@@ -98,7 +103,7 @@ fn verifies_full_reading_after_hash_match() {
     });
     let duplicate = serde_json::to_vec(&entries).unwrap();
     assert!(candidate_for(&duplicate, &first).is_err());
-    assert!(candidate_for(&vec![b' '; PAYLOAD_PAGE + 1], &first).is_err());
+    assert!(candidate_for(&vec![b' '; MAX_PAYLOAD + 1], &first).is_err());
 }
 
 fn choice(options: Vec<Value>) -> Value {
@@ -113,7 +118,11 @@ fn expected_choice(tag: usize) -> Value {
             option("香水", Some(30.0)),
             option("洪水", Some(90.0)),
         ],
-        1 => vec![option("日本", Some(80.0)), option("二本", Some(55.0))],
+        1 => vec![
+            option("日本", Some(80.0)),
+            option(&"二".repeat(900), Some(55.0)),
+            option(&"本".repeat(900), Some(55.0)),
+        ],
         _ => vec![option(kana, None)],
     };
     choice(options)
@@ -136,7 +145,7 @@ fn candidate_page(
     reads: usize,
     cancel: &CancellationToken,
 ) -> io::Result<Vec<u8>> {
-    if page >= GROUPS || reads >= 16 || cancel.is_cancelled() {
+    if page >= GROUPS * PAGES_PER_GROUP as u64 || reads >= 16 || cancel.is_cancelled() {
         return Err(io::Error::other("candidate page denied"));
     }
     file.seek(SeekFrom::Start(page * PAYLOAD_PAGE as u64))?;
@@ -194,9 +203,19 @@ fn child() {
         let choice = if found == ABSENT {
             choice(vec![option(kana, None)])
         } else {
-            let page = if fault { GROUPS } else { found };
-            let bytes = request_page(&mut input, &mut output, PAYLOAD, page);
-            candidate_for(&bytes, kana)
+            let group = if fault { GROUPS } else { found };
+            let first_page = group.checked_mul(PAGES_PER_GROUP as u64).unwrap();
+            let mut bytes = request_page(&mut input, &mut output, PAYLOAD, first_page);
+            assert_eq!(bytes.len(), PAYLOAD_PAGE);
+            let length = u32::from_le_bytes(bytes[..LENGTH_BYTES].try_into().unwrap()) as usize;
+            assert!((1..=MAX_PAYLOAD).contains(&length));
+            let end = LENGTH_BYTES + length;
+            if end > PAYLOAD_PAGE {
+                let rest = request_page(&mut input, &mut output, PAYLOAD, first_page + 1);
+                assert_eq!(rest.len(), PAYLOAD_PAGE);
+                bytes.extend(rest);
+            }
+            candidate_for(&bytes[LENGTH_BYTES..end], kana)
                 .unwrap()
                 .unwrap_or_else(|| choice(vec![option(kana, None)]))
         };
@@ -247,6 +266,7 @@ enum Boundary {
     SwitchDocument,
     Protect,
     RevokeDictionary,
+    RevokePayload,
     InvalidPayload,
     CrashAfterReply,
 }
@@ -259,6 +279,7 @@ impl Boundary {
                 | Self::SwitchDocument
                 | Self::Protect
                 | Self::RevokeDictionary
+                | Self::RevokePayload
                 | Self::InvalidPayload
         )
     }
@@ -320,7 +341,7 @@ fn exchange(
             output.read_exact(&mut id)?;
             let index = integer(&mut output)?;
             if id[0] == 0 {
-                if cancel.is_cancelled() || index > 4096 {
+                if cancel.is_cancelled() || index > MAX_REPLY {
                     return Err(io::Error::other("result denied"));
                 }
                 let mut reply = vec![0; index as usize];
@@ -372,6 +393,9 @@ fn exchange(
                 return Err(io::Error::other("page access withdrawn"));
             }
             let page = if id[0] == PAYLOAD {
+                if boundary == Boundary::RevokePayload && index == 3 {
+                    cancel.cancel();
+                }
                 match candidate_page(&mut payload, index, reads, &cancel) {
                     Ok(bytes) => bytes,
                     Err(error) => {
@@ -481,7 +505,10 @@ fn run(
         measured.denied_reads,
         usize::from(matches!(
             boundary,
-            Boundary::Cancel | Boundary::RevokeDictionary | Boundary::InvalidPayload
+            Boundary::Cancel
+                | Boundary::RevokeDictionary
+                | Boundary::RevokePayload
+                | Boundary::InvalidPayload
         ))
     );
     println!(
@@ -562,9 +589,11 @@ fn range_pipeline_cost() {
             candidates: expected_choice(index),
         }])
         .unwrap();
-        assert!(group.len() <= PAYLOAD_PAGE);
+        assert!(group.len() <= MAX_PAYLOAD);
+        assert_eq!(group.len() + LENGTH_BYTES > PAYLOAD_PAGE, index == 1);
+        payload_bytes.extend((group.len() as u32).to_le_bytes());
         payload_bytes.extend(group);
-        payload_bytes.resize((index + 1) * PAYLOAD_PAGE, b' ');
+        payload_bytes.resize((index + 1) * GROUP_BYTES, b' ');
     }
     let mut payload_naming = Profile::new().unwrap();
     let payload_cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &payload_naming).unwrap();
@@ -648,11 +677,13 @@ fn range_pipeline_cost() {
             Boundary::SwitchDocument,
             Boundary::Protect,
             Boundary::RevokeDictionary,
+            Boundary::RevokePayload,
             Boundary::InvalidPayload,
         ] {
             let tags: &[u8] = match boundary {
                 Boundary::Supersede => &[0, 1],
                 Boundary::InvalidPayload => &[BAD_PAGE],
+                Boundary::RevokePayload => &[1],
                 _ => &[0],
             };
             let samples = tags
