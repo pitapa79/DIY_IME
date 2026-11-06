@@ -81,6 +81,21 @@ struct Image {
     runtime_files: Arc<std::sync::Mutex<Option<Arc<CodeFiles>>>>,
     module_files: std::sync::Mutex<Option<Arc<CodeFiles>>>,
     code_budget: Arc<CodeBudget>,
+    #[cfg(feature = "compiled-module-probe")]
+    compiled_probe: Arc<std::sync::Mutex<Option<CompiledProbe>>>,
+}
+#[cfg(feature = "compiled-module-probe")]
+struct CompiledProbe {
+    files: Arc<CodeFiles>,
+    len: usize,
+    digest: String,
+}
+enum WorkerImage {
+    Jit,
+    #[cfg(feature = "compiled-module-probe")]
+    Compile,
+    #[cfg(feature = "compiled-module-probe")]
+    Reuse(Arc<CodeFiles>, usize, String),
 }
 /// Paths are chosen by trusted Host installation code, never package/Node fields.
 /// All executable bytes are captured before validation, preventing later path replacement.
@@ -435,6 +450,8 @@ impl WasmArtifact {
             code_budget: Arc::new(CodeBudget::default()),
             runtime_files: Arc::new(std::sync::Mutex::new(None)),
             module_files: std::sync::Mutex::new(None),
+            #[cfg(feature = "compiled-module-probe")]
+            compiled_probe: Arc::new(std::sync::Mutex::new(None)),
         })))
     }
     /// Reuse the captured Host Worker/DLL bytes for another package module.
@@ -470,6 +487,8 @@ impl WasmArtifact {
             code_budget: self.0.code_budget.clone(),
             runtime_files: self.0.runtime_files.clone(),
             module_files: std::sync::Mutex::new(None),
+            #[cfg(feature = "compiled-module-probe")]
+            compiled_probe: self.0.compiled_probe.clone(),
         })))
     }
     pub fn identity(&self) -> &str {
@@ -503,13 +522,63 @@ impl WasmArtifact {
         if cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "Worker was not started"));
         }
-        let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let bytes = serde_json::to_vec(request)
             .map_err(|_| fail("worker-request", "request serialization failed"))?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(fail("worker-request", "request exceeds guest wire limit"));
         }
         self.0.requests.fetch_add(1, Ordering::AcqRel);
+        let image = WorkerImage::Jit;
+        #[cfg(feature = "compiled-module-probe")]
+        let image = if self.0.identity.rsplit(':').next()
+            == Some(super::runtime::OFFICIAL_PROBE_HASH)
+            && self.0.policy.fuel_per_call == Some(50_000_000)
+            && self.0.policy.wasm_memory_bytes == Some(128 * 1024 * 1024)
+        {
+            let mut captured = self
+                .0
+                .compiled_probe
+                .lock()
+                .map_err(|_| fail("worker-probe", "compiled probe owner unavailable"))?;
+            if captured.is_none() {
+                let artifact =
+                    self.call_worker(Vec::new(), cancel.clone(), None, 0, WorkerImage::Compile)?;
+                let digest = sha256(&artifact)?;
+                let files = Arc::new(CodeFiles::new(
+                    &self.0.workspace,
+                    &[("node.cwasm", &artifact)],
+                    &self.0.code_budget,
+                )?);
+                *captured = Some(CompiledProbe {
+                    files,
+                    len: artifact.len(),
+                    digest,
+                });
+            }
+            let artifact = captured.as_ref().expect("captured probe artifact");
+            WorkerImage::Reuse(
+                artifact.files.clone(),
+                artifact.len,
+                artifact.digest.clone(),
+            )
+        } else {
+            image
+        };
+        self.call_worker(bytes, cancel, invocation, instance, image)
+    }
+
+    fn call_worker(
+        &self,
+        bytes: Vec<u8>,
+        cancel: CancellationToken,
+        invocation: Option<&OwnedInvocation>,
+        instance: u32,
+        image: WorkerImage,
+    ) -> Result<Vec<u8>, CoreError> {
+        if cancel.is_cancelled() {
+            return Err(fail("worker-cancelled", "Worker was not started"));
+        }
+        let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let started = std::time::Instant::now();
         let mut profile = Profile::new().map_err(|_| {
             fail(
@@ -538,7 +607,7 @@ impl WasmArtifact {
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
-        let module_files = {
+        let raw_module = || {
             let mut captured = self
                 .0
                 .module_files
@@ -551,21 +620,42 @@ impl WasmArtifact {
                     &self.0.code_budget,
                 )?));
             }
-            captured.as_ref().expect("captured module").clone()
+            Ok::<_, CoreError>(captured.as_ref().expect("captured module").clone())
+        };
+        let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
+            WorkerImage::Jit => (raw_module()?, "node.wasm", self.0.module.len(), None),
+            #[cfg(feature = "compiled-module-probe")]
+            WorkerImage::Compile => (
+                raw_module()?,
+                "node.wasm",
+                self.0.module.len(),
+                Some("--probe-compile".into()),
+            ),
+            #[cfg(feature = "compiled-module-probe")]
+            WorkerImage::Reuse(files, len, digest) => (
+                files,
+                "node.cwasm",
+                len,
+                Some(format!("--probe-reuse={digest}")),
+            ),
         };
         let mut module_lease = module_files.lease(&profile)?;
-        let module = module_files.cache.path().join("node.wasm");
+        let module = module_files.cache.path().join(module_name);
         let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
             .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
         let option =
             |n: Option<u64>| OsString::from(n.map_or_else(|| "none".to_owned(), |n| n.to_string()));
-        let args = [
-            dll.into_os_string(),
-            module.into_os_string(),
-            OsString::from(self.0.module.len().to_string()),
-            option(self.0.policy.fuel_per_call),
-            option(self.0.policy.wasm_memory_bytes),
-        ];
+        let args: Vec<_> = flag
+            .into_iter()
+            .map(OsString::from)
+            .chain([
+                dll.into_os_string(),
+                module.into_os_string(),
+                OsString::from(module_len.to_string()),
+                option(self.0.policy.fuel_per_call),
+                option(self.0.policy.wasm_memory_bytes),
+            ])
+            .collect();
         let control = RunControl {
             cancel,
             walltime: self.0.policy.walltime,
