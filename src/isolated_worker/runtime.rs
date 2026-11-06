@@ -27,6 +27,11 @@ pub fn run_probe() -> Result<(), String> {
 }
 /// stdin-only worker, refusing ordinary-privilege invocation.
 pub fn run_worker() -> Result<(), String> {
+    require_appcontainer()?;
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    worker_with_args(args)
+}
+fn require_appcontainer() -> Result<(), String> {
     let mut token = std::ptr::null_mut();
     super::ok(
         unsafe {
@@ -52,7 +57,9 @@ pub fn run_worker() -> Result<(), String> {
     if container != 1 {
         return Err("OS isolation absent; refusing Worker invocation".into());
     }
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    Ok(())
+}
+fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args.len() != 5 && args.len() != 6 {
         return Err("expected runtime module module-length fuel memory".into());
     }
@@ -365,21 +372,26 @@ impl<'a> Runtime<'a> {
         limits: &Limits,
         diagnostics: Option<&'a Recorder>,
     ) -> Result<Self, String> {
+        Self::with_module(api, limits, diagnostics, |engine, result| {
+            // SAFETY: the module bytes remain live until compilation returns.
+            unsafe {
+                api.check(
+                    (api.module_new)(engine, module.as_ptr(), module.len(), result),
+                    ptr::null_mut(),
+                )
+            }
+        })
+    }
+    fn with_module(
+        api: &'a Api,
+        limits: &Limits,
+        diagnostics: Option<&'a Recorder>,
+        load: impl FnOnce(P, &mut P) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let engine_phase = diagnostics.map(|d| d.span(WorkerTracePhase::EngineSetup));
         // SAFETY: each object is owned by this Runtime, all handles belong to one Store.
         unsafe {
-            let config = (api.config_new)();
-            if config.is_null() {
-                return Err("config unavailable".into());
-            }
-            (api.fuel_enable)(config, limits.fuel.is_some());
-            // Fresh one-call Workers pay compilation on every invocation.
-            // WASMTIME_OPT_LEVEL_NONE (pinned config.h): keep Cranelift and fuel policy.
-            (api.opt_level)(config, 0);
-            let engine = (api.engine_new)(config);
-            if engine.is_null() {
-                return Err("engine unavailable".into());
-            }
+            let engine = create_engine(api, limits)?;
             let mut result = Self {
                 api,
                 engine,
@@ -408,10 +420,7 @@ impl<'a> Runtime<'a> {
             }
             drop(engine_phase);
             let compile_phase = diagnostics.map(|d| d.span(WorkerTracePhase::Compile));
-            api.check(
-                (api.module_new)(engine, module.as_ptr(), module.len(), &mut result.module),
-                ptr::null_mut(),
-            )?;
+            load(engine, &mut result.module)?;
             drop(compile_phase);
             let _instantiate = diagnostics.map(|d| d.span(WorkerTracePhase::Instantiate));
             let mut trap = ptr::null_mut();
@@ -550,6 +559,26 @@ impl<'a> Runtime<'a> {
         Ok(bytes)
     }
 }
+fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
+    // SAFETY: the fresh config is owned by this function until engine creation consumes it.
+    unsafe {
+        let config = (api.config_new)();
+        if config.is_null() {
+            return Err("config unavailable".into());
+        }
+        (api.fuel_enable)(config, limits.fuel.is_some());
+        // WASMTIME_OPT_LEVEL_NONE (pinned config.h).
+        (api.opt_level)(config, 0);
+        let engine = (api.engine_new)(config);
+        if engine.is_null() {
+            return Err("engine unavailable".into());
+        }
+        Ok(engine)
+    }
+}
+
+#[cfg(test)]
+mod compiled_module_probe;
 fn run(
     args: Vec<std::ffi::OsString>,
     limits: Limits,
