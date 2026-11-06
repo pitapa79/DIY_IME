@@ -72,6 +72,8 @@ pub struct ExitReceipt {
     output: Result<Vec<u8>, String>,
     input: Result<(), String>,
     diagnostics: Option<Result<Vec<u8>, ()>>,
+    #[cfg(test)]
+    pub(super) phase_micros: Option<[u128; 3]>,
 }
 impl ExitReceipt {
     pub(super) fn diagnostics(&self) -> Option<&Result<Vec<u8>, ()>> {
@@ -116,6 +118,10 @@ pub struct Running<'a> {
     finished: bool,
     activity: Option<Arc<AtomicU64>>,
     observed: bool,
+    #[cfg(test)]
+    launch_started: Instant,
+    #[cfg(test)]
+    resumed: Option<Instant>,
 }
 fn milliseconds(value: Duration) -> u32 {
     value.as_millis().min((u32::MAX - 1) as u128) as u32
@@ -129,6 +135,8 @@ impl<'a> Running<'a> {
     }
     fn finish(&mut self) -> ExitReceipt {
         // Every caller checked the actual process handle, never child output.
+        #[cfg(test)]
+        let signalled = Instant::now();
         let mut code = 0;
         let exit_code = if unsafe { GetExitCodeProcess(self.process.0, &mut code) } != 0 {
             Some(code)
@@ -169,6 +177,14 @@ impl<'a> Running<'a> {
             output,
             input,
             diagnostics,
+            #[cfg(test)]
+            phase_micros: self.resumed.map(|resumed| {
+                [
+                    (resumed - self.launch_started).as_micros(),
+                    (signalled - resumed).as_micros(),
+                    signalled.elapsed().as_micros(),
+                ]
+            }),
         }
     }
     pub fn retry(mut self: Box<Self>, grace: Duration) -> Outcome<'a> {
@@ -316,6 +332,8 @@ pub(super) fn execute_with_diagnostics<'a>(
     control: &RunControl,
     detailed: bool,
 ) -> Result<Outcome<'a>, String> {
+    #[cfg(test)]
+    let launch_started = Instant::now();
     let WorkerScope {
         profile,
         job,
@@ -504,6 +522,10 @@ pub(super) fn execute_with_diagnostics<'a>(
         finished: false,
         activity,
         observed: false,
+        #[cfg(test)]
+        launch_started,
+        #[cfg(test)]
+        resumed: None,
     });
     if verify(profile, job, running.process.0).is_err() {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
@@ -545,6 +567,10 @@ pub(super) fn execute_with_diagnostics<'a>(
     }
     if unsafe { ResumeThread(thread_handle.0) } == u32::MAX {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
+    }
+    #[cfg(test)]
+    {
+        running.resumed = Some(Instant::now());
     }
     if let Some(activity) = &running.activity {
         activity.fetch_add(1, Ordering::AcqRel);

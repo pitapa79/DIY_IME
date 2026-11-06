@@ -1,6 +1,6 @@
 //! Developer-only experiment. The parent accepts native bytes only from the
 //! successful exit of its own compile-only AppContainer, then holds them in memory.
-use super::{Api, Limits, Runtime, compiled_module, require_appcontainer};
+use super::{Api, Limits, Runtime, compiled_module, require_appcontainer, verify_runtime_bytes};
 use crate::isolated_worker::{Cache, EndReason, Job, Outcome, Profile, RunControl, execute};
 use std::{
     ffi::OsString,
@@ -41,7 +41,27 @@ fn child() {
     require_appcontainer().expect("isolated probe child");
     let mode = fs::read_to_string("mode.txt").expect("read-only probe mode");
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
-    let api = Api::load(&dll).expect("fixed Wasmtime API");
+    let measured = mode == "dll";
+    let verify_started = measured.then(Instant::now);
+    let (dll_read_us, sha_us) = if measured {
+        let bytes = fs::read(&dll).unwrap();
+        let read_us = verify_started.unwrap().elapsed().as_micros();
+        let hash_started = Instant::now();
+        verify_runtime_bytes(&bytes).unwrap();
+        (Some(read_us), Some(hash_started.elapsed().as_micros()))
+    } else {
+        (None, None)
+    };
+    let verify_us = verify_started.map(|start| start.elapsed().as_micros());
+    let load_started = measured.then(Instant::now);
+    let api = match mode.as_str() {
+        "transport" => None,
+        // SAFETY: the exact read-only DLL was verified immediately above.
+        "dll" => Some(unsafe { Api::load_verified(&dll) }.unwrap()),
+        _ => Some(Api::load(&dll).expect("fixed Wasmtime API")),
+    };
+    let load_us = load_started.map(|start| start.elapsed().as_micros());
+    let input_started = Instant::now();
     let mut input = Vec::new();
     std::io::stdin()
         .take((CAP + 1) as u64)
@@ -49,18 +69,27 @@ fn child() {
         .unwrap();
     assert!(input.len() <= CAP);
     let started = Instant::now();
-    let output = if mode == "compile" {
+    let output = if matches!(mode.as_str(), "dll" | "transport") {
+        assert_eq!(input, [42; 32]);
+        serde_json::to_vec(&serde_json::json!({
+            "verifyUs": verify_us, "loadAndSymbolsUs": load_us,
+            "dllReadUs": dll_read_us, "shaUs": sha_us,
+            "stdinReadUs": input_started.elapsed().as_micros(),
+        }))
+        .unwrap()
+    } else if mode == "compile" {
         assert!(input.is_empty());
-        compiled_module::compile(&api, &limits(), &wasm()).unwrap()
+        compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
     } else {
+        let api = api.as_ref().unwrap();
         let mut runtime = match mode.as_str() {
             "jit" => {
                 assert!(input.is_empty());
-                Runtime::new(&api, &wasm(), &limits(), None).unwrap()
+                Runtime::new(api, &wasm(), &limits(), None).unwrap()
             }
             "reuse" => {
                 let expected = fs::read_to_string("artifact.sha256").unwrap();
-                compiled_module::load(&api, &limits(), None, &input, &expected).unwrap()
+                compiled_module::load(api, &limits(), None, &input, &expected).unwrap()
             }
             _ => panic!("invalid probe mode"),
         };
@@ -110,15 +139,18 @@ fn invoke(
         ..RunControl::default()
     };
     let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+    let launched = Instant::now();
     let receipt = match execute(&profile, &job, cache, exe, &args, input, &control).unwrap() {
         Outcome::Exited(receipt) => receipt,
         _ => panic!("probe did not verify physical exit"),
     };
+    let settled = Instant::now();
     let usage = if rejects_corruption {
         None
     } else {
         Some(job_usage(&job))
     };
+    let cleanup_started = Instant::now();
     drop(job);
     cache.revoke_read_execute(&profile).unwrap();
     profile.delete().unwrap();
@@ -127,6 +159,17 @@ fn invoke(
         fs::remove_file(file).unwrap();
     }
     let host_us = started.elapsed().as_micros();
+    if matches!(mode, "dll" | "transport") {
+        let [launch, running, join] = receipt.phase_micros.expect("resumed probe");
+        println!("{mode} launch_us={launch} resumed_to_exit_us={running} pipe_join_us={join}");
+        println!(
+            "{mode} staging_us={} process_and_pipes_us={} accounting_us={} cleanup_us={}",
+            (launched - started).as_micros(),
+            (settled - launched).as_micros(),
+            (cleanup_started - settled).as_micros(),
+            cleanup_started.elapsed().as_micros()
+        );
+    }
     assert_eq!(receipt.reason(), EndReason::Exited);
     if rejects_corruption {
         assert_ne!(receipt.exit_code(), Some(0));
@@ -273,4 +316,36 @@ fn compare() {
     fs::remove_file(cache.path().join("official.wasm")).unwrap();
     fs::remove_dir(cache.path()).unwrap();
     staging_profile.delete().unwrap();
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn residual() {
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut naming_profile = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming_profile).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    for pair in 0..12 {
+        let order = if pair % 2 == 0 {
+            ["transport", "dll"]
+        } else {
+            ["dll", "transport"]
+        };
+        for mode in order {
+            let (_, _, result) = invoke(&cache, &exe, mode, vec![42; 32], None, false).unwrap();
+            let result: serde_json::Value = serde_json::from_slice(&result).unwrap();
+            assert_eq!(result["verifyUs"].is_number(), mode == "dll");
+            assert_eq!(result["loadAndSymbolsUs"].is_number(), mode == "dll");
+            println!("{mode} {result}");
+        }
+    }
+    fs::remove_file(dll).unwrap();
+    fs::remove_file(exe).unwrap();
+    fs::remove_dir(cache.path()).unwrap();
+    naming_profile.delete().unwrap();
 }
