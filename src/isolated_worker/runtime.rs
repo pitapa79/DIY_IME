@@ -241,6 +241,9 @@ fn wide(s: &OsStr) -> Vec<u16> {
 }
 fn verify_runtime(path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("runtime read: {e}"))?;
+    verify_runtime_bytes(&bytes)
+}
+fn verify_runtime_bytes(bytes: &[u8]) -> Result<(), String> {
     let size = u32::try_from(bytes.len()).map_err(|_| "runtime file too large")?;
     let mut algorithm = ptr::null_mut();
     let mut digest = [0u8; 32];
@@ -281,6 +284,10 @@ macro_rules! api {
    struct Api {_library:Library,$($field:$ty),+}
    impl Api {fn load(path:&Path)->Result<Self,String>{
     verify_runtime(path)?;
+    // SAFETY: this is the verified pinned runtime in a Host-owned code snapshot.
+    unsafe { Self::load_verified(path) }
+   }
+   unsafe fn load_verified(path:&Path)->Result<Self,String>{
     let name=wide(path.as_os_str());
     // SAFETY: verified full official DLL; explicit absolute path and restricted dependency search.
     let library=Library(unsafe{LoadLibraryExW(name.as_ptr(),ptr::null_mut(),0x1100)});
