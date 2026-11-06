@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod dictionary_wire;
+
 const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
@@ -100,6 +102,8 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode == "dictionary-wire" {
+        dictionary_wire::guest(api.as_ref().unwrap(), &input)
     } else if mode == "persistent" {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
         persistent_batch(api.as_ref().unwrap(), &input, &expected)
