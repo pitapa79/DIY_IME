@@ -610,14 +610,14 @@ pub(super) fn execute_with_diagnostics<'a>(
     std::mem::forget(send);
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
+    #[cfg(not(test))]
     let pipes = Some((file, writer));
     #[cfg(test)]
     let pipes = if let Some(exchange) = exchange {
-        let (file, writer) = pipes.expect("fresh test pipes");
         running.output = Some(thread::spawn(move || exchange(file, writer)));
         None
     } else {
-        pipes
+        Some((file, writer))
     };
     if let Some((file, mut writer)) = pipes {
         #[cfg(test)]
