@@ -7,6 +7,7 @@ use super::{
     execute_observed, fixed_operation, fs, invoke, invoke_fresh, job_usage, limits, romaji_request,
 };
 use crate::execution_control::CancellationToken;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -37,6 +38,67 @@ fn key(reading: &str) -> u64 {
     reading.bytes().fold(0u64, |hash, byte| {
         hash.wrapping_mul(257).wrapping_add(u64::from(byte))
     }) | (1 << 63)
+}
+
+#[derive(Deserialize, Serialize)]
+struct CandidateEntry {
+    reading: String,
+    candidates: Value,
+}
+
+fn candidate_for(page: &[u8], reading: &str) -> io::Result<Option<Value>> {
+    if page.len() > PAYLOAD_PAGE {
+        return Err(io::Error::other("candidate page exceeds limit"));
+    }
+    let entries: Vec<CandidateEntry> = serde_json::from_slice(page.trim_ascii_end())?;
+    let mut matches = entries.into_iter().filter(|entry| entry.reading == reading);
+    let matched = matches.next().map(|entry| entry.candidates);
+    if matches.next().is_some() {
+        return Err(io::Error::other("ambiguous candidate reading"));
+    }
+    Ok(matched)
+}
+
+#[test]
+fn verifies_full_reading_after_hash_match() {
+    let first = "あぁさぁくくぁさぁあ";
+    let second = "ぁえぁそぁぁそぁえぁ";
+    assert_ne!(first, second);
+    assert_eq!(key(first), 0xe337_f4f8_4391_4d38);
+    assert_eq!(key(first), key(second));
+    let first = format!("{first}{first}");
+    let missing = format!("{first_part}{second}", first_part = "あぁさぁくくぁさぁあ");
+    let second = format!("{second}{second}");
+    assert_eq!(key(&first), key(&second));
+    assert_eq!(key(&first), key(&missing));
+
+    let mut entries = vec![
+        CandidateEntry {
+            reading: first.clone(),
+            candidates: choice(vec![option("一", Some(8.0))]),
+        },
+        CandidateEntry {
+            reading: second.clone(),
+            candidates: choice(vec![option("二", Some(9.0))]),
+        },
+    ];
+    let page = serde_json::to_vec(&entries).unwrap();
+    assert_eq!(
+        candidate_for(&page, &first).unwrap(),
+        Some(entries[0].candidates.clone())
+    );
+    assert_eq!(
+        candidate_for(&page, &second).unwrap(),
+        Some(entries[1].candidates.clone())
+    );
+    assert_eq!(candidate_for(&page, &missing).unwrap(), None);
+    entries.push(CandidateEntry {
+        reading: first.clone(),
+        candidates: Value::Null,
+    });
+    let duplicate = serde_json::to_vec(&entries).unwrap();
+    assert!(candidate_for(&duplicate, &first).is_err());
+    assert!(candidate_for(&vec![b' '; PAYLOAD_PAGE + 1], &first).is_err());
 }
 
 fn choice(options: Vec<Value>) -> Value {
@@ -134,7 +196,9 @@ fn child() {
         } else {
             let page = if fault { GROUPS } else { found };
             let bytes = request_page(&mut input, &mut output, PAYLOAD, page);
-            serde_json::from_slice(bytes.trim_ascii_end()).unwrap()
+            candidate_for(&bytes, kana)
+                .unwrap()
+                .unwrap_or_else(|| choice(vec![option(kana, None)]))
         };
         let selected = fixed_operation(
             &mut official,
@@ -492,8 +556,12 @@ fn range_pipeline_cost() {
         bytes.extend_from_slice(&group.to_le_bytes());
     }
     let mut payload_bytes = Vec::new();
-    for index in 0..GROUPS as usize {
-        let group = serde_json::to_vec(&expected_choice(index)).unwrap();
+    for (index, (_, reading, _)) in CASES.iter().take(GROUPS as usize).enumerate() {
+        let group = serde_json::to_vec(&[CandidateEntry {
+            reading: (*reading).to_owned(),
+            candidates: expected_choice(index),
+        }])
+        .unwrap();
         assert!(group.len() <= PAYLOAD_PAGE);
         payload_bytes.extend(group);
         payload_bytes.resize((index + 1) * PAYLOAD_PAGE, b' ');
