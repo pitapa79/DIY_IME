@@ -19,6 +19,7 @@ const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
 
 mod prepared_graph;
+mod speculative;
 
 fn digest(bytes: &[u8]) -> String {
     crate::isolated_worker::adapter::sha256(bytes).expect("probe SHA-256")
@@ -77,7 +78,11 @@ fn child() {
     let prepared_artifact = mode
         .ends_with("-guest")
         .then(|| fs::read("prepared.cwasm").unwrap());
-    let ready_module = (mode == "ready-module-guest").then(|| {
+    let ready_module = matches!(
+        mode.as_str(),
+        "ready-module-guest" | "ready-speculative-guest"
+    )
+    .then(|| {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
         compiled_module::prepare_for_probe(
             api.as_ref().unwrap(),
@@ -100,6 +105,14 @@ fn child() {
         .unwrap();
     assert!(input.len() <= CAP);
     let started = Instant::now();
+    let (fault, input) = if mode == "ready-speculative-guest" {
+        input
+            .split_first()
+            .map(|(&fault, input)| (fault, input))
+            .unwrap()
+    } else {
+        (0, input.as_slice())
+    };
     let output = if matches!(
         mode.as_str(),
         "dll" | "transport" | "ready-dll" | "ready-transport"
@@ -115,16 +128,26 @@ fn child() {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
     } else if mode == "dictionary-wire" {
-        dictionary_wire::guest(api.as_ref().unwrap(), &input)
+        dictionary_wire::guest(api.as_ref().unwrap(), input)
     } else if mode == "persistent" {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
-        persistent_batch(api.as_ref().unwrap(), &input, &expected)
+        persistent_batch(api.as_ref().unwrap(), input, &expected)
     } else if mode == "persistent-state" {
         assert!(input.is_empty());
         state_probe(api.as_ref().unwrap())
     } else if let Some(mut runtime) = ready_module {
         runtime.instantiate().unwrap();
-        runtime.invoke(&input).unwrap()
+        if fault == 3 {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if fault == 4 {
+            return;
+        }
+        if fault == 2 {
+            b"{}".to_vec()
+        } else {
+            runtime.invoke(input).unwrap()
+        }
     } else if mode == "ready-module-control-guest" {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
         let mut runtime = compiled_module::load(
@@ -135,7 +158,7 @@ fn child() {
             &expected,
         )
         .unwrap();
-        runtime.invoke(&input).unwrap()
+        runtime.invoke(input).unwrap()
     } else {
         let api = api.as_ref().unwrap();
         let mut runtime = match mode.as_str() {
@@ -145,7 +168,7 @@ fn child() {
             }
             "reuse" => {
                 let expected = fs::read_to_string("artifact.sha256").unwrap();
-                compiled_module::load(api, &limits(), None, &input, &expected).unwrap()
+                compiled_module::load(api, &limits(), None, input, &expected).unwrap()
             }
             "ready-guest" | "cold-guest" => {
                 assert_eq!(input, [42; 32]);
@@ -172,6 +195,11 @@ fn child() {
         .unwrap();
     stdout.write_all(&output).unwrap();
     stdout.flush().unwrap();
+    if fault == 1 {
+        drop(stdout);
+        std::thread::sleep(Duration::from_millis(40));
+        panic!("test failure after sending result");
+    }
 }
 
 fn state_probe(api: &Api) -> Vec<u8> {
