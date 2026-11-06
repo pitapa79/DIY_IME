@@ -12,11 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod prepared_graph;
-
 const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
+
+mod prepared_graph;
 
 fn digest(bytes: &[u8]) -> String {
     crate::isolated_worker::adapter::sha256(bytes).expect("probe SHA-256")
