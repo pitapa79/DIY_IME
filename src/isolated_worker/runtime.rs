@@ -23,6 +23,7 @@ pub fn run_probe() -> Result<(), String> {
         },
         None,
         None,
+        ModuleMode::Jit,
     )
 }
 /// stdin-only worker, refusing ordinary-privilege invocation.
@@ -60,6 +61,24 @@ fn require_appcontainer() -> Result<(), String> {
     Ok(())
 }
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
+    #[cfg(feature = "compiled-module-probe")]
+    let (args, mode) = {
+        let mut args = args;
+        let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
+        let mode = if flag == "--probe-compile" {
+            ModuleMode::Compile
+        } else if let Some(digest) = flag.strip_prefix("--probe-reuse=") {
+            ModuleMode::Reuse(digest.to_owned())
+        } else {
+            ModuleMode::Jit
+        };
+        if !matches!(mode, ModuleMode::Jit) {
+            args.remove(0);
+        }
+        (args, mode)
+    };
+    #[cfg(not(feature = "compiled-module-probe"))]
+    let mode = ModuleMode::Jit;
     if args.len() != 5 && args.len() != 6 {
         return Err("expected runtime module module-length fuel memory".into());
     }
@@ -111,6 +130,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         },
         Some(length),
         diagnostics.as_ref(),
+        mode,
     )
 }
 use std::{
@@ -579,11 +599,25 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
 
 #[cfg(test)]
 mod compiled_module_probe;
+enum ModuleMode {
+    Jit,
+    #[cfg(feature = "compiled-module-probe")]
+    Compile,
+    #[cfg(feature = "compiled-module-probe")]
+    Reuse(String),
+}
+
+#[cfg(feature = "compiled-module-probe")]
+mod compiled_host_probe;
+#[cfg(feature = "compiled-module-probe")]
+pub(super) use compiled_host_probe::OFFICIAL_WASM_HASH as OFFICIAL_PROBE_HASH;
+
 fn run(
     args: Vec<std::ffi::OsString>,
     limits: Limits,
     expected_module: Option<usize>,
     diagnostics: Option<&Recorder>,
+    mode: ModuleMode,
 ) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
@@ -632,6 +666,15 @@ fn run(
         return Err("module exceeds probe limit".into());
     }
     drop(module_phase);
+    #[cfg(feature = "compiled-module-probe")]
+    if matches!(mode, ModuleMode::Compile) {
+        use std::io::Write;
+        let artifact = compiled_host_probe::compile(&api, &limits, &module)?;
+        return std::io::stdout()
+            .lock()
+            .write_all(&artifact)
+            .map_err(|_| "compiler pipe failed".into());
+    }
     let input_phase = diagnostics.map(|d| d.span(WorkerTracePhase::InputRead));
     let input = if args[2] == "-" {
         let mut bytes = Vec::new();
@@ -647,7 +690,15 @@ fn run(
         std::fs::read(&args[2]).map_err(|e| format!("request read: {e}"))?
     };
     drop(input_phase);
-    let mut guest = Runtime::new(&api, &module, &limits, diagnostics)?;
+    let mut guest = match mode {
+        ModuleMode::Jit => Runtime::new(&api, &module, &limits, diagnostics)?,
+        #[cfg(feature = "compiled-module-probe")]
+        ModuleMode::Reuse(digest) => {
+            compiled_host_probe::load(&api, &limits, diagnostics, &module, &digest)?
+        }
+        #[cfg(feature = "compiled-module-probe")]
+        ModuleMode::Compile => unreachable!("compile returns before guest input"),
+    };
     if expected_module.is_some() {
         // Production carries the exact bounded guest wire to Parent validation.
         // Parsing/re-encoding here would erase duplicate object keys before the

@@ -6,6 +6,10 @@ edition = "2024"
 publish = false
 description = "DIY_IME2 の文章候補データと変換エンジン"
 
+[features]
+# Local distribution comparison only. Standard builds use the ordinary JIT.
+compiled-module-probe = []
+
 [dependencies]
 semver = { version = "=1.0.28", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
