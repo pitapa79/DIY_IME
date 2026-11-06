@@ -99,7 +99,7 @@ fn child_file_canary() {
     assert!(fs::File::open(path).is_err());
 }
 
-fn verify_private_asset(cache: &Cache, exe: &Path, path: &Path) {
+pub(super) fn verify_private_asset(cache: &Cache, exe: &Path, path: &Path) {
     let mut profile = Profile::new().unwrap();
     cache.allow_read_execute(&profile).unwrap();
     let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();

@@ -1,6 +1,6 @@
 //! Fixed developer-only graph; no package or product routing.
 use super::dictionary_range::{
-    ABSENT, ASSET, Asset, READY, integer, lookup, page_runtime, search_wasm,
+    ABSENT, ASSET, Asset, READY, integer, lookup, page_runtime, search_wasm, verify_private_asset,
 };
 use super::{
     Api, Cache, EndReason, Job, Outcome, Profile, RunControl, WorkerScope, compiled_module, digest,
@@ -10,7 +10,7 @@ use crate::execution_control::CancellationToken;
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
-    io::{self, BufReader, Read, Write},
+    io::{self, BufReader, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
     path::Path,
     sync::{Arc, Mutex, atomic::AtomicU64},
@@ -19,11 +19,16 @@ use std::{
 
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::range_pipeline::child";
 const ROWS: usize = 1_000_000;
-const CASES: [(&str, &str, &str); 3] = [
+const CASES: [(&str, &str, &str); 4] = [
     ("kousui", "こうすい", "降水"),
+    ("nihonn", "にほん", "日本"),
     ("kya", "きゃ", "きゃ"),
     ("ky", "", ""),
 ];
+const PAYLOAD: u8 = ASSET + 1;
+const PAYLOAD_PAGE: usize = 4096;
+const GROUPS: u64 = 2;
+const BAD_PAGE: u8 = 254;
 
 fn key(reading: &str) -> u64 {
     reading.bytes().fold(0u64, |hash, byte| {
@@ -31,17 +36,51 @@ fn key(reading: &str) -> u64 {
     }) | (1 << 63)
 }
 
-fn candidates(kana: &str, hit: bool) -> Value {
-    let options = if hit {
-        vec![
+fn choice(options: Vec<Value>) -> Value {
+    json!({"state":"data","packet":{"version":1,"root":{"type":"choice","options":options}}})
+}
+
+fn expected_choice(tag: usize) -> Value {
+    let (_, kana, _) = CASES[tag];
+    let options = match tag {
+        0 => vec![
             option("降水", Some(90.0)),
             option("香水", Some(30.0)),
             option("洪水", Some(90.0)),
-        ]
-    } else {
-        vec![option(kana, None)]
+        ],
+        1 => vec![option("日本", Some(80.0)), option("二本", Some(55.0))],
+        _ => vec![option(kana, None)],
     };
-    json!({"state":"data","packet":{"version":1,"root":{"type":"choice","options":options}}})
+    choice(options)
+}
+
+fn request_page(input: &mut impl Read, output: &mut impl Write, asset: u8, page: u64) -> Vec<u8> {
+    output.write_all(&[asset]).unwrap();
+    output.write_all(&page.to_le_bytes()).unwrap();
+    output.flush().unwrap();
+    let len = integer(input).unwrap() as usize;
+    assert!((1..=PAYLOAD_PAGE).contains(&len));
+    let mut bytes = vec![0; len];
+    input.read_exact(&mut bytes).unwrap();
+    bytes
+}
+
+fn candidate_page(
+    file: &mut fs::File,
+    page: u64,
+    reads: usize,
+    cancel: &CancellationToken,
+) -> io::Result<Vec<u8>> {
+    if page >= GROUPS || reads >= 16 || cancel.is_cancelled() {
+        return Err(io::Error::other("candidate page denied"));
+    }
+    file.seek(SeekFrom::Start(page * PAYLOAD_PAGE as u64))?;
+    let mut bytes = vec![0; PAYLOAD_PAGE];
+    file.read_exact(&mut bytes)?;
+    if cancel.is_cancelled() {
+        return Err(io::Error::other("candidate page withdrawn"));
+    }
+    Ok(bytes)
 }
 
 fn option(text: &str, score: Option<f64>) -> Value {
@@ -70,7 +109,8 @@ fn child() {
     output.flush().unwrap();
     let mut tag = [0];
     while input.read(&mut tag).unwrap() != 0 {
-        let (reading, _, _) = CASES[tag[0] as usize];
+        let fault = tag[0] == BAD_PAGE;
+        let (reading, _, _) = CASES[if fault { 0 } else { tag[0] as usize }];
         let raw = invoke_fresh(&mut official, &limits, &romaji_request(reading));
         let romaji: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(romaji["ok"], true);
@@ -80,18 +120,18 @@ fn child() {
         search.install_store(&limits).unwrap();
         search.instantiate().unwrap();
         let found = lookup(ROWS, |page| {
-            output.write_all(&[ASSET]).unwrap();
-            output.write_all(&(page as u64).to_le_bytes()).unwrap();
-            output.flush().unwrap();
-            let len = integer(&mut input).unwrap() as usize;
-            assert!((16..=4096).contains(&len) && len.is_multiple_of(16));
-            let mut page = vec![0; len];
-            input.read_exact(&mut page).unwrap();
+            let page = request_page(&mut input, &mut output, ASSET, page as u64);
+            assert!(page.len().is_multiple_of(16));
             search_wasm(&mut search, key(kana), &page)
         });
         search.discard_store();
-        assert!(found == 1 || found == ABSENT);
-        let choice = candidates(kana, found == 1);
+        let choice = if found == ABSENT {
+            choice(vec![option(kana, None)])
+        } else {
+            let page = if fault { GROUPS } else { found };
+            let bytes = request_page(&mut input, &mut output, PAYLOAD, page);
+            serde_json::from_slice(bytes.trim_ascii_end()).unwrap()
+        };
         let selected = fixed_operation(
             &mut official,
             &limits,
@@ -133,13 +173,18 @@ enum Boundary {
     SwitchDocument,
     Protect,
     RevokeDictionary,
+    InvalidPayload,
 }
 
 impl Boundary {
     fn stops_worker(self) -> bool {
         matches!(
             self,
-            Self::Cancel | Self::SwitchDocument | Self::Protect | Self::RevokeDictionary
+            Self::Cancel
+                | Self::SwitchDocument
+                | Self::Protect
+                | Self::RevokeDictionary
+                | Self::InvalidPayload
         )
     }
 }
@@ -162,12 +207,12 @@ struct Observations {
     ready_us: u128,
     rejected_replies: usize,
     denied_reads: usize,
-    samples: Vec<(Instant, Instant, Instant, usize)>,
+    samples: Vec<(Instant, Instant, Instant, usize, usize)>,
 }
 
 fn exchange(
     (output, mut input): (fs::File, fs::File),
-    mut asset: Asset,
+    (mut asset, mut payload): (Asset, fs::File),
     samples: Vec<Sample>,
     cancel: CancellationToken,
     boundary: Boundary,
@@ -210,7 +255,7 @@ fn exchange(
                 let (_, kana, text) = CASES[sample.tag as usize];
                 assert_eq!(
                     actual,
-                    json!([kana, candidates(kana, sample.tag == 0), text])
+                    json!([kana, expected_choice(sample.tag as usize), text])
                 );
                 if request == 0 {
                     match boundary {
@@ -233,6 +278,7 @@ fn exchange(
                     sent,
                     received,
                     bytes,
+                    reads,
                 ));
                 break;
             }
@@ -244,7 +290,18 @@ fn exchange(
                 observations.lock().unwrap().denied_reads += 1;
                 return Err(io::Error::other("page access withdrawn"));
             }
-            let page = asset.page(id[0], index, reads, &cancel)?;
+            let page = if id[0] == PAYLOAD {
+                match candidate_page(&mut payload, index, reads, &cancel) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        cancel.cancel();
+                        observations.lock().unwrap().denied_reads += 1;
+                        return Err(error);
+                    }
+                }
+            } else {
+                asset.page(id[0], index, reads, &cancel)?
+            };
             reads += 1;
             bytes += page.len();
             input.write_all(&(page.len() as u64).to_le_bytes())?;
@@ -260,7 +317,7 @@ fn exchange(
 fn run(
     cache: &Cache,
     exe: &Path,
-    file: &fs::File,
+    files: (&fs::File, &fs::File),
     samples: Vec<Sample>,
     interval: u64,
     retained: bool,
@@ -274,16 +331,17 @@ fn run(
     let observations = Arc::new(Mutex::new(Observations::default()));
     let worker_observations = observations.clone();
     let asset = Asset {
-        file: file.try_clone().unwrap(),
+        file: files.0.try_clone().unwrap(),
         rows: ROWS,
     };
+    let payload = files.1.try_clone().unwrap();
     let launched = Instant::now();
     let count = samples.len();
     let scope = WorkerScope::observed(&profile, &job, cache, AtomicU64::new(0).into())
         .with_test_exchange(Box::new(move |output, input| {
             exchange(
                 (output, input),
-                asset,
+                (asset, payload),
                 samples,
                 worker_cancel,
                 boundary,
@@ -335,7 +393,7 @@ fn run(
         measured.denied_reads,
         usize::from(matches!(
             boundary,
-            Boundary::Cancel | Boundary::RevokeDictionary
+            Boundary::Cancel | Boundary::RevokeDictionary | Boundary::InvalidPayload
         ))
     );
     println!(
@@ -349,14 +407,14 @@ fn run(
         "pipeline-process retained={retained} interval={interval} ready_us={} cpu_100ns={cpu} peak_bytes={peak} withdrawn={withdraw}",
         measured.ready_us
     );
-    for (planned, sent, received, bytes) in &measured.samples {
+    for (planned, sent, received, bytes, reads) in &measured.samples {
         let applicable = if retained {
             *received
         } else {
             ended.max(*received)
         };
         println!(
-            "pipeline-sample retained={retained} interval={interval} queued_us={} reply_us={} applicable_us={} bytes={bytes}",
+            "pipeline-sample retained={retained} interval={interval} queued_us={} reply_us={} applicable_us={} bytes={bytes} reads={reads}",
             sent.saturating_duration_since(*planned).as_micros(),
             received.duration_since(*sent).as_micros(),
             applicable.duration_since(*sent).as_micros()
@@ -385,12 +443,33 @@ fn range_pipeline_cost() {
         .write("pipeline.sha256", digest(&artifact).as_bytes())
         .unwrap();
     let mut bytes = Vec::with_capacity(ROWS * 16);
-    for index in 0..ROWS as u64 - 1 {
+    for index in 0..ROWS as u64 - GROUPS {
         bytes.extend_from_slice(&index.to_le_bytes());
         bytes.extend_from_slice(&(index + 2).to_le_bytes());
     }
-    bytes.extend_from_slice(&key("こうすい").to_le_bytes());
-    bytes.extend_from_slice(&1u64.to_le_bytes());
+    let mut entries = [(key(CASES[0].1), 0u64), (key(CASES[1].1), 1u64)];
+    entries.sort_unstable();
+    assert!(entries[0].0 < entries[1].0);
+    for (reading, group) in entries {
+        bytes.extend_from_slice(&reading.to_le_bytes());
+        bytes.extend_from_slice(&group.to_le_bytes());
+    }
+    let mut payload_bytes = Vec::new();
+    for index in 0..GROUPS as usize {
+        let group = serde_json::to_vec(&expected_choice(index)).unwrap();
+        assert!(group.len() <= PAYLOAD_PAGE);
+        payload_bytes.extend(group);
+        payload_bytes.resize((index + 1) * PAYLOAD_PAGE, b' ');
+    }
+    let mut payload_naming = Profile::new().unwrap();
+    let payload_cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &payload_naming).unwrap();
+    let payload_path = payload_cache.private_canary(&payload_bytes).unwrap();
+    verify_private_asset(&cache, &exe, &payload_path);
+    let payload = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+        .open(&payload_path)
+        .unwrap();
     let asset = cache.private_canary(&bytes).unwrap();
     let file = fs::OpenOptions::new()
         .read(true)
@@ -413,9 +492,9 @@ fn range_pipeline_cost() {
             run(
                 &cache,
                 &exe,
-                &file,
+                (&file, &payload),
                 vec![Sample {
-                    tag: (index % 3) as u8,
+                    tag: (index % CASES.len() as u64) as u8,
                     planned: Some(planned),
                 }],
                 interval,
@@ -426,7 +505,7 @@ fn range_pipeline_cost() {
         let start = Instant::now() + Duration::from_secs(1);
         let samples = (0..60)
             .map(|index| Sample {
-                tag: (index % 3) as u8,
+                tag: (index % CASES.len() as u64) as u8,
                 planned: if interval == 0 && index > 0 {
                     None
                 } else {
@@ -434,13 +513,21 @@ fn range_pipeline_cost() {
                 },
             })
             .collect();
-        run(&cache, &exe, &file, samples, interval, true, Boundary::None);
+        run(
+            &cache,
+            &exe,
+            (&file, &payload),
+            samples,
+            interval,
+            true,
+            Boundary::None,
+        );
     }
     for retained in [false, true] {
         run(
             &cache,
             &exe,
-            &file,
+            (&file, &payload),
             vec![Sample {
                 tag: 0,
                 planned: Some(Instant::now()),
@@ -456,23 +543,27 @@ fn range_pipeline_cost() {
             Boundary::SwitchDocument,
             Boundary::Protect,
             Boundary::RevokeDictionary,
+            Boundary::InvalidPayload,
         ] {
-            let tags: &[u8] = if boundary == Boundary::Supersede {
-                &[0, 1]
-            } else {
-                &[0]
+            let tags: &[u8] = match boundary {
+                Boundary::Supersede => &[0, 1],
+                Boundary::InvalidPayload => &[BAD_PAGE],
+                _ => &[0],
             };
             let samples = tags
                 .iter()
                 .map(|&tag| Sample { tag, planned: None })
                 .collect();
-            run(&cache, &exe, &file, samples, 0, true, boundary);
+            run(&cache, &exe, (&file, &payload), samples, 0, true, boundary);
         }
     }
     drop(file);
-    for path in [asset, hash, compiled, wasm, dll, exe] {
+    drop(payload);
+    for path in [asset, payload_path, hash, compiled, wasm, dll, exe] {
         fs::remove_file(path).unwrap();
     }
     fs::remove_dir(cache.path()).unwrap();
     naming.delete().unwrap();
+    fs::remove_dir(payload_cache.path()).unwrap();
+    payload_naming.delete().unwrap();
 }
