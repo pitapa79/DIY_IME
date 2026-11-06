@@ -41,6 +41,10 @@ fn child() {
     require_appcontainer().expect("isolated probe child");
     let mode = fs::read_to_string("mode.txt").expect("read-only probe mode");
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
+    if mode == "persistent-ipc" {
+        ipc_child(&Api::load(&dll).unwrap());
+        return;
+    }
     let measured = mode == "dll";
     let verify_started = measured.then(Instant::now);
     let (dll_read_us, sha_us) = if measured {
@@ -471,4 +475,206 @@ fn persistent() {
     }
     fs::remove_dir(cache.path()).unwrap();
     profile.delete().unwrap();
+}
+
+const IPC_READY: &[u8] = b"\nDIY-PERSIST-READY\0";
+const IPC_CASES: [(&str, &str); 3] = [("kanji", "かんじ"), ("kya", "きゃ"), ("ky", "")];
+
+fn ipc_child(api: &Api) {
+    let limits = limits();
+    let expected = fs::read_to_string("artifact.sha256").unwrap();
+    let artifact = fs::read("probe.cwasm").unwrap();
+    assert!(artifact.len() <= CAP);
+    let mut runtime = compiled_module::load(api, &limits, None, &artifact, &expected).unwrap();
+    runtime.discard_store();
+    let requests = IPC_CASES.map(|(input, _)| romaji_request(input));
+    let mut input = std::io::stdin().lock();
+    let mut output = std::io::stdout().lock();
+    output.write_all(IPC_READY).unwrap();
+    output.flush().unwrap();
+    let mut tag = [0];
+    while input.read(&mut tag).unwrap() != 0 {
+        if tag[0] == 255 {
+            panic!("deliberate isolated probe exit");
+        }
+        let request = &requests[tag[0] as usize];
+        runtime.install_store(&limits).unwrap();
+        runtime.instantiate().unwrap();
+        let reply = runtime.invoke(request).unwrap();
+        runtime.discard_store();
+        output
+            .write_all(&(reply.len() as u32).to_le_bytes())
+            .unwrap();
+        output.write_all(&reply).unwrap();
+        output.flush().unwrap();
+    }
+}
+
+fn ipc_wait_ready(output: &mut impl Read) -> std::io::Result<()> {
+    let mut prefix = Vec::new();
+    while prefix.len() < 4096 {
+        let mut byte = [0];
+        output.read_exact(&mut byte)?;
+        prefix.push(byte[0]);
+        if prefix.ends_with(IPC_READY) {
+            return Ok(());
+        }
+    }
+    Err(std::io::Error::other("readiness prefix exceeded limit"))
+}
+
+fn ipc_request(output: &mut impl Read, input: &mut impl Write, tag: u8) -> std::io::Result<()> {
+    input.write_all(&[tag])?;
+    let mut size = [0; 4];
+    output.read_exact(&mut size)?;
+    let size = u32::from_le_bytes(size) as usize;
+    if !(1..=4096).contains(&size) {
+        return Err(std::io::Error::other("invalid response size"));
+    }
+    let mut bytes = vec![0; size];
+    output.read_exact(&mut bytes)?;
+    let reply: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if reply["ok"] != true
+        || reply["data"]["out"]["packet"]["root"]["text"] != IPC_CASES[tag as usize].1
+    {
+        return Err(std::io::Error::other("unexpected probe result"));
+    }
+    Ok(())
+}
+
+fn ipc_series(output: &mut impl Read, input: &mut impl Write) -> std::io::Result<Vec<u8>> {
+    let mut series = Vec::new();
+    for (interval, count) in [(0, 2000), (20, 50), (100, 50)] {
+        let start = Instant::now();
+        let mut elapsed = Vec::new();
+        let mut late = Vec::new();
+        for i in 0..count {
+            let scheduled = start + Duration::from_millis(interval * i);
+            if interval != 0 {
+                std::thread::sleep(scheduled.saturating_duration_since(Instant::now()));
+            }
+            let issued = Instant::now();
+            ipc_request(output, input, (i % 3) as u8)?;
+            elapsed.push(issued.elapsed().as_micros());
+            if interval != 0 {
+                late.push((issued - scheduled).as_micros());
+            }
+        }
+        series.push(
+            serde_json::json!({"intervalMs":interval,"correct":count,"attempts":count,
+            "roundtripUs":elapsed,"scheduleDelayUs":late}),
+        );
+    }
+    serde_json::to_vec(&series).map_err(std::io::Error::other)
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent_ipc() {
+    use crate::isolated_worker::pipe::{WorkerScope, execute_observed};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let wasm = cache
+        .copy(&bundle.join("official/official.wasm"), "official.wasm")
+        .unwrap();
+    let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
+    let hash = cache
+        .write("artifact.sha256", digest(&artifact).as_bytes())
+        .unwrap();
+    let compiled = cache.write("probe.cwasm", &artifact).unwrap();
+    let mode_file = cache.write("mode.txt", b"persistent-ipc").unwrap();
+    let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+    for scenario in ["normal", "cancel", "crash", "reopen"] {
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let control = RunControl {
+            walltime: Some(Duration::from_secs(30)),
+            ..RunControl::default()
+        };
+        let token = control.cancel.clone();
+        let activity = Arc::new(AtomicU64::new(0));
+        let scope = WorkerScope::observed(&profile, &job, &cache, activity.clone())
+            .with_test_exchange(Box::new(move |mut output, mut input| {
+                let result = (|| -> std::io::Result<Vec<u8>> {
+                    ipc_wait_ready(&mut output)?;
+                    match scenario {
+                        "normal" => ipc_series(&mut output, &mut input),
+                        "cancel" => {
+                            ipc_request(&mut output, &mut input, 0)?;
+                            token.cancel();
+                            // Keep stdin open until the cancellation path kills the child.
+                            let mut byte = [0];
+                            assert_ne!(output.read(&mut byte).unwrap_or(0), 1);
+                            Ok(Vec::new())
+                        }
+                        "crash" => {
+                            input.write_all(&[255])?;
+                            let mut size = [0; 4];
+                            if output.read_exact(&mut size).is_ok()
+                                && u32::from_le_bytes(size) <= 4096
+                            {
+                                return Err(std::io::Error::other("unexpected crash result"));
+                            }
+                            Ok(Vec::new())
+                        }
+                        _ => {
+                            ipc_request(&mut output, &mut input, 1)?;
+                            Ok(Vec::new())
+                        }
+                    }
+                })();
+                drop(input);
+                let mut tail = Vec::new();
+                output
+                    .take(8193)
+                    .read_to_end(&mut tail)
+                    .map_err(|e| e.to_string())?;
+                if tail.len() > 8192 {
+                    return Err("unexpected probe tail size".into());
+                }
+                result.map_err(|e| e.to_string())
+            }));
+        let receipt = match execute_observed(scope, &exe, &args, Vec::new(), &control).unwrap() {
+            Outcome::Exited(receipt) => receipt,
+            _ => panic!("session did not prove process exit"),
+        };
+        assert_eq!(activity.load(Ordering::Acquire), 0);
+        let bytes = receipt.output().unwrap();
+        match scenario {
+            "cancel" => assert_eq!(receipt.reason(), EndReason::Cancelled),
+            "crash" => {
+                assert_eq!(receipt.reason(), EndReason::Exited);
+                assert_ne!(receipt.exit_code(), Some(0));
+            }
+            _ => {
+                assert_eq!(receipt.reason(), EndReason::Exited);
+                assert_eq!(receipt.exit_code(), Some(0));
+            }
+        }
+        let (cpu, peak) = job_usage(&job);
+        println!("ipc {scenario} cpu_100ns={cpu} peak_job_bytes={peak}");
+        if scenario == "normal" {
+            println!("ipc report={}", String::from_utf8_lossy(bytes));
+        }
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+    }
+    for path in [exe, dll, wasm, hash, compiled, mode_file] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
 }

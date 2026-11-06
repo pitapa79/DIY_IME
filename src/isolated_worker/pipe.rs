@@ -277,7 +277,11 @@ pub(super) struct WorkerScope<'a> {
     job: &'a Job,
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
+    #[cfg(test)]
+    exchange: Option<TestExchange>,
 }
+#[cfg(test)]
+type TestExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 impl<'a> WorkerScope<'a> {
     pub(super) fn observed(
         profile: &'a Profile,
@@ -290,7 +294,14 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: Some(activity),
+            #[cfg(test)]
+            exchange: None,
         }
+    }
+    #[cfg(test)]
+    pub(super) fn with_test_exchange(mut self, exchange: TestExchange) -> Self {
+        self.exchange = Some(exchange);
+        self
     }
 }
 pub fn execute<'a>(
@@ -308,6 +319,8 @@ pub fn execute<'a>(
             job,
             cache,
             activity: None,
+            #[cfg(test)]
+            exchange: None,
         },
         program,
         args,
@@ -339,6 +352,8 @@ pub(super) fn execute_with_diagnostics<'a>(
         job,
         cache,
         activity,
+        #[cfg(test)]
+        exchange,
     } = scope;
     if control.cancel.is_cancelled() {
         return Ok(Outcome::CancelledBeforeStart);
@@ -540,28 +555,39 @@ pub(super) fn execute_with_diagnostics<'a>(
     }
     let file = unsafe { std::fs::File::from_raw_handle(read.0) };
     std::mem::forget(read);
-    let mut writer = unsafe { std::fs::File::from_raw_handle(send.0) };
+    let writer = unsafe { std::fs::File::from_raw_handle(send.0) };
     std::mem::forget(send);
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
-    running.output = Some(thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = file.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes);
-        if bytes.len() > WIRE_LIMIT {
-            exceeded.store(true, Ordering::Release);
-            return Err("Worker output exceeds wire limit".into());
-        }
-        match result {
-            Ok(_) => Ok(bytes),
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
-            Err(_) => Err("Worker output pipe failed".into()),
-        }
-    }));
-    running.input = Some(thread::spawn(move || {
-        writer
-            .write_all(&request)
-            .map_err(|_| "Worker input pipe failed".into())
-    }));
+    let pipes = Some((file, writer));
+    #[cfg(test)]
+    let pipes = if let Some(exchange) = exchange {
+        let (file, writer) = pipes.expect("fresh test pipes");
+        running.output = Some(thread::spawn(move || exchange(file, writer)));
+        None
+    } else {
+        pipes
+    };
+    if let Some((file, mut writer)) = pipes {
+        running.output = Some(thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = file.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes);
+            if bytes.len() > WIRE_LIMIT {
+                exceeded.store(true, Ordering::Release);
+                return Err("Worker output exceeds wire limit".into());
+            }
+            match result {
+                Ok(_) => Ok(bytes),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
+                Err(_) => Err("Worker output pipe failed".into()),
+            }
+        }));
+        running.input = Some(thread::spawn(move || {
+            writer
+                .write_all(&request)
+                .map_err(|_| "Worker input pipe failed".into())
+        }));
+    }
     if control.cancel.is_cancelled() {
         return Ok(running.stop(EndReason::Cancelled, control.termination_grace));
     }
