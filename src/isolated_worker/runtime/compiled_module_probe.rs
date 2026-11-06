@@ -18,6 +18,7 @@ const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
 
+mod dictionary_range;
 mod prepared_graph;
 mod speculative;
 
