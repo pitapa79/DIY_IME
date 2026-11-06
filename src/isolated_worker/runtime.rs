@@ -414,50 +414,72 @@ impl<'a> Runtime<'a> {
         load: impl FnOnce(P, &mut P) -> Result<(), String>,
     ) -> Result<Self, String> {
         let engine_phase = diagnostics.map(|d| d.span(WorkerTracePhase::EngineSetup));
-        // SAFETY: each object is owned by this Runtime, all handles belong to one Store.
+        let engine = create_engine(api, limits)?;
+        let mut result = Self {
+            api,
+            engine,
+            store: ptr::null_mut(),
+            module: ptr::null_mut(),
+            context: ptr::null_mut(),
+            instance: Handle::default(),
+            fuel: limits.fuel,
+            diagnostics,
+        };
+        result.install_store(limits)?;
+        drop(engine_phase);
+        load(engine, &mut result.module)?;
+        result.instantiate()?;
+        Ok(result)
+    }
+    fn install_store(&mut self, limits: &Limits) -> Result<(), String> {
+        debug_assert!(self.store.is_null());
+        // SAFETY: the Store is created on this Runtime's Engine.
         unsafe {
-            let engine = create_engine(api, limits)?;
-            let mut result = Self {
-                api,
-                engine,
-                store: ptr::null_mut(),
-                module: ptr::null_mut(),
-                context: ptr::null_mut(),
-                instance: Handle::default(),
-                fuel: limits.fuel,
-                diagnostics,
-            };
-            result.store = (api.store_new)(engine, ptr::null_mut(), None);
-            if result.store.is_null() {
+            self.store = (self.api.store_new)(self.engine, ptr::null_mut(), None);
+            if self.store.is_null() {
                 return Err("store unavailable".into());
             }
-            (api.limiter)(
-                result.store,
+            (self.api.limiter)(
+                self.store,
                 limits.memory.unwrap_or(-1),
                 limits.table_elements.unwrap_or(-1),
                 1,
                 limits.tables.unwrap_or(-1),
                 limits.memories.unwrap_or(-1),
             );
-            result.context = (api.store_context)(result.store);
+            self.context = (self.api.store_context)(self.store);
             if let Some(fuel) = limits.fuel {
-                api.check((api.fuel_set)(result.context, fuel), ptr::null_mut())?;
+                self.api
+                    .check((self.api.fuel_set)(self.context, fuel), ptr::null_mut())?;
             }
-            drop(engine_phase);
-            load(engine, &mut result.module)?;
-            let _instantiate = diagnostics.map(|d| d.span(WorkerTracePhase::Instantiate));
+        }
+        Ok(())
+    }
+    fn instantiate(&mut self) -> Result<(), String> {
+        let _instantiate = self
+            .diagnostics
+            .map(|d| d.span(WorkerTracePhase::Instantiate));
+        // SAFETY: the Module and Store belong to the same Engine.
+        unsafe {
             let mut trap = ptr::null_mut();
-            let error = (api.instantiate)(
-                result.context,
-                result.module,
+            let error = (self.api.instantiate)(
+                self.context,
+                self.module,
                 ptr::null(),
                 0,
-                &mut result.instance,
+                &mut self.instance,
                 &mut trap,
             );
-            api.check(error, trap)?;
-            Ok(result)
+            self.api.check(error, trap)
         }
+    }
+    #[cfg(test)]
+    fn discard_store(&mut self) {
+        // SAFETY: this is the Store owned by self. No guest handles survive it.
+        unsafe { (self.api.store_delete)(self.store) };
+        self.store = ptr::null_mut();
+        self.context = ptr::null_mut();
+        self.instance = Handle::default();
     }
     fn export(&self, name: &CStr, kind: u8) -> Result<ExternPayload, String> {
         let mut export = Extern::default();

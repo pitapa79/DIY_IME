@@ -46,6 +46,10 @@ fn child() {
         panic!("blocked probe must be stopped before reading input");
     }
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
+    if matches!(mode.as_str(), "persistent-ipc" | "persistent-graph") {
+        ipc_child(&Api::load(&dll).unwrap(), mode == "persistent-graph");
+        return;
+    }
     let measured = mode.ends_with("dll");
     let verify_started = measured.then(Instant::now);
     let (dll_read_us, sha_us) = if measured {
@@ -96,6 +100,12 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode == "persistent" {
+        let expected = fs::read_to_string("artifact.sha256").unwrap();
+        persistent_batch(api.as_ref().unwrap(), &input, &expected)
+    } else if mode == "persistent-state" {
+        assert!(input.is_empty());
+        state_probe(api.as_ref().unwrap())
     } else {
         let api = api.as_ref().unwrap();
         let mut runtime = match mode.as_str() {
@@ -121,21 +131,7 @@ fn child() {
             }
             _ => panic!("invalid probe mode"),
         };
-        let request = serde_json::json!({
-            "apiVersion": 1,
-            "node": {"kind": "text.romaji-to-hiragana", "version": 1},
-            "operation": {
-                "method": "execute",
-                "config": {"overrides": [], "unknown": "preserve"},
-                "inputs": {"in": {"state": "data", "packet": {
-                    "version": 1, "root": {"type": "text", "text": "kanji"}
-                }}},
-                "mode": "compose"
-            }
-        });
-        runtime
-            .invoke(&serde_json::to_vec(&request).unwrap())
-            .unwrap()
+        runtime.invoke(&romaji_request("kanji")).unwrap()
     };
     let elapsed = started.elapsed().as_micros() as u64;
     let mut stdout = std::io::stdout().lock();
@@ -146,6 +142,104 @@ fn child() {
         .unwrap();
     stdout.write_all(&output).unwrap();
     stdout.flush().unwrap();
+}
+
+fn state_probe(api: &Api) -> Vec<u8> {
+    use super::Bytes;
+    let fixture = br#"(module
+      (memory 1)
+      (global $g (mut i32) (i32.const 0))
+      (func (export "read") (result i32)
+        global.get $g i32.const 0 i32.load i32.or)
+      (func (export "mark")
+        i32.const 17 global.set $g
+        i32.const 0 i32.const 34 i32.store)
+      (func (export "trap") unreachable))"#;
+    let mut binary = Bytes {
+        size: 0,
+        data: ptr::null_mut(),
+    };
+    // SAFETY: the fixture is a fixed local WAT and the vector is Wasmtime-owned.
+    let wasm = unsafe {
+        api.check(
+            (api.wat)(fixture.as_ptr(), fixture.len(), &mut binary),
+            ptr::null_mut(),
+        )
+        .unwrap();
+        assert!(!binary.data.is_null() && binary.size > 0);
+        let wasm = std::slice::from_raw_parts(binary.data, binary.size).to_vec();
+        (api.bytes_delete)(&mut binary);
+        wasm
+    };
+    let limits = limits();
+    let mut runtime = Runtime::new(api, &wasm, &limits, None).unwrap();
+    runtime.discard_store();
+    for _ in 0..64 {
+        runtime.install_store(&limits).unwrap();
+        runtime.instantiate().unwrap();
+        assert_eq!(runtime.call(c"read", &[], Some(0)).unwrap(), 0);
+        runtime.call(c"mark", &[], None).unwrap();
+        assert_eq!(runtime.call(c"read", &[], Some(0)).unwrap(), 51);
+        assert!(runtime.call(c"trap", &[], None).is_err());
+        runtime.discard_store();
+    }
+    br#"{"cleanStores":64,"dirtyControl":true,"traps":64}"#.to_vec()
+}
+
+fn romaji_request(text: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": 1,
+        "node": {"kind": "text.romaji-to-hiragana", "version": 1},
+        "operation": {
+            "method": "execute",
+            "config": {"overrides": [], "unknown": "preserve"},
+            "inputs": {"in": {"state": "data", "packet": {
+                "version": 1, "root": {"type": "text", "text": text}
+            }}},
+            "mode": "compose"
+        }
+    }))
+    .unwrap()
+}
+
+fn persistent_batch(api: &Api, artifact: &[u8], expected: &str) -> Vec<u8> {
+    let limits = limits();
+    let initial = Instant::now();
+    let mut runtime = compiled_module::load(api, &limits, None, artifact, expected).unwrap();
+    runtime.discard_store();
+    let initial_us = initial.elapsed().as_micros();
+    let requests = [("kanji", "かんじ"), ("kya", "きゃ"), ("ky", "")]
+        .map(|(input, output)| (romaji_request(input), output));
+    let mut series = Vec::new();
+    for (interval_ms, count) in [(0, 2000), (20, 50), (100, 50)] {
+        let start = Instant::now();
+        let mut rows = Vec::new();
+        let mut late_us = Vec::new();
+        for index in 0..count {
+            let scheduled = start + Duration::from_millis(interval_ms * index);
+            if interval_ms != 0 {
+                std::thread::sleep(scheduled.saturating_duration_since(Instant::now()));
+            }
+            let issued = Instant::now();
+            let (request, expected) = &requests[index as usize % requests.len()];
+            runtime.install_store(&limits).unwrap();
+            runtime.instantiate().unwrap();
+            let reply = runtime.invoke(request).unwrap();
+            runtime.discard_store();
+            rows.push(issued.elapsed().as_micros());
+            if interval_ms != 0 {
+                late_us.push((issued - scheduled).as_micros());
+            }
+            let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["data"]["out"]["packet"]["root"]["text"], *expected);
+        }
+        series.push(
+            serde_json::json!({"intervalMs":interval_ms,"attempts":count,"correct":count,
+            "storeInvokeAndDiscardUs":rows,"scheduleDelayUs":late_us}),
+        );
+    }
+    serde_json::to_vec(&serde_json::json!({"initialModuleUs":initial_us,"series":series})).unwrap()
 }
 
 fn invoke(
@@ -522,4 +616,375 @@ fn residual_modes(modes: [&str; 2]) {
     fs::remove_file(exe).unwrap();
     fs::remove_dir(cache.path()).unwrap();
     naming_profile.delete().unwrap();
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent() {
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut profile = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let wasm = cache
+        .copy(&bundle.join("official/official.wasm"), "official.wasm")
+        .unwrap();
+    let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
+    let expected = digest(&artifact);
+    let (host, _, result) =
+        invoke(&cache, &exe, "persistent", artifact, Some(&expected), false).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&result).unwrap();
+    assert_eq!(report["series"].as_array().unwrap().len(), 3);
+    println!("persistent host_us={host} report={report}");
+    let (_, _, result) = invoke(&cache, &exe, "persistent-state", Vec::new(), None, false).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&result).unwrap();
+    assert_eq!(state["cleanStores"], 64);
+    println!("persistent-state report={state}");
+    for path in [exe, dll, wasm] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    profile.delete().unwrap();
+}
+
+const IPC_READY: &[u8] = b"\nDIY-PERSIST-READY\0";
+const IPC_CASES: [(&str, &str); 3] = [("kanji", "かんじ"), ("kya", "きゃ"), ("ky", "")];
+const GRAPH_CASES: [(&str, &str); 3] = [
+    ("kousui", "降水"),
+    ("honjitudesu", "ほんじつです"),
+    ("ky", ""),
+];
+
+fn ipc_child(api: &Api, graph: bool) {
+    let limits = limits();
+    let expected = fs::read_to_string("artifact.sha256").unwrap();
+    let artifact = fs::read("probe.cwasm").unwrap();
+    assert!(artifact.len() <= CAP);
+    let mut runtime = compiled_module::load(api, &limits, None, &artifact, &expected).unwrap();
+    runtime.discard_store();
+    let cases = if graph { GRAPH_CASES } else { IPC_CASES };
+    let requests = cases.map(|(input, _)| romaji_request(input));
+    let resources = if graph {
+        let dictionary = fs::read("dictionary.tsv").unwrap();
+        assert!(dictionary.len() <= 32 * 1024);
+        let resources = serde_json::json!({"dictionary.tsv": dictionary});
+        let prepare = serde_json::json!({"method":"prepare","config":{"path":"dictionary.tsv"},"resources":resources});
+        assert_eq!(
+            fixed_operation(&mut runtime, &limits, "text.dictionary-exact", prepare),
+            serde_json::json!({"valid":true,"prepared":true})
+        );
+        Some(resources)
+    } else {
+        None
+    };
+    let mut input = std::io::stdin().lock();
+    let mut output = std::io::stdout().lock();
+    output.write_all(IPC_READY).unwrap();
+    output.flush().unwrap();
+    let mut tag = [0];
+    while input.read(&mut tag).unwrap() != 0 {
+        if tag[0] == 255 {
+            panic!("deliberate isolated probe exit");
+        }
+        let request = &requests[tag[0] as usize];
+        let romaji = invoke_fresh(&mut runtime, &limits, request);
+        let reply = if let Some(resources) = &resources {
+            let romaji: serde_json::Value = serde_json::from_slice(&romaji).unwrap();
+            assert_eq!(romaji["ok"], true);
+            graph_output(
+                &mut runtime,
+                &limits,
+                romaji["data"]["out"].clone(),
+                resources,
+            )
+        } else {
+            romaji
+        };
+        output
+            .write_all(&(reply.len() as u32).to_le_bytes())
+            .unwrap();
+        output.write_all(&reply).unwrap();
+        output.flush().unwrap();
+    }
+}
+
+fn invoke_fresh(runtime: &mut Runtime<'_>, limits: &Limits, request: &[u8]) -> Vec<u8> {
+    runtime.install_store(limits).unwrap();
+    runtime.instantiate().unwrap();
+    let reply = runtime.invoke(request).unwrap();
+    runtime.discard_store();
+    reply
+}
+
+fn fixed_operation(
+    runtime: &mut Runtime<'_>,
+    limits: &Limits,
+    kind: &str,
+    operation: serde_json::Value,
+) -> serde_json::Value {
+    let request =
+        serde_json::json!({"apiVersion":1,"node":{"kind":kind,"version":1},"operation":operation});
+    let reply = invoke_fresh(runtime, limits, &serde_json::to_vec(&request).unwrap());
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    assert_eq!(reply["ok"], true, "{kind}");
+    reply["data"].clone()
+}
+
+fn graph_output(
+    runtime: &mut Runtime<'_>,
+    limits: &Limits,
+    mut input: serde_json::Value,
+    resources: &serde_json::Value,
+) -> Vec<u8> {
+    for (kind, config) in [
+        (
+            "text.dictionary-exact",
+            serde_json::json!({"path":"dictionary.tsv"}),
+        ),
+        (
+            "text.select-candidates",
+            serde_json::json!({"unscored":0.0}),
+        ),
+        ("text.stringify", serde_json::json!({})),
+    ] {
+        let mut operation = serde_json::json!({"method":"execute","config":config,"inputs":{"in":input},"mode":"compose"});
+        if kind == "text.dictionary-exact" {
+            operation["resources"] = resources.clone();
+        }
+        input = fixed_operation(runtime, limits, kind, operation)["out"].clone();
+    }
+    serde_json::to_vec(&serde_json::json!({"ok":true,"data":{"out":input}})).unwrap()
+}
+
+fn ipc_wait_ready(output: &mut impl Read) -> std::io::Result<()> {
+    let mut prefix = Vec::new();
+    while prefix.len() < 4096 {
+        let mut byte = [0];
+        output.read_exact(&mut byte)?;
+        prefix.push(byte[0]);
+        if prefix.ends_with(IPC_READY) {
+            return Ok(());
+        }
+    }
+    Err(std::io::Error::other("readiness prefix exceeded limit"))
+}
+
+fn ipc_request(
+    output: &mut impl Read,
+    input: &mut impl Write,
+    tag: u8,
+    expected: &str,
+) -> std::io::Result<()> {
+    input.write_all(&[tag])?;
+    let mut size = [0; 4];
+    output.read_exact(&mut size)?;
+    let size = u32::from_le_bytes(size) as usize;
+    if !(1..=4096).contains(&size) {
+        return Err(std::io::Error::other("invalid response size"));
+    }
+    let mut bytes = vec![0; size];
+    output.read_exact(&mut bytes)?;
+    let reply: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if reply["ok"] != true || reply["data"]["out"]["packet"]["root"]["text"] != expected {
+        return Err(std::io::Error::other("unexpected probe result"));
+    }
+    Ok(())
+}
+
+fn ipc_series(
+    output: &mut impl Read,
+    input: &mut impl Write,
+    cases: [(&str, &str); 3],
+    count_fast: u64,
+) -> std::io::Result<Vec<u8>> {
+    let mut series = Vec::new();
+    for (interval, count) in [(0, count_fast), (20, 50), (100, 50)] {
+        let start = Instant::now();
+        let mut elapsed = Vec::new();
+        let mut late = Vec::new();
+        for i in 0..count {
+            let scheduled = start + Duration::from_millis(interval * i);
+            if interval != 0 {
+                std::thread::sleep(scheduled.saturating_duration_since(Instant::now()));
+            }
+            let issued = Instant::now();
+            let tag = (i % 3) as u8;
+            ipc_request(output, input, tag, cases[tag as usize].1)?;
+            elapsed.push(issued.elapsed().as_micros());
+            if interval != 0 {
+                late.push((issued - scheduled).as_micros());
+            }
+        }
+        series.push(
+            serde_json::json!({"intervalMs":interval,"correct":count,"attempts":count,
+            "roundtripUs":elapsed,"scheduleDelayUs":late}),
+        );
+    }
+    serde_json::to_vec(&series).map_err(std::io::Error::other)
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent_ipc() {
+    persistent_ipc_trials(None);
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent_graph() {
+    for rows in [3, 1000] {
+        persistent_ipc_trials(Some(rows));
+    }
+}
+
+fn persistent_ipc_trials(dictionary_rows: Option<usize>) {
+    use crate::isolated_worker::pipe::{WorkerScope, execute_observed};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let wasm = cache
+        .copy(&bundle.join("official/official.wasm"), "official.wasm")
+        .unwrap();
+    let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
+    let hash = cache
+        .write("artifact.sha256", digest(&artifact).as_bytes())
+        .unwrap();
+    let compiled = cache.write("probe.cwasm", &artifact).unwrap();
+    let dictionary = dictionary_rows.map(|rows| {
+        let mut dictionary =
+            include_str!("../../../distribution/defaults/dictionary.tsv").to_owned();
+        assert!(dictionary.ends_with('\n'));
+        for n in 3..rows {
+            dictionary.push_str(&format!("試験用{n:05}\t合成{n:05}\t1\n"));
+        }
+        cache
+            .write("dictionary.tsv", dictionary.as_bytes())
+            .unwrap()
+    });
+    let graph = dictionary.is_some();
+    let cases = if graph { GRAPH_CASES } else { IPC_CASES };
+    let mode_file = cache
+        .write(
+            "mode.txt",
+            if graph {
+                b"persistent-graph"
+            } else {
+                b"persistent-ipc"
+            },
+        )
+        .unwrap();
+    let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+    let scenarios: &[&str] = if graph {
+        &["normal"]
+    } else {
+        &["normal", "cancel", "crash", "reopen"]
+    };
+    for &scenario in scenarios {
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let control = RunControl {
+            walltime: Some(Duration::from_secs(30)),
+            ..RunControl::default()
+        };
+        let token = control.cancel.clone();
+        let activity = Arc::new(AtomicU64::new(0));
+        let scope = WorkerScope::observed(&profile, &job, &cache, activity.clone())
+            .with_test_exchange(Box::new(move |mut output, mut input| {
+                let result = (|| -> std::io::Result<Vec<u8>> {
+                    ipc_wait_ready(&mut output)?;
+                    match scenario {
+                        "normal" => ipc_series(
+                            &mut output,
+                            &mut input,
+                            cases,
+                            if graph { 200 } else { 2000 },
+                        ),
+                        "cancel" => {
+                            ipc_request(&mut output, &mut input, 0, cases[0].1)?;
+                            token.cancel();
+                            // Keep stdin open until the cancellation path kills the child.
+                            let mut byte = [0];
+                            assert_ne!(output.read(&mut byte).unwrap_or(0), 1);
+                            Ok(Vec::new())
+                        }
+                        "crash" => {
+                            input.write_all(&[255])?;
+                            let mut size = [0; 4];
+                            if output.read_exact(&mut size).is_ok()
+                                && u32::from_le_bytes(size) <= 4096
+                            {
+                                return Err(std::io::Error::other("unexpected crash result"));
+                            }
+                            Ok(Vec::new())
+                        }
+                        _ => {
+                            ipc_request(&mut output, &mut input, 1, cases[1].1)?;
+                            Ok(Vec::new())
+                        }
+                    }
+                })();
+                drop(input);
+                let mut tail = Vec::new();
+                output
+                    .take(8193)
+                    .read_to_end(&mut tail)
+                    .map_err(|e| e.to_string())?;
+                if tail.len() > 8192 {
+                    return Err("unexpected probe tail size".into());
+                }
+                result.map_err(|e| e.to_string())
+            }));
+        let receipt = match execute_observed(scope, &exe, &args, Vec::new(), &control).unwrap() {
+            Outcome::Exited(receipt) => receipt,
+            _ => panic!("session did not prove process exit"),
+        };
+        assert_eq!(activity.load(Ordering::Acquire), 0);
+        let bytes = receipt.output().unwrap();
+        match scenario {
+            "cancel" => assert_eq!(receipt.reason(), EndReason::Cancelled),
+            "crash" => {
+                assert_eq!(receipt.reason(), EndReason::Exited);
+                assert_ne!(receipt.exit_code(), Some(0));
+            }
+            _ => {
+                assert_eq!(receipt.reason(), EndReason::Exited);
+                assert_eq!(receipt.exit_code(), Some(0));
+            }
+        }
+        let (cpu, peak) = job_usage(&job);
+        println!("ipc {scenario} cpu_100ns={cpu} peak_job_bytes={peak}");
+        if scenario == "normal" {
+            println!(
+                "ipc rows={} report={}",
+                dictionary_rows.unwrap_or(0),
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+    }
+    for path in [exe, dll, wasm, hash, compiled, mode_file] {
+        fs::remove_file(path).unwrap();
+    }
+    if let Some(path) = dictionary {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
 }

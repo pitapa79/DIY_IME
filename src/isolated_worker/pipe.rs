@@ -302,8 +302,12 @@ pub(super) struct WorkerScope<'a> {
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
     #[cfg(test)]
+    exchange: Option<TestExchange>,
+    #[cfg(test)]
     prepared: bool,
 }
+#[cfg(test)]
+type TestExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 impl<'a> WorkerScope<'a> {
     pub(super) fn observed(
         profile: &'a Profile,
@@ -317,6 +321,8 @@ impl<'a> WorkerScope<'a> {
             cache,
             activity: Some(activity),
             #[cfg(test)]
+            exchange: None,
+            #[cfg(test)]
             prepared: false,
         }
     }
@@ -327,12 +333,19 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: None,
+            #[cfg(test)]
+            exchange: None,
             prepared: true,
         }
     }
     #[cfg(test)]
     pub(super) fn observe_start(mut self, activity: Arc<AtomicU64>) -> Self {
         self.activity = Some(activity);
+        self
+    }
+    #[cfg(test)]
+    pub(super) fn with_test_exchange(mut self, exchange: TestExchange) -> Self {
+        self.exchange = Some(exchange);
         self
     }
 }
@@ -351,6 +364,8 @@ pub fn execute<'a>(
             job,
             cache,
             activity: None,
+            #[cfg(test)]
+            exchange: None,
             #[cfg(test)]
             prepared: false,
         },
@@ -384,6 +399,8 @@ pub(super) fn execute_with_diagnostics<'a>(
         job,
         cache,
         activity,
+        #[cfg(test)]
+        exchange,
         #[cfg(test)]
         prepared,
     } = scope;
@@ -589,93 +606,104 @@ pub(super) fn execute_with_diagnostics<'a>(
     }
     let file = unsafe { std::fs::File::from_raw_handle(read.0) };
     std::mem::forget(read);
-    let mut writer = unsafe { std::fs::File::from_raw_handle(send.0) };
+    let writer = unsafe { std::fs::File::from_raw_handle(send.0) };
     std::mem::forget(send);
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
+    #[cfg(not(test))]
+    let pipes = Some((file, writer));
     #[cfg(test)]
-    let (ready_send, ready_receive) = if prepared {
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
-        (Some(send), Some(receive))
+    let pipes = if let Some(exchange) = exchange {
+        running.output = Some(thread::spawn(move || exchange(file, writer)));
+        None
     } else {
-        (None, None)
+        Some((file, writer))
     };
-    #[cfg(test)]
-    let delivery = running.delivery.clone();
-    #[cfg(test)]
-    let response = running.delivery.clone();
-    #[cfg(test)]
-    let delivery_cancel = control.cancel.clone();
-    running.output = Some(thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut output = file.take((WIRE_LIMIT + 1) as u64);
+    if let Some((file, mut writer)) = pipes {
         #[cfg(test)]
-        if let Some(ready) = ready_send {
-            // This signal belongs only to the fixed test child.
-            while bytes.len() < 4096 && !bytes.ends_with(PROBE_READY) {
-                let mut byte = [0];
-                if output.read_exact(&mut byte).is_err() {
-                    return Err("prepared probe exited before readiness".into());
-                }
-                bytes.push(byte[0]);
-            }
-            if !bytes.ends_with(PROBE_READY) || ready.send(()).is_err() {
-                return Err("prepared probe readiness failed".into());
-            }
-        }
+        let (ready_send, ready_receive) = if prepared {
+            let (send, receive) = std::sync::mpsc::sync_channel(1);
+            (Some(send), Some(receive))
+        } else {
+            (None, None)
+        };
         #[cfg(test)]
-        if let Some(response) = response {
-            let mut chunk = [0u8; 4096];
-            while let Ok(n) = output.read(&mut chunk) {
-                if n == 0 {
-                    break;
+        let delivery = running.delivery.clone();
+        #[cfg(test)]
+        let response = running.delivery.clone();
+        #[cfg(test)]
+        let delivery_cancel = control.cancel.clone();
+        running.output = Some(thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let mut output = file.take((WIRE_LIMIT + 1) as u64);
+            #[cfg(test)]
+            if let Some(ready) = ready_send {
+                // This signal belongs only to the fixed test child.
+                while bytes.len() < 4096 && !bytes.ends_with(PROBE_READY) {
+                    let mut byte = [0];
+                    if output.read_exact(&mut byte).is_err() {
+                        return Err("prepared probe exited before readiness".into());
+                    }
+                    bytes.push(byte[0]);
                 }
-                bytes.extend_from_slice(&chunk[..n]);
-                if let Some(frame) = bytes
-                    .windows(PROBE_RESULT.len())
-                    .position(|b| b == PROBE_RESULT)
-                {
-                    let start = frame + PROBE_RESULT.len();
-                    if let Some(length) = bytes.get(start + 8..start + 12) {
-                        let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
-                        if bytes.len() >= start + 12 + length {
-                            response.lock().unwrap().response = Some(Instant::now());
-                            break;
+                if !bytes.ends_with(PROBE_READY) || ready.send(()).is_err() {
+                    return Err("prepared probe readiness failed".into());
+                }
+            }
+            #[cfg(test)]
+            if let Some(response) = response {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = output.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(frame) = bytes
+                        .windows(PROBE_RESULT.len())
+                        .position(|b| b == PROBE_RESULT)
+                    {
+                        let start = frame + PROBE_RESULT.len();
+                        if let Some(length) = bytes.get(start + 8..start + 12) {
+                            let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
+                            if bytes.len() >= start + 12 + length {
+                                response.lock().unwrap().response = Some(Instant::now());
+                                break;
+                            }
                         }
                     }
                 }
             }
-        }
-        let result = output.read_to_end(&mut bytes);
-        if bytes.len() > WIRE_LIMIT {
-            exceeded.store(true, Ordering::Release);
-            return Err("Worker output exceeds wire limit".into());
-        }
-        match result {
-            Ok(_) => Ok(bytes),
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
-            Err(_) => Err("Worker output pipe failed".into()),
-        }
-    }));
-    running.input = Some(thread::spawn(move || {
-        #[cfg(test)]
-        if let Some(ready) = ready_receive {
-            ready
-                .recv_timeout(Duration::from_secs(30))
-                .map_err(|_| "prepared probe not ready")?;
-            if delivery_cancel.is_cancelled() {
-                return Err("prepared probe cancelled before delivery".into());
+            let result = output.read_to_end(&mut bytes);
+            if bytes.len() > WIRE_LIMIT {
+                exceeded.store(true, Ordering::Release);
+                return Err("Worker output exceeds wire limit".into());
             }
-            delivery
-                .expect("prepared delivery clock")
-                .lock()
-                .unwrap()
-                .sent = Some(Instant::now());
-        }
-        writer
-            .write_all(&request)
-            .map_err(|_| "Worker input pipe failed".into())
-    }));
+            match result {
+                Ok(_) => Ok(bytes),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
+                Err(_) => Err("Worker output pipe failed".into()),
+            }
+        }));
+        running.input = Some(thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(ready) = ready_receive {
+                ready
+                    .recv_timeout(Duration::from_secs(30))
+                    .map_err(|_| "prepared probe not ready")?;
+                if delivery_cancel.is_cancelled() {
+                    return Err("prepared probe cancelled before delivery".into());
+                }
+                delivery
+                    .expect("prepared delivery clock")
+                    .lock()
+                    .unwrap()
+                    .sent = Some(Instant::now());
+            }
+            writer
+                .write_all(&request)
+                .map_err(|_| "Worker input pipe failed".into())
+        }));
+    }
     if control.cancel.is_cancelled() {
         return Ok(running.stop(EndReason::Cancelled, control.termination_grace));
     }
