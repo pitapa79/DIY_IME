@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod choice_payload;
 mod dictionary_wire;
 
 const MARKER: &[u8] = PROBE_RESULT;
@@ -127,6 +128,8 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode == "candidate-payload" {
+        choice_payload::guest(api.as_ref().unwrap(), input)
     } else if mode == "dictionary-wire" {
         dictionary_wire::guest(api.as_ref().unwrap(), input)
     } else if mode == "persistent" {
