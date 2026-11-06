@@ -20,6 +20,7 @@ const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
 
 mod dictionary_range;
 mod prepared_graph;
+mod range_pipeline;
 mod speculative;
 
 fn digest(bytes: &[u8]) -> String {

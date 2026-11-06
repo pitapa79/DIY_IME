@@ -18,15 +18,15 @@ const WASM_CHILD: &str =
     "isolated_worker::runtime::compiled_module_probe::dictionary_range::child_wasm";
 const FILE_CANARY: &str =
     "isolated_worker::runtime::compiled_module_probe::dictionary_range::child_file_canary";
-const READY: &[u8] = b"\nDIY-RANGE-READY\0";
+pub(super) const READY: &[u8] = b"\nDIY-RANGE-READY\0";
 const RECORD: usize = 16;
 const PAGE: usize = 4096;
 const ROWS_PER_PAGE: usize = PAGE / RECORD;
 const MAX_READS: usize = 16;
-const ASSET: u8 = 7;
-const ABSENT: u64 = u64::MAX;
+pub(super) const ASSET: u8 = 7;
+pub(super) const ABSENT: u64 = u64::MAX;
 
-fn integer(input: &mut impl Read) -> io::Result<u64> {
+pub(super) fn integer(input: &mut impl Read) -> io::Result<u64> {
     let mut bytes = [0; 8];
     input.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
@@ -36,14 +36,14 @@ fn value(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(bytes.try_into().unwrap())
 }
 
-enum Search {
+pub(super) enum Search {
     Before,
     After,
     Found(u64),
     Missing,
 }
 
-fn lookup(rows: usize, mut search: impl FnMut(usize) -> Search) -> u64 {
+pub(super) fn lookup(rows: usize, mut search: impl FnMut(usize) -> Search) -> u64 {
     let mut low = 0;
     let mut high = rows.div_ceil(ROWS_PER_PAGE);
     while low < high {
@@ -127,11 +127,16 @@ fn verify_private_asset(cache: &Cache, exe: &Path, path: &Path) {
 #[test]
 #[ignore = "Wasm child of the fixed AppContainer range probe"]
 fn child_wasm() {
-    use super::super::Bytes;
-    use std::ptr;
     super::require_appcontainer().unwrap();
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
     let api = Api::load(&dll).unwrap();
+    let mut runtime = page_runtime(&api);
+    child_lookup(|key, page| search_wasm(&mut runtime, key, page));
+}
+
+pub(super) fn page_runtime<'a>(api: &'a Api) -> Runtime<'a> {
+    use super::super::Bytes;
+    use std::ptr;
     let wat = include_bytes!("range_lookup.wat");
     let module = {
         let mut bytes = Bytes {
@@ -151,21 +156,22 @@ fn child_wasm() {
             module
         }
     };
-    let mut runtime = Runtime::new(&api, &module, &limits(), None).unwrap();
-    child_lookup(|key, page| {
-        let mut input = Vec::with_capacity(8 + page.len());
-        input.extend_from_slice(&key.to_le_bytes());
-        input.extend_from_slice(page);
-        let reply = runtime.invoke(&input).unwrap();
-        assert_eq!(reply.len(), 9);
-        match reply[0] {
-            0 => Search::Missing,
-            1 => Search::Before,
-            2 => Search::After,
-            3 => Search::Found(value(&reply[1..])),
-            _ => panic!("invalid search reply"),
-        }
-    });
+    Runtime::new(api, &module, &limits(), None).unwrap()
+}
+
+pub(super) fn search_wasm(runtime: &mut Runtime<'_>, key: u64, page: &[u8]) -> Search {
+    let mut input = Vec::with_capacity(8 + page.len());
+    input.extend_from_slice(&key.to_le_bytes());
+    input.extend_from_slice(page);
+    let reply = runtime.invoke(&input).unwrap();
+    assert_eq!(reply.len(), 9);
+    match reply[0] {
+        0 => Search::Missing,
+        1 => Search::Before,
+        2 => Search::After,
+        3 => Search::Found(value(&reply[1..])),
+        _ => panic!("invalid search reply"),
+    }
 }
 
 fn child_lookup(mut search: impl FnMut(u64, &[u8]) -> Search) {
@@ -203,13 +209,13 @@ struct Stats {
     denied: bool,
 }
 
-struct Asset {
-    file: fs::File,
-    rows: usize,
+pub(super) struct Asset {
+    pub(super) file: fs::File,
+    pub(super) rows: usize,
 }
 
 impl Asset {
-    fn page(
+    pub(super) fn page(
         &mut self,
         id: u8,
         index: u64,
