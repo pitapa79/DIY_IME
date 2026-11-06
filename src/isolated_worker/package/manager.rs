@@ -73,6 +73,11 @@ impl ManagerConfig {
             b"\0asm\x01\0\0\0".to_vec(),
             policy.clone(),
         )?;
+        let runtime = if self.official_root.is_some() {
+            runtime.enable_official_compilation()
+        } else {
+            runtime
+        };
         Ok((
             Catalog::open(&self.data_root, self.limits.clone())?,
             PackageVerifier::new(runtime, policy).with_dictionary_bindings(

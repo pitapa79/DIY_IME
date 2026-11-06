@@ -7,8 +7,8 @@ publish = false
 description = "DIY_IME2 の文章候補データと変換エンジン"
 
 [features]
-# Local distribution comparison only. Standard builds use the ordinary JIT.
-compiled-module-probe = []
+# Matched control builds for the local Windows distribution comparison.
+compiled-module-jit-baseline = []
 
 [dependencies]
 semver = { version = "=1.0.28", features = ["serde"] }

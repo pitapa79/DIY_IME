@@ -1,6 +1,6 @@
 //! Developer-only experiment. The parent accepts native bytes only from the
 //! successful exit of its own compile-only AppContainer, then holds them in memory.
-use super::{Api, Bytes, Limits, P, Runtime, create_engine, require_appcontainer};
+use super::{Api, Limits, Runtime, compiled_module, require_appcontainer};
 use crate::isolated_worker::{Cache, EndReason, Job, Outcome, Profile, RunControl, execute};
 use std::{
     ffi::OsString,
@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MODULE_HASH: &str = "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134";
 const MARKER: &[u8] = b"\nDIY-MODULE-PROBE\0";
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
@@ -32,7 +31,7 @@ fn limits() -> Limits {
 
 fn wasm() -> Vec<u8> {
     let wasm = fs::read("official.wasm").expect("staged probe Wasm");
-    assert_eq!(digest(&wasm), MODULE_HASH);
+    assert_eq!(digest(&wasm), compiled_module::OFFICIAL_WASM_HASH);
     wasm
 }
 
@@ -52,32 +51,7 @@ fn child() {
     let started = Instant::now();
     let output = if mode == "compile" {
         assert!(input.is_empty());
-        let wasm = wasm();
-        let engine = create_engine(&api, &limits()).unwrap();
-        let mut module = ptr::null_mut();
-        let mut bytes = Bytes {
-            size: 0,
-            data: ptr::null_mut(),
-        };
-        // SAFETY: signatures and ownership follow the pinned C header. This
-        // branch never creates a Store or invokes code from the input module.
-        unsafe {
-            let serialize: unsafe extern "C" fn(P, *mut Bytes) -> P =
-                symbol(&api, c"wasmtime_module_serialize");
-            api.check(
-                (api.module_new)(engine, wasm.as_ptr(), wasm.len(), &mut module),
-                ptr::null_mut(),
-            )
-            .unwrap();
-            api.check(serialize(module, &mut bytes), ptr::null_mut())
-                .unwrap();
-            assert!((1..=CAP).contains(&bytes.size) && !bytes.data.is_null());
-            let output = std::slice::from_raw_parts(bytes.data, bytes.size).to_vec();
-            (api.bytes_delete)(&mut bytes);
-            (api.module_delete)(module);
-            (api.engine_delete)(engine);
-            output
-        }
+        compiled_module::compile(&api, &limits(), &wasm()).unwrap()
     } else {
         let mut runtime = match mode.as_str() {
             "jit" => {
@@ -86,20 +60,7 @@ fn child() {
             }
             "reuse" => {
                 let expected = fs::read_to_string("artifact.sha256").unwrap();
-                assert_eq!(digest(&input), expected, "compiled bytes changed");
-                Runtime::with_module(&api, &limits(), None, |engine, module| {
-                    // SAFETY: the parent generated the bytes with the same DLL,
-                    // Wasm and engine policy and staged their digest read-only.
-                    unsafe {
-                        let deserialize: unsafe extern "C" fn(P, *const u8, usize, *mut P) -> P =
-                            symbol(&api, c"wasmtime_module_deserialize");
-                        api.check(
-                            deserialize(engine, input.as_ptr(), input.len(), module),
-                            ptr::null_mut(),
-                        )
-                    }
-                })
-                .unwrap()
+                compiled_module::load(&api, &limits(), None, &input, &expected).unwrap()
             }
             _ => panic!("invalid probe mode"),
         };
@@ -128,14 +89,6 @@ fn child() {
         .unwrap();
     stdout.write_all(&output).unwrap();
     stdout.flush().unwrap();
-}
-
-unsafe fn symbol<T: Copy>(api: &Api, name: &std::ffi::CStr) -> T {
-    // SAFETY: callers select exact types for the verified pinned DLL exports.
-    let pointer = unsafe { super::GetProcAddress(api._library.0, name.as_ptr().cast()) };
-    assert!(!pointer.is_null());
-    assert_eq!(std::mem::size_of::<T>(), std::mem::size_of_val(&pointer));
-    unsafe { std::mem::transmute_copy(&pointer) }
 }
 
 fn invoke(

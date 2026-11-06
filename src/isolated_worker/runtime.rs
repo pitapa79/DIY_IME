@@ -61,13 +61,12 @@ fn require_appcontainer() -> Result<(), String> {
     Ok(())
 }
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
-    #[cfg(feature = "compiled-module-probe")]
     let (args, mode) = {
         let mut args = args;
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
-        let mode = if flag == "--probe-compile" {
+        let mode = if flag == "--compile-official" {
             ModuleMode::Compile
-        } else if let Some(digest) = flag.strip_prefix("--probe-reuse=") {
+        } else if let Some(digest) = flag.strip_prefix("--compiled-official=") {
             ModuleMode::Reuse(digest.to_owned())
         } else {
             ModuleMode::Jit
@@ -77,8 +76,6 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         }
         (args, mode)
     };
-    #[cfg(not(feature = "compiled-module-probe"))]
-    let mode = ModuleMode::Jit;
     if args.len() != 5 && args.len() != 6 {
         return Err("expected runtime module module-length fuel memory".into());
     }
@@ -393,6 +390,7 @@ impl<'a> Runtime<'a> {
         diagnostics: Option<&'a Recorder>,
     ) -> Result<Self, String> {
         Self::with_module(api, limits, diagnostics, |engine, result| {
+            let _compile = diagnostics.map(|d| d.span(WorkerTracePhase::Compile));
             // SAFETY: the module bytes remain live until compilation returns.
             unsafe {
                 api.check(
@@ -439,9 +437,7 @@ impl<'a> Runtime<'a> {
                 api.check((api.fuel_set)(result.context, fuel), ptr::null_mut())?;
             }
             drop(engine_phase);
-            let compile_phase = diagnostics.map(|d| d.span(WorkerTracePhase::Compile));
             load(engine, &mut result.module)?;
-            drop(compile_phase);
             let _instantiate = diagnostics.map(|d| d.span(WorkerTracePhase::Instantiate));
             let mut trap = ptr::null_mut();
             let error = (api.instantiate)(
@@ -601,16 +597,12 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
 mod compiled_module_probe;
 enum ModuleMode {
     Jit,
-    #[cfg(feature = "compiled-module-probe")]
     Compile,
-    #[cfg(feature = "compiled-module-probe")]
     Reuse(String),
 }
 
-#[cfg(feature = "compiled-module-probe")]
-mod compiled_host_probe;
-#[cfg(feature = "compiled-module-probe")]
-pub(super) use compiled_host_probe::OFFICIAL_WASM_HASH as OFFICIAL_PROBE_HASH;
+mod compiled_module;
+pub(super) use compiled_module::OFFICIAL_WASM_HASH;
 
 fn run(
     args: Vec<std::ffi::OsString>,
@@ -666,10 +658,9 @@ fn run(
         return Err("module exceeds probe limit".into());
     }
     drop(module_phase);
-    #[cfg(feature = "compiled-module-probe")]
     if matches!(mode, ModuleMode::Compile) {
         use std::io::Write;
-        let artifact = compiled_host_probe::compile(&api, &limits, &module)?;
+        let artifact = compiled_module::compile(&api, &limits, &module)?;
         return std::io::stdout()
             .lock()
             .write_all(&artifact)
@@ -692,11 +683,9 @@ fn run(
     drop(input_phase);
     let mut guest = match mode {
         ModuleMode::Jit => Runtime::new(&api, &module, &limits, diagnostics)?,
-        #[cfg(feature = "compiled-module-probe")]
         ModuleMode::Reuse(digest) => {
-            compiled_host_probe::load(&api, &limits, diagnostics, &module, &digest)?
+            compiled_module::load(&api, &limits, diagnostics, &module, &digest)?
         }
-        #[cfg(feature = "compiled-module-probe")]
         ModuleMode::Compile => unreachable!("compile returns before guest input"),
     };
     if expected_module.is_some() {

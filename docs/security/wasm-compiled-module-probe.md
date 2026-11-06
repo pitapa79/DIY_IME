@@ -22,7 +22,7 @@ cargo test --locked --lib isolated_worker::runtime::compiled_module_probe::compa
 
 保存済みファイルや第三者由来の成果はこの試験の入力に含めません。Wasmtimeが任意の入力に対するデシリアライズの安全を保証していないため、生成元と不変性が製品統合の条件になります。[Wasmtime 50.0.1 C API](https://raw.githubusercontent.com/bytecodealliance/wasmtime/v50.0.1/crates/c-api/include/wasmtime/module.h)
 
-## 配布Hostの試験ビルド
+## 配布Hostの試験ビルド（#22時点）
 
 `scripts/compare-compiled-host-probe.ps1 -Bundle <windows-app> -Rounds 1` は、上記の固定配布物のハッシュを照合してから、同じソース・Rustツールチェーンで作った外部Host・パッケージ管理・Workerの3バイナリーを別々のローカルコピーに配置します。公式Wasm、辞書、グラフ、Node、Wasmtimeは両方で同じです。再利用側だけが開発用Cargo featureを使用します。試験結果と配布コピーはローカルの `target/` に生成されます。
 
@@ -43,3 +43,11 @@ cargo test --locked --lib isolated_worker::runtime::compiled_module_probe::compa
 再利用版の配布コピーで `scripts/check-windows-distribution.mjs <windows-app> --authority-regression` を実行しました。既存の互換性19件と強制終了回収に加え、Worker稼働中の取消・保護・権限撤回を検査しました。取消後はterminalかつ物理カウント0を確認し、保護・撤回後は旧結果の取得と新規実行を拒否し、Worker数と物理ジョブ数が0に戻りました。
 
 単一Nodeの8ペアを別途再実行し、元プロセスハンドルの実終了後にWindows Jobの資源計数を取得しました。各JobのCPU時間（ユーザー＋カーネル）の中央値はJIT 1,828 ms、再利用188 ms、Jobのピークコミットは47.6 MBと29.0 MBでした。初回コンパイラーはCPU 1,844 ms、ピーク47.8 MB、成果3.18 MBでした。CPUは全スレッドの合計で経過時間と別です。これらはWorker単体の値で、親・配布アプリ全体のCPU/RAMや保持中の資産費用を含みません。
+
+## 通常配布Hostへの統合（#24）
+
+標準ビルドの再利用対象は、公式配布資産を構成したHostで、固定公式Wasmの完全ハッシュと既定の燃料・ゲストメモリー設定が一致する場合に限ります。コンパイル専用Workerは入力を受け取らず、Storeを作りません。Hostは実終了を確認した自分のコンパイラーから得た成果を、そのHostの生存中だけ読取専用資産として保持します。実行Workerは毎回新しく作り、資産の長さとハッシュを確認した後にデシリアライズします。元の認可、入力、結果の検査と終了処理を使います。
+
+コンパイル結果がまだ使えない場合は、入力を渡す前に通常JITを選べます。生成に失敗した場合、そのHostは通常JITを使います。取消された生成は次回の生成機会を残します。コンパイル済み資産を選んだ後の呼出しの失敗は、その呼出しの失敗として返します。
+
+比較は Windows x64 の固定公開配布物を指定し、RustとPython 3のある開発環境で `scripts/compare-compiled-host-probe.ps1 -Bundle <windows-app> -Rounds 3 -Sessions 2` を実行します。対照は開発用 `compiled-module-jit-baseline` featureでビルドし、同じ環境で順番を交替します。各回で計測ドライバーを実行前にWindows Jobへ入れ、すべての子孫終了後にCPU時間とピークコミットを取得します。Job全体の資源値は新規導入、計画準備、入力、終了を含みます。待ち時間の報告はこれらの工程を区別します。
