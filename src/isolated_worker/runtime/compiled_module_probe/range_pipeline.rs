@@ -125,9 +125,43 @@ struct Sample {
     planned: Option<Instant>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Boundary {
+    None,
+    Cancel,
+    Supersede,
+    SwitchDocument,
+    Protect,
+    RevokeDictionary,
+}
+
+impl Boundary {
+    fn stops_worker(self) -> bool {
+        matches!(
+            self,
+            Self::Cancel | Self::SwitchDocument | Self::Protect | Self::RevokeDictionary
+        )
+    }
+}
+
+#[derive(Default)]
+struct Context {
+    generation: u64,
+    document: u64,
+    protected: bool,
+}
+
+impl Context {
+    fn accepts(&self, generation: u64, document: u64) -> bool {
+        self.generation == generation && self.document == document && !self.protected
+    }
+}
+
 #[derive(Default)]
 struct Observations {
     ready_us: u128,
+    rejected_replies: usize,
+    denied_reads: usize,
     samples: Vec<(Instant, Instant, Instant, usize)>,
 }
 
@@ -136,7 +170,7 @@ fn exchange(
     mut asset: Asset,
     samples: Vec<Sample>,
     cancel: CancellationToken,
-    withdraw: bool,
+    boundary: Boundary,
     observations: Arc<Mutex<Observations>>,
     launch: Instant,
 ) -> io::Result<Vec<u8>> {
@@ -151,7 +185,9 @@ fn exchange(
         return Err(io::Error::other("missing ready"));
     }
     observations.lock().unwrap().ready_us = launch.elapsed().as_micros();
-    for sample in samples {
+    let mut context = Context::default();
+    for (request, sample) in samples.into_iter().enumerate() {
+        let (generation, document) = (context.generation, context.document);
         if let Some(planned) = sample.planned {
             std::thread::sleep(planned.saturating_duration_since(Instant::now()));
         }
@@ -176,6 +212,22 @@ fn exchange(
                     actual,
                     json!([kana, candidates(kana, sample.tag == 0), text])
                 );
+                if request == 0 {
+                    match boundary {
+                        Boundary::Supersede => context.generation += 1,
+                        Boundary::SwitchDocument => context.document += 1,
+                        Boundary::Protect => context.protected = true,
+                        _ => {}
+                    }
+                }
+                if !context.accepts(generation, document) {
+                    observations.lock().unwrap().rejected_replies += 1;
+                    if boundary.stops_worker() {
+                        cancel.cancel();
+                        return Err(io::Error::other("context changed before publication"));
+                    }
+                    break;
+                }
                 observations.lock().unwrap().samples.push((
                     sample.planned.unwrap_or(sent),
                     sent,
@@ -184,8 +236,13 @@ fn exchange(
                 ));
                 break;
             }
-            if withdraw {
+            if boundary == Boundary::Cancel
+                || (boundary == Boundary::RevokeDictionary && reads == 1)
+            {
                 cancel.cancel();
+                assert!(asset.page(id[0], index, reads, &cancel).is_err());
+                observations.lock().unwrap().denied_reads += 1;
+                return Err(io::Error::other("page access withdrawn"));
             }
             let page = asset.page(id[0], index, reads, &cancel)?;
             reads += 1;
@@ -207,7 +264,7 @@ fn run(
     samples: Vec<Sample>,
     interval: u64,
     retained: bool,
-    withdraw: bool,
+    boundary: Boundary,
 ) {
     let mut profile = Profile::new().unwrap();
     cache.allow_read_execute(&profile).unwrap();
@@ -229,7 +286,7 @@ fn run(
                 asset,
                 samples,
                 worker_cancel,
-                withdraw,
+                boundary,
                 worker_observations,
                 launched,
             )
@@ -247,7 +304,7 @@ fn run(
         else {
             panic!("missing physical exit receipt")
         };
-        if withdraw {
+        if boundary.stops_worker() {
             assert!(receipt.output().is_err());
         } else {
             assert_eq!(receipt.reason(), EndReason::Exited);
@@ -261,7 +318,33 @@ fn run(
     cache.revoke_read_execute(&profile).unwrap();
     profile.delete().unwrap();
     let measured = observations.lock().unwrap();
-    assert_eq!(measured.samples.len(), if withdraw { 0 } else { count });
+    let expected = match boundary {
+        Boundary::None => count,
+        Boundary::Supersede => count - 1,
+        _ => 0,
+    };
+    assert_eq!(measured.samples.len(), expected);
+    assert_eq!(
+        measured.rejected_replies,
+        usize::from(matches!(
+            boundary,
+            Boundary::Supersede | Boundary::SwitchDocument | Boundary::Protect
+        ))
+    );
+    assert_eq!(
+        measured.denied_reads,
+        usize::from(matches!(
+            boundary,
+            Boundary::Cancel | Boundary::RevokeDictionary
+        ))
+    );
+    println!(
+        "pipeline-boundary {boundary:?} accepted={} rejected={} denied_reads={}",
+        measured.samples.len(),
+        measured.rejected_replies,
+        measured.denied_reads,
+    );
+    let withdraw = boundary.stops_worker();
     println!(
         "pipeline-process retained={retained} interval={interval} ready_us={} cpu_100ns={cpu} peak_bytes={peak} withdrawn={withdraw}",
         measured.ready_us
@@ -337,7 +420,7 @@ fn range_pipeline_cost() {
                 }],
                 interval,
                 false,
-                false,
+                Boundary::None,
             );
         }
         let start = Instant::now() + Duration::from_secs(1);
@@ -351,7 +434,7 @@ fn range_pipeline_cost() {
                 },
             })
             .collect();
-        run(&cache, &exe, &file, samples, interval, true, false);
+        run(&cache, &exe, &file, samples, interval, true, Boundary::None);
     }
     for retained in [false, true] {
         run(
@@ -364,8 +447,27 @@ fn range_pipeline_cost() {
             }],
             0,
             retained,
-            true,
+            Boundary::Cancel,
         );
+    }
+    for _ in 0..5 {
+        for boundary in [
+            Boundary::Supersede,
+            Boundary::SwitchDocument,
+            Boundary::Protect,
+            Boundary::RevokeDictionary,
+        ] {
+            let tags: &[u8] = if boundary == Boundary::Supersede {
+                &[0, 1]
+            } else {
+                &[0]
+            };
+            let samples = tags
+                .iter()
+                .map(|&tag| Sample { tag, planned: None })
+                .collect();
+            run(&cache, &exe, &file, samples, 0, true, boundary);
+        }
     }
     drop(file);
     for path in [asset, hash, compiled, wasm, dll, exe] {
