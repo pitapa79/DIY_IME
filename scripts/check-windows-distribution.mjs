@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import assert from 'node:assert/strict';
-const [folder]=process.argv.slice(2);if(!folder)throw Error('usage: BUILT_APPLICATION_FOLDER');
+const [folder, option, ...extra]=process.argv.slice(2);
+if(!folder||extra.length||(option!==undefined&&option!=='--authority-regression'))throw Error('usage: BUILT_APPLICATION_FOLDER [--authority-regression]');
 const root=mkdtempSync(join(tmpdir(),'diyime-app-smoke-')),data=join(root,'data'),manifest=JSON.parse(readFileSync(join(folder,'bundle-manifest.json'),'utf8'));
 for(const file of manifest.files){assert(!file.path.includes('..')&&!file.path.includes('\\')&&!file.path.startsWith('/'));const bytes=readFileSync(join(folder,file.path));assert.equal(bytes.length,file.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),file.sha256);}
 let child,url,beat,closed;
@@ -60,7 +61,43 @@ try{
  const failure=await compatibilityRun([{node:'romaji',port:'out'}],'q');assert.equal(port(failure,'romaji').status,'error');assert(failure.causes.length>0);
  console.log(JSON.stringify({kind:'official-wasm-cutover-compatibility',definitions:52,compatibilityRuns,legacyGraphs:true,romajiSnapshots:8,dictionarySnapshots:4,noOutput:true,error:true,physicalEnding:true}));
  await call('api/external/connections/'+connection,undefined,'DELETE');await stop();
- const restartMs=await start();connection=(await call('api/external/connections',{})).connectionId;const reopened=await host({method:'prepare',graph});assert.equal(reopened.missing.length,0);await host({method:'activate',reviewId:reopened.reviewId});await stop();
+ const restartMs=await start();connection=(await call('api/external/connections',{})).connectionId;const reopened=await host({method:'prepare',graph});assert.equal(reopened.missing.length,0);await host({method:'activate',reviewId:reopened.reviewId});
+ if(option==='--authority-regression'){
+  const endpoint='api/external/connections/'+connection+'/request';
+  const startRequest=(startKey,revision)=>({method:'run',request:{startKey:String(startKey),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text:'kousui',mode:'compose'}}});
+  const workerRunning=()=>until(async()=> (await host({method:'status'})).workerProcesses>0,10000);
+  const drained=()=>until(async()=>{const status=await host({method:'status'});return status.workerProcesses===0&&status.physical.physicalJobs===0?status:null;},10000);
+  const refused=async (operation,code)=>{const {response,value}=await request(endpoint,operation);assert(!response.ok);assert.equal(value.ok,false);assert.equal(value.error?.code,code);};
+  const cancelled=(await host(startRequest(1,1))).receipt;
+  await workerRunning();
+  await host({method:'cancelRun',key:cancelled.key});
+  await drained();
+  const {snapshot}=await host({method:'getRun',key:cancelled.key});
+  assert.equal(snapshot.state,'terminal');
+  assert(Object.values(snapshot.physical).every(value=>value===0));
+  assert.equal(snapshot.result?.reason,'cancelled');
+  await host({method:'invalidateInput',expectedPlanVersion:'1',revision:2});
+  const protectedRun=(await host(startRequest(2,2))).receipt;
+  await workerRunning();
+  await host({method:'protection',enabled:true});
+  assert.equal((await drained()).phase,'protected');
+  await refused({method:'getRun',key:protectedRun.key},'external-protected');
+  await refused(startRequest(3,3),'external-protected');
+  await host({method:'protection',enabled:false});
+  const restored=await host({method:'prepare',graph});
+  assert.equal(restored.missing.length,0);
+  await host({method:'activate',reviewId:restored.reviewId});
+  const revokedRun=(await host(startRequest(1,1))).receipt;
+  await workerRunning();
+  const subject=restored.requests.find(item=>item.kind==='execute');
+  assert(subject);
+  await host({method:'revoke',id:subject.id});
+  assert.equal((await drained()).phase,'empty');
+  await refused({method:'getRun',key:revokedRun.key},'external-not-ready');
+  await refused(startRequest(2,2),'external-not-ready');
+  console.log(JSON.stringify({kind:'built-windows-authority-regression',cancelDuringWorker:true,protectDuringWorker:true,revokeDuringWorker:true,physicalEnding:true}));
+ }
+ await stop();
  // A crashed launcher must not orphan the privileged server/Host or isolated Workers.
  const crashData=join(root,'crash-data');child=spawn(join(folder,'DIY_IME2.exe'),['--no-browser','--data-root',crashData,'--port','0'],{stdio:'pipe',windowsHide:true,env:{...process.env,PATH:''}});child.stderr.on('data',()=>{});closed=new Promise(resolve=>child.once('close',code=>resolve(code)));const crashLines=createInterface({input:child.stdout});url=await new Promise((resolve,reject)=>{crashLines.once('line',line=>resolve(JSON.parse(line).url));child.once('close',code=>reject(Error('crash probe launch '+code)));});
  const rootPid=child.pid,system=process.env.SystemRoot;

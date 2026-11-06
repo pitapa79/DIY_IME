@@ -161,6 +161,11 @@ fn invoke(
         Outcome::Exited(receipt) => receipt,
         _ => panic!("probe did not verify physical exit"),
     };
+    let usage = if rejects_corruption {
+        None
+    } else {
+        Some(job_usage(&job))
+    };
     drop(job);
     cache.revoke_read_execute(&profile).unwrap();
     profile.delete().unwrap();
@@ -184,6 +189,8 @@ fn invoke(
         String::from_utf8_lossy(receipt.output().unwrap_or_default())
     );
     assert!(receipt.input_delivered());
+    let (cpu_100ns, peak_job_bytes) = usage.expect("successful probe usage");
+    println!("{mode} cpu_100ns={cpu_100ns} peak_job_bytes={peak_job_bytes}");
     let output = receipt.output().unwrap();
     let start = output
         .windows(MARKER.len())
@@ -198,6 +205,57 @@ fn invoke(
         elapsed,
         output[start + 12..start + 12 + len].to_vec(),
     ))
+}
+
+fn job_usage(job: &Job) -> (i64, usize) {
+    use windows_sys::Win32::System::JobObjects::{
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject,
+    };
+    let mut accounting = std::mem::MaybeUninit::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>::uninit();
+    let mut limits = std::mem::MaybeUninit::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>::uninit();
+    // SAFETY: the still-owned Job handle and each output buffer match the
+    // information class. Accounting is read after the process has exited.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let accounting = loop {
+        let value = unsafe {
+            assert_ne!(
+                QueryInformationJobObject(
+                    job.0.0,
+                    JobObjectBasicAccountingInformation,
+                    accounting.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&accounting) as u32,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            accounting.assume_init_read()
+        };
+        if value.ActiveProcesses == 0 {
+            break value;
+        }
+        // A signalled process handle can precede the Job's accounting update.
+        assert!(Instant::now() < deadline, "Job accounting did not settle");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let limits = unsafe {
+        assert_ne!(
+            QueryInformationJobObject(
+                job.0.0,
+                JobObjectExtendedLimitInformation,
+                limits.as_mut_ptr().cast(),
+                std::mem::size_of_val(&limits) as u32,
+                ptr::null_mut()
+            ),
+            0
+        );
+        limits.assume_init()
+    };
+    (
+        accounting.TotalUserTime + accounting.TotalKernelTime,
+        limits.PeakJobMemoryUsed,
+    )
 }
 
 #[test]
