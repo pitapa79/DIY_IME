@@ -80,6 +80,12 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode == "persistent" {
+        let expected = fs::read_to_string("artifact.sha256").unwrap();
+        persistent_batch(api.as_ref().unwrap(), &input, &expected)
+    } else if mode == "persistent-state" {
+        assert!(input.is_empty());
+        state_probe(api.as_ref().unwrap())
     } else {
         let api = api.as_ref().unwrap();
         let mut runtime = match mode.as_str() {
@@ -93,21 +99,7 @@ fn child() {
             }
             _ => panic!("invalid probe mode"),
         };
-        let request = serde_json::json!({
-            "apiVersion": 1,
-            "node": {"kind": "text.romaji-to-hiragana", "version": 1},
-            "operation": {
-                "method": "execute",
-                "config": {"overrides": [], "unknown": "preserve"},
-                "inputs": {"in": {"state": "data", "packet": {
-                    "version": 1, "root": {"type": "text", "text": "kanji"}
-                }}},
-                "mode": "compose"
-            }
-        });
-        runtime
-            .invoke(&serde_json::to_vec(&request).unwrap())
-            .unwrap()
+        runtime.invoke(&romaji_request("kanji")).unwrap()
     };
     let elapsed = started.elapsed().as_micros() as u64;
     let mut stdout = std::io::stdout().lock();
@@ -118,6 +110,104 @@ fn child() {
         .unwrap();
     stdout.write_all(&output).unwrap();
     stdout.flush().unwrap();
+}
+
+fn state_probe(api: &Api) -> Vec<u8> {
+    use super::Bytes;
+    let fixture = br#"(module
+      (memory 1)
+      (global $g (mut i32) (i32.const 0))
+      (func (export "read") (result i32)
+        global.get $g i32.const 0 i32.load i32.or)
+      (func (export "mark")
+        i32.const 17 global.set $g
+        i32.const 0 i32.const 34 i32.store)
+      (func (export "trap") unreachable))"#;
+    let mut binary = Bytes {
+        size: 0,
+        data: ptr::null_mut(),
+    };
+    // SAFETY: the fixture is a fixed local WAT and the vector is Wasmtime-owned.
+    let wasm = unsafe {
+        api.check(
+            (api.wat)(fixture.as_ptr(), fixture.len(), &mut binary),
+            ptr::null_mut(),
+        )
+        .unwrap();
+        assert!(!binary.data.is_null() && binary.size > 0);
+        let wasm = std::slice::from_raw_parts(binary.data, binary.size).to_vec();
+        (api.bytes_delete)(&mut binary);
+        wasm
+    };
+    let limits = limits();
+    let mut runtime = Runtime::new(api, &wasm, &limits, None).unwrap();
+    runtime.discard_store();
+    for _ in 0..64 {
+        runtime.install_store(&limits).unwrap();
+        runtime.instantiate().unwrap();
+        assert_eq!(runtime.call(c"read", &[], Some(0)).unwrap(), 0);
+        runtime.call(c"mark", &[], None).unwrap();
+        assert_eq!(runtime.call(c"read", &[], Some(0)).unwrap(), 51);
+        assert!(runtime.call(c"trap", &[], None).is_err());
+        runtime.discard_store();
+    }
+    br#"{"cleanStores":64,"dirtyControl":true,"traps":64}"#.to_vec()
+}
+
+fn romaji_request(text: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": 1,
+        "node": {"kind": "text.romaji-to-hiragana", "version": 1},
+        "operation": {
+            "method": "execute",
+            "config": {"overrides": [], "unknown": "preserve"},
+            "inputs": {"in": {"state": "data", "packet": {
+                "version": 1, "root": {"type": "text", "text": text}
+            }}},
+            "mode": "compose"
+        }
+    }))
+    .unwrap()
+}
+
+fn persistent_batch(api: &Api, artifact: &[u8], expected: &str) -> Vec<u8> {
+    let limits = limits();
+    let initial = Instant::now();
+    let mut runtime = compiled_module::load(api, &limits, None, artifact, expected).unwrap();
+    runtime.discard_store();
+    let initial_us = initial.elapsed().as_micros();
+    let requests = [("kanji", "かんじ"), ("kya", "きゃ"), ("ky", "")]
+        .map(|(input, output)| (romaji_request(input), output));
+    let mut series = Vec::new();
+    for (interval_ms, count) in [(0, 2000), (20, 50), (100, 50)] {
+        let start = Instant::now();
+        let mut rows = Vec::new();
+        let mut late_us = Vec::new();
+        for index in 0..count {
+            let scheduled = start + Duration::from_millis(interval_ms * index);
+            if interval_ms != 0 {
+                std::thread::sleep(scheduled.saturating_duration_since(Instant::now()));
+            }
+            let issued = Instant::now();
+            let (request, expected) = &requests[index as usize % requests.len()];
+            runtime.install_store(&limits).unwrap();
+            runtime.instantiate().unwrap();
+            let reply = runtime.invoke(request).unwrap();
+            runtime.discard_store();
+            rows.push(issued.elapsed().as_micros());
+            if interval_ms != 0 {
+                late_us.push((issued - scheduled).as_micros());
+            }
+            let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["data"]["out"]["packet"]["root"]["text"], *expected);
+        }
+        series.push(
+            serde_json::json!({"intervalMs":interval_ms,"attempts":count,"correct":count,
+            "storeInvokeAndDiscardUs":rows,"scheduleDelayUs":late_us}),
+        );
+    }
+    serde_json::to_vec(&serde_json::json!({"initialModuleUs":initial_us,"series":series})).unwrap()
 }
 
 fn invoke(
@@ -348,4 +438,37 @@ fn residual() {
     fs::remove_file(exe).unwrap();
     fs::remove_dir(cache.path()).unwrap();
     naming_profile.delete().unwrap();
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent() {
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut profile = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let wasm = cache
+        .copy(&bundle.join("official/official.wasm"), "official.wasm")
+        .unwrap();
+    let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
+    let expected = digest(&artifact);
+    let (host, _, result) =
+        invoke(&cache, &exe, "persistent", artifact, Some(&expected), false).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&result).unwrap();
+    assert_eq!(report["series"].as_array().unwrap().len(), 3);
+    println!("persistent host_us={host} report={report}");
+    let (_, _, result) = invoke(&cache, &exe, "persistent-state", Vec::new(), None, false).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&result).unwrap();
+    assert_eq!(state["cleanStores"], 64);
+    println!("persistent-state report={state}");
+    for path in [exe, dll, wasm] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    profile.delete().unwrap();
 }
