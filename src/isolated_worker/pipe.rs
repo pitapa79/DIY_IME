@@ -86,6 +86,8 @@ pub struct ExitReceipt {
     pub(super) phase_micros: Option<[u128; 3]>,
     #[cfg(test)]
     pub(super) prepared_micros: Option<Box<[u128; 3]>>,
+    #[cfg(test)]
+    pub(super) signalled_at: Instant,
 }
 impl ExitReceipt {
     pub(super) fn diagnostics(&self) -> Option<&Result<Vec<u8>, ()>> {
@@ -191,6 +193,8 @@ impl<'a> Running<'a> {
             output,
             input,
             diagnostics,
+            #[cfg(test)]
+            signalled_at: signalled,
             #[cfg(test)]
             prepared_micros: self.delivery.as_ref().and_then(|delivery| {
                 let clocks = delivery.lock().unwrap();
