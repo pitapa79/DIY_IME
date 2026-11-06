@@ -46,8 +46,8 @@ fn child() {
         panic!("blocked probe must be stopped before reading input");
     }
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
-    if mode == "persistent-ipc" {
-        ipc_child(&Api::load(&dll).unwrap());
+    if matches!(mode.as_str(), "persistent-ipc" | "persistent-graph") {
+        ipc_child(&Api::load(&dll).unwrap(), mode == "persistent-graph");
         return;
     }
     let measured = mode.ends_with("dll");
@@ -653,15 +653,34 @@ fn persistent() {
 
 const IPC_READY: &[u8] = b"\nDIY-PERSIST-READY\0";
 const IPC_CASES: [(&str, &str); 3] = [("kanji", "かんじ"), ("kya", "きゃ"), ("ky", "")];
+const GRAPH_CASES: [(&str, &str); 3] = [
+    ("kousui", "降水"),
+    ("honjitudesu", "ほんじつです"),
+    ("ky", ""),
+];
 
-fn ipc_child(api: &Api) {
+fn ipc_child(api: &Api, graph: bool) {
     let limits = limits();
     let expected = fs::read_to_string("artifact.sha256").unwrap();
     let artifact = fs::read("probe.cwasm").unwrap();
     assert!(artifact.len() <= CAP);
     let mut runtime = compiled_module::load(api, &limits, None, &artifact, &expected).unwrap();
     runtime.discard_store();
-    let requests = IPC_CASES.map(|(input, _)| romaji_request(input));
+    let cases = if graph { GRAPH_CASES } else { IPC_CASES };
+    let requests = cases.map(|(input, _)| romaji_request(input));
+    let resources = if graph {
+        let dictionary = fs::read("dictionary.tsv").unwrap();
+        assert!(dictionary.len() <= 32 * 1024);
+        let resources = serde_json::json!({"dictionary.tsv": dictionary});
+        let prepare = serde_json::json!({"method":"prepare","config":{"path":"dictionary.tsv"},"resources":resources});
+        assert_eq!(
+            fixed_operation(&mut runtime, &limits, "text.dictionary-exact", prepare),
+            serde_json::json!({"valid":true,"prepared":true})
+        );
+        Some(resources)
+    } else {
+        None
+    };
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     output.write_all(IPC_READY).unwrap();
@@ -672,16 +691,73 @@ fn ipc_child(api: &Api) {
             panic!("deliberate isolated probe exit");
         }
         let request = &requests[tag[0] as usize];
-        runtime.install_store(&limits).unwrap();
-        runtime.instantiate().unwrap();
-        let reply = runtime.invoke(request).unwrap();
-        runtime.discard_store();
+        let romaji = invoke_fresh(&mut runtime, &limits, request);
+        let reply = if let Some(resources) = &resources {
+            let romaji: serde_json::Value = serde_json::from_slice(&romaji).unwrap();
+            assert_eq!(romaji["ok"], true);
+            graph_output(
+                &mut runtime,
+                &limits,
+                romaji["data"]["out"].clone(),
+                resources,
+            )
+        } else {
+            romaji
+        };
         output
             .write_all(&(reply.len() as u32).to_le_bytes())
             .unwrap();
         output.write_all(&reply).unwrap();
         output.flush().unwrap();
     }
+}
+
+fn invoke_fresh(runtime: &mut Runtime<'_>, limits: &Limits, request: &[u8]) -> Vec<u8> {
+    runtime.install_store(limits).unwrap();
+    runtime.instantiate().unwrap();
+    let reply = runtime.invoke(request).unwrap();
+    runtime.discard_store();
+    reply
+}
+
+fn fixed_operation(
+    runtime: &mut Runtime<'_>,
+    limits: &Limits,
+    kind: &str,
+    operation: serde_json::Value,
+) -> serde_json::Value {
+    let request =
+        serde_json::json!({"apiVersion":1,"node":{"kind":kind,"version":1},"operation":operation});
+    let reply = invoke_fresh(runtime, limits, &serde_json::to_vec(&request).unwrap());
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    assert_eq!(reply["ok"], true, "{kind}");
+    reply["data"].clone()
+}
+
+fn graph_output(
+    runtime: &mut Runtime<'_>,
+    limits: &Limits,
+    mut input: serde_json::Value,
+    resources: &serde_json::Value,
+) -> Vec<u8> {
+    for (kind, config) in [
+        (
+            "text.dictionary-exact",
+            serde_json::json!({"path":"dictionary.tsv"}),
+        ),
+        (
+            "text.select-candidates",
+            serde_json::json!({"unscored":0.0}),
+        ),
+        ("text.stringify", serde_json::json!({})),
+    ] {
+        let mut operation = serde_json::json!({"method":"execute","config":config,"inputs":{"in":input},"mode":"compose"});
+        if kind == "text.dictionary-exact" {
+            operation["resources"] = resources.clone();
+        }
+        input = fixed_operation(runtime, limits, kind, operation)["out"].clone();
+    }
+    serde_json::to_vec(&serde_json::json!({"ok":true,"data":{"out":input}})).unwrap()
 }
 
 fn ipc_wait_ready(output: &mut impl Read) -> std::io::Result<()> {
@@ -697,7 +773,12 @@ fn ipc_wait_ready(output: &mut impl Read) -> std::io::Result<()> {
     Err(std::io::Error::other("readiness prefix exceeded limit"))
 }
 
-fn ipc_request(output: &mut impl Read, input: &mut impl Write, tag: u8) -> std::io::Result<()> {
+fn ipc_request(
+    output: &mut impl Read,
+    input: &mut impl Write,
+    tag: u8,
+    expected: &str,
+) -> std::io::Result<()> {
     input.write_all(&[tag])?;
     let mut size = [0; 4];
     output.read_exact(&mut size)?;
@@ -708,17 +789,20 @@ fn ipc_request(output: &mut impl Read, input: &mut impl Write, tag: u8) -> std::
     let mut bytes = vec![0; size];
     output.read_exact(&mut bytes)?;
     let reply: serde_json::Value = serde_json::from_slice(&bytes)?;
-    if reply["ok"] != true
-        || reply["data"]["out"]["packet"]["root"]["text"] != IPC_CASES[tag as usize].1
-    {
+    if reply["ok"] != true || reply["data"]["out"]["packet"]["root"]["text"] != expected {
         return Err(std::io::Error::other("unexpected probe result"));
     }
     Ok(())
 }
 
-fn ipc_series(output: &mut impl Read, input: &mut impl Write) -> std::io::Result<Vec<u8>> {
+fn ipc_series(
+    output: &mut impl Read,
+    input: &mut impl Write,
+    cases: [(&str, &str); 3],
+    count_fast: u64,
+) -> std::io::Result<Vec<u8>> {
     let mut series = Vec::new();
-    for (interval, count) in [(0, 2000), (20, 50), (100, 50)] {
+    for (interval, count) in [(0, count_fast), (20, 50), (100, 50)] {
         let start = Instant::now();
         let mut elapsed = Vec::new();
         let mut late = Vec::new();
@@ -728,7 +812,8 @@ fn ipc_series(output: &mut impl Read, input: &mut impl Write) -> std::io::Result
                 std::thread::sleep(scheduled.saturating_duration_since(Instant::now()));
             }
             let issued = Instant::now();
-            ipc_request(output, input, (i % 3) as u8)?;
+            let tag = (i % 3) as u8;
+            ipc_request(output, input, tag, cases[tag as usize].1)?;
             elapsed.push(issued.elapsed().as_micros());
             if interval != 0 {
                 late.push((issued - scheduled).as_micros());
@@ -745,6 +830,18 @@ fn ipc_series(output: &mut impl Read, input: &mut impl Write) -> std::io::Result
 #[test]
 #[ignore = "requires fixed public Windows bundle and real AppContainer"]
 fn persistent_ipc() {
+    persistent_ipc_trials(None);
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn persistent_graph() {
+    for rows in [3, 1000] {
+        persistent_ipc_trials(Some(rows));
+    }
+}
+
+fn persistent_ipc_trials(dictionary_rows: Option<usize>) {
     use crate::isolated_worker::pipe::{WorkerScope, execute_observed};
     use std::sync::{
         Arc,
@@ -767,9 +864,36 @@ fn persistent_ipc() {
         .write("artifact.sha256", digest(&artifact).as_bytes())
         .unwrap();
     let compiled = cache.write("probe.cwasm", &artifact).unwrap();
-    let mode_file = cache.write("mode.txt", b"persistent-ipc").unwrap();
+    let dictionary = dictionary_rows.map(|rows| {
+        let mut dictionary =
+            include_str!("../../../distribution/defaults/dictionary.tsv").to_owned();
+        assert!(dictionary.ends_with('\n'));
+        for n in 3..rows {
+            dictionary.push_str(&format!("試験用{n:05}\t合成{n:05}\t1\n"));
+        }
+        cache
+            .write("dictionary.tsv", dictionary.as_bytes())
+            .unwrap()
+    });
+    let graph = dictionary.is_some();
+    let cases = if graph { GRAPH_CASES } else { IPC_CASES };
+    let mode_file = cache
+        .write(
+            "mode.txt",
+            if graph {
+                b"persistent-graph"
+            } else {
+                b"persistent-ipc"
+            },
+        )
+        .unwrap();
     let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
-    for scenario in ["normal", "cancel", "crash", "reopen"] {
+    let scenarios: &[&str] = if graph {
+        &["normal"]
+    } else {
+        &["normal", "cancel", "crash", "reopen"]
+    };
+    for &scenario in scenarios {
         let mut profile = Profile::new().unwrap();
         cache.allow_read_execute(&profile).unwrap();
         let job = Job::new().unwrap();
@@ -784,9 +908,14 @@ fn persistent_ipc() {
                 let result = (|| -> std::io::Result<Vec<u8>> {
                     ipc_wait_ready(&mut output)?;
                     match scenario {
-                        "normal" => ipc_series(&mut output, &mut input),
+                        "normal" => ipc_series(
+                            &mut output,
+                            &mut input,
+                            cases,
+                            if graph { 200 } else { 2000 },
+                        ),
                         "cancel" => {
-                            ipc_request(&mut output, &mut input, 0)?;
+                            ipc_request(&mut output, &mut input, 0, cases[0].1)?;
                             token.cancel();
                             // Keep stdin open until the cancellation path kills the child.
                             let mut byte = [0];
@@ -804,7 +933,7 @@ fn persistent_ipc() {
                             Ok(Vec::new())
                         }
                         _ => {
-                            ipc_request(&mut output, &mut input, 1)?;
+                            ipc_request(&mut output, &mut input, 1, cases[1].1)?;
                             Ok(Vec::new())
                         }
                     }
@@ -840,13 +969,20 @@ fn persistent_ipc() {
         let (cpu, peak) = job_usage(&job);
         println!("ipc {scenario} cpu_100ns={cpu} peak_job_bytes={peak}");
         if scenario == "normal" {
-            println!("ipc report={}", String::from_utf8_lossy(bytes));
+            println!(
+                "ipc rows={} report={}",
+                dictionary_rows.unwrap_or(0),
+                String::from_utf8_lossy(bytes)
+            );
         }
         drop(job);
         cache.revoke_read_execute(&profile).unwrap();
         profile.delete().unwrap();
     }
     for path in [exe, dll, wasm, hash, compiled, mode_file] {
+        fs::remove_file(path).unwrap();
+    }
+    if let Some(path) = dictionary {
         fs::remove_file(path).unwrap();
     }
     fs::remove_dir(cache.path()).unwrap();
