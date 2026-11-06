@@ -11,6 +11,16 @@ use std::{
 };
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
+#[cfg(test)]
+pub(super) const PROBE_READY: &[u8] = b"\nDIY-READY-PROBE\0";
+#[cfg(test)]
+pub(super) const PROBE_RESULT: &[u8] = b"\nDIY-MODULE-PROBE\0";
+#[cfg(test)]
+#[derive(Default)]
+struct ProbeClocks {
+    sent: Option<Instant>,
+    response: Option<Instant>,
+}
 
 fn diagnostic_pipe() -> Result<(OwnedHandle, OwnedHandle), String> {
     let sa = SECURITY_ATTRIBUTES {
@@ -74,6 +84,8 @@ pub struct ExitReceipt {
     diagnostics: Option<Result<Vec<u8>, ()>>,
     #[cfg(test)]
     pub(super) phase_micros: Option<[u128; 3]>,
+    #[cfg(test)]
+    pub(super) prepared_micros: Option<[u128; 3]>,
 }
 impl ExitReceipt {
     pub(super) fn diagnostics(&self) -> Option<&Result<Vec<u8>, ()>> {
@@ -122,6 +134,8 @@ pub struct Running<'a> {
     launch_started: Instant,
     #[cfg(test)]
     resumed: Option<Instant>,
+    #[cfg(test)]
+    delivery: Option<Arc<std::sync::Mutex<ProbeClocks>>>,
 }
 fn milliseconds(value: Duration) -> u32 {
     value.as_millis().min((u32::MAX - 1) as u128) as u32
@@ -177,6 +191,16 @@ impl<'a> Running<'a> {
             output,
             input,
             diagnostics,
+            #[cfg(test)]
+            prepared_micros: self.delivery.as_ref().and_then(|delivery| {
+                let clocks = delivery.lock().unwrap();
+                let sent = clocks.sent?;
+                Some([
+                    (sent - self.launch_started).as_micros(),
+                    (clocks.response? - sent).as_micros(),
+                    (signalled - sent).as_micros(),
+                ])
+            }),
             #[cfg(test)]
             phase_micros: self.resumed.map(|resumed| {
                 [
@@ -277,6 +301,8 @@ pub(super) struct WorkerScope<'a> {
     job: &'a Job,
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
+    #[cfg(test)]
+    prepared: bool,
 }
 impl<'a> WorkerScope<'a> {
     pub(super) fn observed(
@@ -290,7 +316,24 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: Some(activity),
+            #[cfg(test)]
+            prepared: false,
         }
+    }
+    #[cfg(test)]
+    pub(super) fn prepared(profile: &'a Profile, job: &'a Job, cache: &'a Cache) -> Self {
+        Self {
+            profile,
+            job,
+            cache,
+            activity: None,
+            prepared: true,
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn observe_start(mut self, activity: Arc<AtomicU64>) -> Self {
+        self.activity = Some(activity);
+        self
     }
 }
 pub fn execute<'a>(
@@ -308,6 +351,8 @@ pub fn execute<'a>(
             job,
             cache,
             activity: None,
+            #[cfg(test)]
+            prepared: false,
         },
         program,
         args,
@@ -339,6 +384,8 @@ pub(super) fn execute_with_diagnostics<'a>(
         job,
         cache,
         activity,
+        #[cfg(test)]
+        prepared,
     } = scope;
     if control.cancel.is_cancelled() {
         return Ok(Outcome::CancelledBeforeStart);
@@ -526,6 +573,8 @@ pub(super) fn execute_with_diagnostics<'a>(
         launch_started,
         #[cfg(test)]
         resumed: None,
+        #[cfg(test)]
+        delivery: prepared.then(|| Arc::new(std::sync::Mutex::new(ProbeClocks::default()))),
     });
     if verify(profile, job, running.process.0).is_err() {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
@@ -544,9 +593,60 @@ pub(super) fn execute_with_diagnostics<'a>(
     std::mem::forget(send);
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
+    #[cfg(test)]
+    let (ready_send, ready_receive) = if prepared {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        (Some(send), Some(receive))
+    } else {
+        (None, None)
+    };
+    #[cfg(test)]
+    let delivery = running.delivery.clone();
+    #[cfg(test)]
+    let response = running.delivery.clone();
+    #[cfg(test)]
+    let delivery_cancel = control.cancel.clone();
     running.output = Some(thread::spawn(move || {
         let mut bytes = Vec::new();
-        let result = file.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes);
+        let mut output = file.take((WIRE_LIMIT + 1) as u64);
+        #[cfg(test)]
+        if let Some(ready) = ready_send {
+            // This signal belongs only to the fixed test child.
+            while bytes.len() < 4096 && !bytes.ends_with(PROBE_READY) {
+                let mut byte = [0];
+                if output.read_exact(&mut byte).is_err() {
+                    return Err("prepared probe exited before readiness".into());
+                }
+                bytes.push(byte[0]);
+            }
+            if !bytes.ends_with(PROBE_READY) || ready.send(()).is_err() {
+                return Err("prepared probe readiness failed".into());
+            }
+        }
+        #[cfg(test)]
+        if let Some(response) = response {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = output.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(frame) = bytes
+                    .windows(PROBE_RESULT.len())
+                    .position(|b| b == PROBE_RESULT)
+                {
+                    let start = frame + PROBE_RESULT.len();
+                    if let Some(length) = bytes.get(start + 8..start + 12) {
+                        let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
+                        if bytes.len() >= start + 12 + length {
+                            response.lock().unwrap().response = Some(Instant::now());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let result = output.read_to_end(&mut bytes);
         if bytes.len() > WIRE_LIMIT {
             exceeded.store(true, Ordering::Release);
             return Err("Worker output exceeds wire limit".into());
@@ -558,6 +658,20 @@ pub(super) fn execute_with_diagnostics<'a>(
         }
     }));
     running.input = Some(thread::spawn(move || {
+        #[cfg(test)]
+        if let Some(ready) = ready_receive {
+            ready
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|_| "prepared probe not ready")?;
+            if delivery_cancel.is_cancelled() {
+                return Err("prepared probe cancelled before delivery".into());
+            }
+            delivery
+                .expect("prepared delivery clock")
+                .lock()
+                .unwrap()
+                .sent = Some(Instant::now());
+        }
         writer
             .write_all(&request)
             .map_err(|_| "Worker input pipe failed".into())

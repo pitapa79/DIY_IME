@@ -1,6 +1,7 @@
 //! Developer-only experiment. The parent accepts native bytes only from the
 //! successful exit of its own compile-only AppContainer, then holds them in memory.
 use super::{Api, Limits, Runtime, compiled_module, require_appcontainer, verify_runtime_bytes};
+use crate::isolated_worker::pipe::{PROBE_READY, PROBE_RESULT, WorkerScope, execute_observed};
 use crate::isolated_worker::{Cache, EndReason, Job, Outcome, Profile, RunControl, execute};
 use std::{
     ffi::OsString,
@@ -11,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MARKER: &[u8] = b"\nDIY-MODULE-PROBE\0";
+const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
 const CHILD: &str = "isolated_worker::runtime::compiled_module_probe::child";
 
@@ -40,8 +41,12 @@ fn wasm() -> Vec<u8> {
 fn child() {
     require_appcontainer().expect("isolated probe child");
     let mode = fs::read_to_string("mode.txt").expect("read-only probe mode");
+    if mode == "blocked" {
+        std::thread::sleep(Duration::from_secs(10));
+        panic!("blocked probe must be stopped before reading input");
+    }
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
-    let measured = mode == "dll";
+    let measured = mode.ends_with("dll");
     let verify_started = measured.then(Instant::now);
     let (dll_read_us, sha_us) = if measured {
         let bytes = fs::read(&dll).unwrap();
@@ -55,12 +60,20 @@ fn child() {
     let verify_us = verify_started.map(|start| start.elapsed().as_micros());
     let load_started = measured.then(Instant::now);
     let api = match mode.as_str() {
-        "transport" => None,
+        "transport" | "ready-transport" => None,
         // SAFETY: the exact read-only DLL was verified immediately above.
-        "dll" => Some(unsafe { Api::load_verified(&dll) }.unwrap()),
+        "dll" | "ready-dll" => Some(unsafe { Api::load_verified(&dll) }.unwrap()),
         _ => Some(Api::load(&dll).expect("fixed Wasmtime API")),
     };
     let load_us = load_started.map(|start| start.elapsed().as_micros());
+    let prepared_artifact = mode
+        .ends_with("-guest")
+        .then(|| fs::read("prepared.cwasm").unwrap());
+    if mode.starts_with("ready-") {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(PROBE_READY).unwrap();
+        stdout.flush().unwrap();
+    }
     let input_started = Instant::now();
     let mut input = Vec::new();
     std::io::stdin()
@@ -69,7 +82,10 @@ fn child() {
         .unwrap();
     assert!(input.len() <= CAP);
     let started = Instant::now();
-    let output = if matches!(mode.as_str(), "dll" | "transport") {
+    let output = if matches!(
+        mode.as_str(),
+        "dll" | "transport" | "ready-dll" | "ready-transport"
+    ) {
         assert_eq!(input, [42; 32]);
         serde_json::to_vec(&serde_json::json!({
             "verifyUs": verify_us, "loadAndSymbolsUs": load_us,
@@ -90,6 +106,18 @@ fn child() {
             "reuse" => {
                 let expected = fs::read_to_string("artifact.sha256").unwrap();
                 compiled_module::load(api, &limits(), None, &input, &expected).unwrap()
+            }
+            "ready-guest" | "cold-guest" => {
+                assert_eq!(input, [42; 32]);
+                let expected = fs::read_to_string("artifact.sha256").unwrap();
+                compiled_module::load(
+                    api,
+                    &limits(),
+                    None,
+                    prepared_artifact.as_ref().unwrap(),
+                    &expected,
+                )
+                .unwrap()
             }
             _ => panic!("invalid probe mode"),
         };
@@ -140,7 +168,18 @@ fn invoke(
     };
     let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
     let launched = Instant::now();
-    let receipt = match execute(&profile, &job, cache, exe, &args, input, &control).unwrap() {
+    let outcome = if mode.starts_with("ready-") {
+        execute_observed(
+            WorkerScope::prepared(&profile, &job, cache),
+            exe,
+            &args,
+            input,
+            &control,
+        )
+    } else {
+        execute(&profile, &job, cache, exe, &args, input, &control)
+    };
+    let receipt = match outcome.unwrap() {
         Outcome::Exited(receipt) => receipt,
         _ => panic!("probe did not verify physical exit"),
     };
@@ -159,7 +198,18 @@ fn invoke(
         fs::remove_file(file).unwrap();
     }
     let host_us = started.elapsed().as_micros();
-    if matches!(mode, "dll" | "transport") {
+    if mode.starts_with("ready-") {
+        let [prepare, delivered_to_result, delivered_to_exit] =
+            receipt.prepared_micros.expect("readiness and delivery");
+        let [_, _, pipe_join] = receipt.phase_micros.expect("resumed probe");
+        println!(
+            "{mode} prepare_us={prepare} delivered_to_result_us={delivered_to_result} delivered_to_exit_us={delivered_to_exit} pipe_join_us={pipe_join}"
+        );
+    }
+    if matches!(
+        mode,
+        "dll" | "transport" | "ready-dll" | "ready-transport" | "ready-guest" | "cold-guest"
+    ) {
         let [launch, running, join] = receipt.phase_micros.expect("resumed probe");
         println!("{mode} launch_us={launch} resumed_to_exit_us={running} pipe_join_us={join}");
         println!(
@@ -321,6 +371,38 @@ fn compare() {
 #[test]
 #[ignore = "requires fixed public Windows bundle and real AppContainer"]
 fn residual() {
+    residual_modes(["transport", "dll"]);
+}
+
+fn measure_residual(cache: &Cache, exe: &Path, modes: [&str; 2]) {
+    for pair in 0..12 {
+        let order = if pair % 2 == 0 {
+            modes
+        } else {
+            [modes[1], modes[0]]
+        };
+        for mode in order {
+            let (_, _, result) = invoke(cache, exe, mode, vec![42; 32], None, false).unwrap();
+            let result: serde_json::Value = serde_json::from_slice(&result).unwrap();
+            assert_eq!(result["verifyUs"].is_number(), mode.ends_with("dll"));
+            assert_eq!(
+                result["loadAndSymbolsUs"].is_number(),
+                mode.ends_with("dll")
+            );
+            println!("{mode} {result}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn prepared() {
+    residual_modes(["ready-transport", "ready-dll"]);
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainer"]
+fn prepared_guest() {
     let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
     let mut naming_profile = Profile::new().unwrap();
     let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming_profile).unwrap();
@@ -330,20 +412,110 @@ fn residual() {
     let dll = cache
         .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
         .unwrap();
+    let wasm = cache
+        .copy(&bundle.join("official/official.wasm"), "official.wasm")
+        .unwrap();
+    let (_, _, artifact) = invoke(&cache, &exe, "compile", Vec::new(), None, false).unwrap();
+    let expected = digest(&artifact);
+    let asset = cache.write("prepared.cwasm", &artifact).unwrap();
     for pair in 0..12 {
-        let order = if pair % 2 == 0 {
-            ["transport", "dll"]
+        let modes = if pair % 2 == 0 {
+            ["ready-guest", "cold-guest"]
         } else {
-            ["dll", "transport"]
+            ["cold-guest", "ready-guest"]
         };
-        for mode in order {
-            let (_, _, result) = invoke(&cache, &exe, mode, vec![42; 32], None, false).unwrap();
-            let result: serde_json::Value = serde_json::from_slice(&result).unwrap();
-            assert_eq!(result["verifyUs"].is_number(), mode == "dll");
-            assert_eq!(result["loadAndSymbolsUs"].is_number(), mode == "dll");
-            println!("{mode} {result}");
+        for mode in modes {
+            let (_, _, reply) =
+                invoke(&cache, &exe, mode, vec![42; 32], Some(&expected), false).unwrap();
+            let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["data"]["out"]["packet"]["root"]["text"], "かんじ");
         }
     }
+    for path in [asset, wasm, dll, exe] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    naming_profile.delete().unwrap();
+}
+
+#[test]
+#[ignore = "requires real AppContainer"]
+fn prepared_withdrawal() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    for reason in [EndReason::Deadline, EndReason::Cancelled] {
+        let mut profile = Profile::new().unwrap();
+        let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile).unwrap();
+        let exe = cache
+            .copy(&std::env::current_exe().unwrap(), "probe.exe")
+            .unwrap();
+        let mode = cache.write("mode.txt", b"blocked").unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let control = RunControl {
+            walltime: Some(if reason == EndReason::Deadline {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(5)
+            }),
+            ..RunControl::default()
+        };
+        let active = Arc::new(AtomicU64::new(0));
+        let cancel = (reason == EndReason::Cancelled).then(|| {
+            let observed = active.clone();
+            let token = control.cancel.clone();
+            std::thread::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(5);
+                while observed.load(Ordering::Acquire) == 0 {
+                    assert!(Instant::now() < until, "probe did not launch");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                token.cancel();
+            })
+        });
+        let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+        let receipt = match execute_observed(
+            WorkerScope::prepared(&profile, &job, &cache).observe_start(active.clone()),
+            &exe,
+            &args,
+            vec![42; 32],
+            &control,
+        )
+        .unwrap()
+        {
+            Outcome::Exited(receipt) => receipt,
+            _ => panic!("withdrawal did not verify the original process exit"),
+        };
+        if let Some(cancel) = cancel {
+            cancel.join().unwrap();
+        }
+        assert_eq!(receipt.reason(), reason);
+        assert!(!receipt.input_delivered());
+        assert!(receipt.prepared_micros.is_none());
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+        fs::remove_file(exe).unwrap();
+        fs::remove_file(mode).unwrap();
+        fs::remove_dir(cache.path()).unwrap();
+    }
+}
+
+fn residual_modes(modes: [&str; 2]) {
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let mut naming_profile = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming_profile).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    measure_residual(&cache, &exe, modes);
     fs::remove_file(dll).unwrap();
     fs::remove_file(exe).unwrap();
     fs::remove_dir(cache.path()).unwrap();
