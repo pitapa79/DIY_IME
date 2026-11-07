@@ -33,6 +33,8 @@ const GROUP_BYTES: usize = PAYLOAD_PAGE * PAGES_PER_GROUP;
 const LENGTH_BYTES: usize = size_of::<u32>();
 const MAX_PAYLOAD: usize = GROUP_BYTES - LENGTH_BYTES;
 const MAX_REPLY: u64 = 16 * 1024;
+const MAX_FRAME_OVERHEAD: u64 = 9 * 17;
+const SOAK_SAMPLES: u64 = 600;
 const GROUPS: u64 = 2;
 const BAD_PAGE: u8 = 254;
 const CRASH_AFTER_REPLY: u8 = 253;
@@ -315,7 +317,8 @@ fn exchange(
     observations: Arc<Mutex<Observations>>,
     launch: Instant,
 ) -> io::Result<Vec<u8>> {
-    let mut output = BufReader::new(output).take(256 * 1024);
+    let stream_limit = 8192 + samples.len() as u64 * (MAX_REPLY + MAX_FRAME_OVERHEAD);
+    let mut output = BufReader::new(output).take(stream_limit);
     let mut prefix = Vec::new();
     while !prefix.ends_with(READY) && prefix.len() < 4096 {
         let mut byte = [0];
@@ -458,7 +461,7 @@ fn run(
     let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
     let control = RunControl {
         cancel,
-        walltime: Some(Duration::from_secs(30)),
+        walltime: Some(Duration::from_secs(30) + Duration::from_millis(interval * count as u64)),
         ..RunControl::default()
     };
     let (ended, normal_exit) = {
@@ -553,6 +556,16 @@ fn run(
 #[test]
 #[ignore = "requires fixed public Windows bundle and real AppContainers"]
 fn range_pipeline_cost() {
+    range_pipeline_trials(false);
+}
+
+#[test]
+#[ignore = "requires fixed public Windows bundle and real AppContainers"]
+fn range_pipeline_soak() {
+    range_pipeline_trials(true);
+}
+
+fn range_pipeline_trials(soak: bool) {
     let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
     let mut naming = Profile::new().unwrap();
     let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
@@ -617,27 +630,30 @@ fn range_pipeline_cost() {
     drop(bytes);
     for interval in [0, 20, 100] {
         let start = Instant::now();
-        for index in 0..12 {
-            let planned = if interval == 0 {
-                Instant::now()
-            } else {
-                start + Duration::from_millis(interval * index)
-            };
-            run(
-                &cache,
-                &exe,
-                (&file, &payload),
-                vec![Sample {
-                    tag: (index % CASES.len() as u64) as u8,
-                    planned: Some(planned),
-                }],
-                interval,
-                false,
-                Boundary::None,
-            );
+        if !soak {
+            for index in 0..12 {
+                let planned = if interval == 0 {
+                    Instant::now()
+                } else {
+                    start + Duration::from_millis(interval * index)
+                };
+                run(
+                    &cache,
+                    &exe,
+                    (&file, &payload),
+                    vec![Sample {
+                        tag: (index % CASES.len() as u64) as u8,
+                        planned: Some(planned),
+                    }],
+                    interval,
+                    false,
+                    Boundary::None,
+                );
+            }
         }
         let start = Instant::now() + Duration::from_secs(1);
-        let samples = (0..60)
+        let count = if soak { SOAK_SAMPLES } else { 60 };
+        let samples = (0..count)
             .map(|index| Sample {
                 tag: (index % CASES.len() as u64) as u8,
                 planned: if interval == 0 && index > 0 {
@@ -657,56 +673,58 @@ fn range_pipeline_cost() {
             Boundary::None,
         );
     }
-    for retained in [false, true] {
-        run(
-            &cache,
-            &exe,
-            (&file, &payload),
-            vec![Sample {
-                tag: 0,
-                planned: Some(Instant::now()),
-            }],
-            0,
-            retained,
-            Boundary::Cancel,
-        );
-    }
-    for _ in 0..5 {
-        for boundary in [
-            Boundary::Supersede,
-            Boundary::SwitchDocument,
-            Boundary::Protect,
-            Boundary::RevokeDictionary,
-            Boundary::RevokePayload,
-            Boundary::InvalidPayload,
-        ] {
-            let tags: &[u8] = match boundary {
-                Boundary::Supersede => &[0, 1],
-                Boundary::InvalidPayload => &[BAD_PAGE],
-                Boundary::RevokePayload => &[1],
-                _ => &[0],
-            };
-            let samples = tags
-                .iter()
-                .map(|&tag| Sample { tag, planned: None })
-                .collect();
-            run(&cache, &exe, (&file, &payload), samples, 0, true, boundary);
-        }
-    }
-    for retained in [false, true] {
-        for _ in 0..5 {
+    if !soak {
+        for retained in [false, true] {
             run(
                 &cache,
                 &exe,
                 (&file, &payload),
                 vec![Sample {
-                    tag: CRASH_AFTER_REPLY,
-                    planned: None,
+                    tag: 0,
+                    planned: Some(Instant::now()),
                 }],
                 0,
                 retained,
-                Boundary::CrashAfterReply,
+                Boundary::Cancel,
             );
+        }
+        for _ in 0..5 {
+            for boundary in [
+                Boundary::Supersede,
+                Boundary::SwitchDocument,
+                Boundary::Protect,
+                Boundary::RevokeDictionary,
+                Boundary::RevokePayload,
+                Boundary::InvalidPayload,
+            ] {
+                let tags: &[u8] = match boundary {
+                    Boundary::Supersede => &[0, 1],
+                    Boundary::InvalidPayload => &[BAD_PAGE],
+                    Boundary::RevokePayload => &[1],
+                    _ => &[0],
+                };
+                let samples = tags
+                    .iter()
+                    .map(|&tag| Sample { tag, planned: None })
+                    .collect();
+                run(&cache, &exe, (&file, &payload), samples, 0, true, boundary);
+            }
+        }
+        for retained in [false, true] {
+            for _ in 0..5 {
+                run(
+                    &cache,
+                    &exe,
+                    (&file, &payload),
+                    vec![Sample {
+                        tag: CRASH_AFTER_REPLY,
+                        planned: None,
+                    }],
+                    0,
+                    retained,
+                    Boundary::CrashAfterReply,
+                );
+            }
         }
     }
     drop(file);
