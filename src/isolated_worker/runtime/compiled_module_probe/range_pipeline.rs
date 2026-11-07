@@ -28,13 +28,15 @@ const CASES: [(&str, &str, &str); 4] = [
 ];
 const PAYLOAD: u8 = ASSET + 1;
 const PAYLOAD_PAGE: usize = 4096;
-const PAGES_PER_GROUP: usize = 2;
+const PAGES_PER_GROUP: usize = 256;
+const MAX_PAGE_READS: usize = PAGES_PER_GROUP + 16;
+const LABEL_FLAG: u8 = 128;
 const GROUP_BYTES: usize = PAYLOAD_PAGE * PAGES_PER_GROUP;
 const LENGTH_BYTES: usize = size_of::<u32>();
 const MAX_PAYLOAD: usize = GROUP_BYTES - LENGTH_BYTES;
-const MAX_REPLY: u64 = 16 * 1024;
-const MAX_FRAME_OVERHEAD: u64 = 9 * 17;
-const SOAK_SAMPLES: u64 = 600;
+const MAX_REPLY: u64 = 1024 * 1024;
+const MAX_FRAME_OVERHEAD: u64 = 9 * (MAX_PAGE_READS as u64 + 1);
+const COMPARISON_SAMPLES: u64 = 120;
 const GROUPS: u64 = 2;
 const BAD_PAGE: u8 = 254;
 const CRASH_AFTER_REPLY: u8 = 253;
@@ -120,14 +122,49 @@ fn expected_choice(tag: usize) -> Value {
             option("香水", Some(30.0)),
             option("洪水", Some(90.0)),
         ],
-        1 => vec![
-            option("日本", Some(80.0)),
-            option(&"二".repeat(900), Some(55.0)),
-            option(&"本".repeat(900), Some(55.0)),
-        ],
+        1 => (0..64)
+            .map(|index| {
+                let text = large_surface(index);
+                let score = if index == 1 || index == 2 { 80.0 } else { 55.0 };
+                option(&text, Some(score))
+            })
+            .collect(),
         _ => vec![option(kana, None)],
     };
     choice(options)
+}
+
+fn large_surface(index: usize) -> String {
+    format!("{index:02}{}", "漢".repeat(4094))
+}
+
+fn select_input(candidates: &Value) -> Value {
+    let options = candidates["packet"]["root"]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            assert_eq!(candidate["value"]["type"], "text");
+            let mut projected = option(&index.to_string(), None);
+            if let Some(score) = candidate.get("score") {
+                projected["score"] = score.clone();
+            }
+            projected
+        })
+        .collect();
+    choice(options)
+}
+
+fn restore_selected(selected: Value, candidates: &Value) -> Value {
+    let index: usize = selected["out"]["packet"]["root"]["text"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let value = &candidates["packet"]["root"]["options"][index]["value"];
+    assert_eq!(value["type"], "text");
+    json!({"out":{"state":"data","packet":{"version":1,"root":value}}})
 }
 
 fn request_page(input: &mut impl Read, output: &mut impl Write, asset: u8, page: u64) -> Vec<u8> {
@@ -147,7 +184,7 @@ fn candidate_page(
     reads: usize,
     cancel: &CancellationToken,
 ) -> io::Result<Vec<u8>> {
-    if page >= GROUPS * PAGES_PER_GROUP as u64 || reads >= 16 || cancel.is_cancelled() {
+    if page >= GROUPS * PAGES_PER_GROUP as u64 || reads >= MAX_PAGE_READS || cancel.is_cancelled() {
         return Err(io::Error::other("candidate page denied"));
     }
     file.seek(SeekFrom::Start(page * PAYLOAD_PAGE as u64))?;
@@ -187,7 +224,9 @@ fn child() {
     while input.read(&mut tag).unwrap() != 0 {
         let fault = tag[0] == BAD_PAGE;
         let crash = tag[0] == CRASH_AFTER_REPLY;
-        let (reading, _, _) = CASES[if fault || crash { 0 } else { tag[0] as usize }];
+        let labels = !fault && !crash && tag[0] & LABEL_FLAG != 0;
+        let source = tag[0] & !LABEL_FLAG;
+        let (reading, _, _) = CASES[if fault || crash { 0 } else { source as usize }];
         let raw = invoke_fresh(&mut official, &limits, &romaji_request(reading));
         let romaji: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(romaji["ok"], true);
@@ -212,8 +251,8 @@ fn child() {
             let length = u32::from_le_bytes(bytes[..LENGTH_BYTES].try_into().unwrap()) as usize;
             assert!((1..=MAX_PAYLOAD).contains(&length));
             let end = LENGTH_BYTES + length;
-            if end > PAYLOAD_PAGE {
-                let rest = request_page(&mut input, &mut output, PAYLOAD, first_page + 1);
+            for page in 1..end.div_ceil(PAYLOAD_PAGE) {
+                let rest = request_page(&mut input, &mut output, PAYLOAD, first_page + page as u64);
                 assert_eq!(rest.len(), PAYLOAD_PAGE);
                 bytes.extend(rest);
             }
@@ -221,12 +260,22 @@ fn child() {
                 .unwrap()
                 .unwrap_or_else(|| choice(vec![option(kana, None)]))
         };
+        let selection_input = if labels {
+            select_input(&choice)
+        } else {
+            choice.clone()
+        };
         let selected = fixed_operation(
             &mut official,
             &limits,
             "text.select-candidates",
-            json!({"method":"execute","config":{"unscored":0.0},"inputs":{"in":choice},"mode":"compose"}),
+            json!({"method":"execute","config":{"unscored":0.0},"inputs":{"in":selection_input},"mode":"compose"}),
         );
+        let selected = if labels {
+            restore_selected(selected, &choice)
+        } else {
+            selected
+        };
         let final_text = fixed_operation(
             &mut official,
             &limits,
@@ -349,14 +398,18 @@ fn exchange(
                 }
                 let mut reply = vec![0; index as usize];
                 output.read_exact(&mut reply)?;
-                let received = Instant::now();
                 let actual: Value = serde_json::from_slice(&reply)?;
                 let tag = if sample.tag == CRASH_AFTER_REPLY {
                     0
                 } else {
-                    sample.tag as usize
+                    (sample.tag & !LABEL_FLAG) as usize
                 };
                 let (_, kana, text) = CASES[tag];
+                let text = if tag == 1 {
+                    large_surface(1)
+                } else {
+                    text.to_owned()
+                };
                 assert_eq!(actual, json!([kana, expected_choice(tag), text]));
                 if request == 0 {
                     match boundary {
@@ -374,6 +427,7 @@ fn exchange(
                     }
                     break;
                 }
+                let received = Instant::now();
                 observations.lock().unwrap().samples.push((
                     sample.planned.unwrap_or(sent),
                     sent,
@@ -396,7 +450,7 @@ fn exchange(
                 return Err(io::Error::other("page access withdrawn"));
             }
             let page = if id[0] == PAYLOAD {
-                if boundary == Boundary::RevokePayload && index == 3 {
+                if boundary == Boundary::RevokePayload && index == PAGES_PER_GROUP as u64 + 1 {
                     cancel.cancel();
                 }
                 match candidate_page(&mut payload, index, reads, &cancel) {
@@ -445,6 +499,9 @@ fn run(
     let payload = files.1.try_clone().unwrap();
     let launched = Instant::now();
     let count = samples.len();
+    let labels = samples
+        .first()
+        .is_some_and(|sample| sample.tag < CRASH_AFTER_REPLY && sample.tag & LABEL_FLAG != 0);
     let scope = WorkerScope::observed(&profile, &job, cache, AtomicU64::new(0).into())
         .with_test_exchange(Box::new(move |output, input| {
             exchange(
@@ -535,7 +592,7 @@ fn run(
     }
     let withdraw = boundary.stops_worker();
     println!(
-        "pipeline-process retained={retained} interval={interval} ready_us={} cpu_100ns={cpu} peak_bytes={peak} withdrawn={withdraw}",
+        "pipeline-process retained={retained} interval={interval} ready_us={} cpu_100ns={cpu} peak_bytes={peak} withdrawn={withdraw} labels={labels}",
         measured.ready_us
     );
     for (planned, sent, received, bytes, reads) in &measured.samples {
@@ -545,7 +602,7 @@ fn run(
             ended.max(*received)
         };
         println!(
-            "pipeline-sample retained={retained} interval={interval} queued_us={} reply_us={} applicable_us={} bytes={bytes} reads={reads}",
+            "pipeline-sample retained={retained} interval={interval} queued_us={} reply_us={} applicable_us={} bytes={bytes} reads={reads} labels={labels}",
             sent.saturating_duration_since(*planned).as_micros(),
             received.duration_since(*sent).as_micros(),
             applicable.duration_since(*sent).as_micros()
@@ -561,7 +618,7 @@ fn range_pipeline_cost() {
 
 #[test]
 #[ignore = "requires fixed public Windows bundle and real AppContainers"]
-fn range_pipeline_soak() {
+fn candidate_label_pipeline_comparison() {
     range_pipeline_trials(true);
 }
 
@@ -651,27 +708,30 @@ fn range_pipeline_trials(soak: bool) {
                 );
             }
         }
-        let start = Instant::now() + Duration::from_secs(1);
-        let count = if soak { SOAK_SAMPLES } else { 60 };
-        let samples = (0..count)
-            .map(|index| Sample {
-                tag: (index % CASES.len() as u64) as u8,
-                planned: if interval == 0 && index > 0 {
-                    None
-                } else {
-                    Some(start + Duration::from_millis(interval * index))
-                },
-            })
-            .collect();
-        run(
-            &cache,
-            &exe,
-            (&file, &payload),
-            samples,
-            interval,
-            true,
-            Boundary::None,
-        );
+        let label_modes: &[bool] = if soak { &[false, true] } else { &[false] };
+        for &labels in label_modes {
+            let start = Instant::now() + Duration::from_secs(1);
+            let count = if soak { COMPARISON_SAMPLES } else { 60 };
+            let samples = (0..count)
+                .map(|index| Sample {
+                    tag: (index % CASES.len() as u64) as u8 | if labels { LABEL_FLAG } else { 0 },
+                    planned: if interval == 0 && index > 0 {
+                        None
+                    } else {
+                        Some(start + Duration::from_millis(interval * index))
+                    },
+                })
+                .collect();
+            run(
+                &cache,
+                &exe,
+                (&file, &payload),
+                samples,
+                interval,
+                true,
+                Boundary::None,
+            );
+        }
     }
     if !soak {
         for retained in [false, true] {
