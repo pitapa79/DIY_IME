@@ -62,6 +62,7 @@ pub struct PermissionPlan {
     pub(super) nodes: Vec<NamedNode>,
     pub(super) gate: ExecutionGate,
     pub(super) plan: Option<ExecutionPlan>,
+    snapshot_identity: std::sync::Arc<()>,
 }
 fn subject(value: Value) -> Result<ApprovalSubject, CoreError> {
     Ok(ApprovalSubject(digest(
@@ -330,6 +331,7 @@ impl PermissionPlan {
             nodes,
             gate,
             plan: Some(plan),
+            snapshot_identity: std::sync::Arc::new(()),
         })
     }
     pub(super) fn initialize_resources(
@@ -366,5 +368,8 @@ impl PermissionPlan {
     }
     pub fn requests(&self) -> &[ApprovalRequest] {
         &self.requests
+    }
+    pub(in crate::isolated_worker::package) fn snapshot_identity(&self) -> std::sync::Arc<()> {
+        self.snapshot_identity.clone()
     }
 }

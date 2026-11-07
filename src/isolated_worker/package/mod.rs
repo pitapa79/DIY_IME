@@ -19,3 +19,4 @@ pub mod permissions;
 pub mod secrets;
 
 mod official;
+pub use official::{OfficialGraphReview, OfficialStage, StaticOfficialPipeline};

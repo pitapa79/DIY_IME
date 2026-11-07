@@ -14,6 +14,8 @@ use std::{collections::BTreeSet, path::Path};
 const PIN: &str = include_str!("../../../distribution/official/pin.json");
 const MAX_INDEX: usize = 1024 * 1024;
 const BATCH_COUNT: usize = 16;
+mod fixed_pipeline;
+pub use fixed_pipeline::{OfficialGraphReview, OfficialStage, StaticOfficialPipeline};
 fn error(message: &str) -> CoreError {
     CoreError::new("official-distribution", message)
 }
