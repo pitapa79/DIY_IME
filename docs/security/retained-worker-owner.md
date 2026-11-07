@@ -1,0 +1,32 @@
+# 保持Workerの寿命所有（実装途中）
+
+Issue #72、親 #27。A/B2の採用と[固定公式経路の契約](official-retained-pipeline.md)に従う。開始mainは `fd792529ddeedd8879e97cc1372ce5f83282667c`、依存は本体PR #71。Worker側ループとnative寿命pinを追加した段階。通常Hostの選択・固定公式構成の判定・入力ごとの有界driverは未接続であり、製品の保持方式が完成したとは扱わない。
+
+## 追加したWorker側
+
+Native専用 `--retained-resources-v1` は既存のAppContainer検査の後だけ受理する。引数はruntime、最大呼出し回数、fuel、Wasm memory、およびmodule/path長の組。DLLは既存の固定SHAとC APIを検証し、一度ロードする。moduleは1〜4個、各32MiB・合計64MiB、最大4096呼出し、fuel最大5B・Wasm memory最大128MiBに制限する。公式の適格性や利用者の許可を、この引数やNode名だけで認定しない。
+
+module/EngineはWorker内で保持する。入力ごとのStore/Instanceとread callback環境を新規に作り、結果frameを書き出す前に破棄する。コード所有者と一回の呼出しを分け、呼出し側のDropはStoreだけを削除する。コード所有者がmodule/Engineを最後に削除する。callbackはStore削除まで生かし、読取用の保持経路に成果emit能力は追加しない。
+
+各呼出しのnative headerは `DIYRET01` + sequence u64LE + module slot u32LE。sequenceは1から連続し、slotは起動時の固定module配列内だけを許す。Workerは同じheaderをackした後、既存 `DIYRNG01` の有界read/resultを一回実行する。次の呼出しは新しいnative headerで始める。単発経路の双方EOF検査は維持する。保持専用の親側入口は、製品用の寿命所有者が完成するまではtest-onlyとする。
+
+## 実Windowsで確認した範囲
+
+`RetainedReservation` は実ExecutionHostから物理1枠とsnapshot総量を予約し、最大16 bindingのgrant・保護世代・module slot・同一Arcの資源版を保持する。複製は同じ予約の所有を共有する。一つの予約から起動できるプロセスは一度だけ。`execute_retained` は同じ取消token、有限walltime（最大600秒）/grace（最大5秒）、資源scope期限を要求し、`Running` が独立したpinを所有する。終了未確認の所有者やDropも、元process handleの実終了とIO回収前にpinを返さない。呼出元はACL等の清掃終了まで外側のpinを保持する。
+
+元handleの終了通知を観測した時点で、IO joinより先に予約を閉じる。閉じた予約は認可や再起動に再利用できない。`is_closed` は制御状態であり、OS終了receiptや予約返却の証拠ではない。清掃pinが残る間は終了後も資源を計上する。異なるgrant/epoch・slot・同じbytesの別Arcへの差替えは拒否して寿命tokenを取消す。入力ごとにRunKeyが更新されても、同じplan/grant/不変資源なら照合できる。
+
+資源を読まないstageには明示的な `ResourceRangeSession::open_empty` を使う。実行grantは必要で、すべてのreadを拒否する。従来の `open` と構築用の非空要件は弱めない。
+
+`adapter::retained_tests::real_retained_module_loop` は、実Workerを `execute_retained` のAppContainer/Jobと実終了receipt経路で起動する。一つのプロセスに2 moduleを置き、状態を持つ検査用Wasmと公開SDK consumerへ交互に20回呼び出す。globalとlinear memoryのcounterが毎回1であることと、固定8 bytesの範囲読取の一致を検査する。これは製品Nodeではない。同じ予約の複製による二重起動拒否、実終了後の閉鎖、清掃pinの課金継続も確認する。
+
+論理応答後もExecutionHostのphysical_jobs=1、retained_bytes=8を維持し、追加の物理枠取得を拒否する。親がstdinを閉じ、元process handleの終了とIO回収を確認した後、ACL/profile/cache/元の資源版を回収してから予約を返す。現時点の入力driverは検査用Host内にあり、製品のExecutionServiceとの統合は証明しない。ローカル検査は成功。SDK検査スクリプトにも同じ実Windows試験を追加する。native header/slot/順序/全切詰めとゼロ・無制限予算、資源なしscopeのread拒否、grant/token/資源版の差替えも単体検査する。
+
+## 残作業
+
+- native寿命pinを、単一の実行中要求と有界の待ち行列/返信/idleを持つ製品driverへ接続する。入力取消と入力ごとの期限監視も必要。
+- gate/計画/文書/版に結び付く実資源leaseを実終了まで保持し、結果採用を現在性確認と同じ順序で行う。
+- 実行中取消・置換・異常終了・終了未確認・重複/破損通信の負例、および採用済み結果の後発異常による非遡及を検査する。
+- 固定公式構成の検証、通常Hostと資源管理への接続、実用辞書/実配布版の同条件測定は後続。
+
+現時点の20呼出しは機能と寿命の確認で、P95/P99や実用IMEの速度達成を示す値ではない。Level3製品マージの別途承認も未取得。

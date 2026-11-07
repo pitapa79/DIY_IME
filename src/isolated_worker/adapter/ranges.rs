@@ -99,8 +99,30 @@ impl ResourceRangeSession {
         resources: BTreeMap<String, Arc<[u8]>>,
         limits: ResourceRangeLimits,
     ) -> Result<Self, CoreError> {
+        Self::open_inner(gate, target, key, cancel, resources, limits, true)
+    }
+    /// Execution-only lease with no resource capability. Every read is refused.
+    /// Construction and ordinary resource execution still require nonempty sets.
+    pub fn open_empty(
+        gate: ExecutionGate,
+        target: GrantTarget,
+        key: RunKey,
+        cancel: CancellationToken,
+        limits: ResourceRangeLimits,
+    ) -> Result<Self, CoreError> {
+        Self::open_inner(gate, target, key, cancel, BTreeMap::new(), limits, false)
+    }
+    fn open_inner(
+        gate: ExecutionGate,
+        target: GrantTarget,
+        key: RunKey,
+        cancel: CancellationToken,
+        resources: BTreeMap<String, Arc<[u8]>>,
+        limits: ResourceRangeLimits,
+        require_resources: bool,
+    ) -> Result<Self, CoreError> {
         let deadline = limits.deadline()?;
-        if resources.is_empty()
+        if (require_resources && resources.is_empty())
             || resources.len() > limits.max_resources as usize
             || resources
                 .keys()
@@ -146,6 +168,22 @@ impl ResourceRangeSession {
     /// Recheck this actual lease before the native owner commits a delivery.
     pub fn check_current(&mut self) -> Result<(), CoreError> {
         self.authorized(|_| Ok(()))
+    }
+    pub(in crate::isolated_worker) fn same_snapshot_scope(&self, other: &Self) -> bool {
+        self.gate.same_authority(&other.gate)
+            && self.lease.same_grant(&other.lease)
+            && self.resources.len() == other.resources.len()
+            && self
+                .resources
+                .iter()
+                .zip(&other.resources)
+                .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1))
+    }
+    pub(in crate::isolated_worker) fn snapshot_bytes(&self) -> Result<u64, CoreError> {
+        self.resources.iter().try_fold(0u64, |sum, (_, bytes)| {
+            sum.checked_add(bytes.len() as u64)
+                .ok_or_else(|| fail("resource-range-limit", "snapshot accounting overflow"))
+        })
     }
 
     pub(in crate::isolated_worker) fn cancellation_matches(

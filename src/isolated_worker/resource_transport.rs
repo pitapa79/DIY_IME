@@ -76,6 +76,17 @@ impl<R: Read, W: Write> Client<R, W> {
     }
 
     pub(super) fn finish(mut self, reply: &[u8]) -> io::Result<()> {
+        self.write_reply(reply)?;
+        if self.input.read(&mut [0])? != 0 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    /// Only the native retained loop may keep this connection across calls.
+    pub(super) fn finish_retained(mut self, reply: &[u8]) -> io::Result<()> {
+        self.write_reply(reply)
+    }
+    fn write_reply(&mut self, reply: &[u8]) -> io::Result<()> {
         if self.failed || reply.len() > MAX_INPUT {
             return Err(invalid());
         }
@@ -83,9 +94,6 @@ impl<R: Read, W: Write> Client<R, W> {
         self.output.write_all(&(reply.len() as u32).to_le_bytes())?;
         self.output.write_all(reply)?;
         self.output.flush()?;
-        if self.input.read(&mut [0])? != 0 {
-            return Err(invalid());
-        }
         Ok(())
     }
 
@@ -157,7 +165,7 @@ pub(super) fn serve(
     request: &[u8],
     session: &mut ResourceRangeSession,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, None)
+    serve_mode(output, input, request, session, None, true)
 }
 pub(super) fn serve_build(
     output: impl Read,
@@ -166,7 +174,18 @@ pub(super) fn serve_build(
     session: &mut ResourceRangeSession,
     capture: &mut ArtifactCapture,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, Some(capture))
+    serve_mode(output, input, request, session, Some(capture), true)
+}
+// The production lifetime owner is not connected yet. Keep this parent-side
+// entrypoint test-only until that owner enforces retained connection budgets.
+#[cfg(test)]
+pub(super) fn serve_retained(
+    output: impl Read,
+    input: impl Write,
+    request: &[u8],
+    session: &mut ResourceRangeSession,
+) -> io::Result<Vec<u8>> {
+    serve_mode(output, input, request, session, None, false)
 }
 fn serve_mode(
     mut output: impl Read,
@@ -174,6 +193,7 @@ fn serve_mode(
     request: &[u8],
     session: &mut ResourceRangeSession,
     mut capture: Option<&mut ArtifactCapture>,
+    require_eof: bool,
 ) -> io::Result<Vec<u8>> {
     session.check_current().map_err(|_| invalid())?;
     if request.len() > MAX_INPUT {
@@ -239,7 +259,7 @@ fn serve_mode(
                 output.read_exact(&mut reply)?;
                 session.check_current().map_err(|_| invalid())?;
                 drop(input);
-                if output.read(&mut [0])? != 0 {
+                if require_eof && output.read(&mut [0])? != 0 {
                     return Err(invalid());
                 }
                 session.check_current().map_err(|_| invalid())?;

@@ -61,6 +61,12 @@ fn require_appcontainer() -> Result<(), String> {
     Ok(())
 }
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--retained-resources-v1")
+    {
+        return retained_module::run(&args[1..]);
+    }
     let (args, mode) = {
         let mut args = args;
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
@@ -377,6 +383,7 @@ struct Runtime<'a> {
     fuel: Option<u64>,
     diagnostics: Option<&'a Recorder>,
     resource: Option<Box<resource_import::Bridge<'a>>>,
+    owns_code: bool,
 }
 impl Drop for Runtime<'_> {
     fn drop(&mut self) {
@@ -385,10 +392,10 @@ impl Drop for Runtime<'_> {
             if !self.store.is_null() {
                 (self.api.store_delete)(self.store);
             }
-            if !self.module.is_null() {
+            if self.owns_code && !self.module.is_null() {
                 (self.api.module_delete)(self.module);
             }
-            if !self.engine.is_null() {
+            if self.owns_code && !self.engine.is_null() {
                 (self.api.engine_delete)(self.engine);
             }
         }
@@ -440,6 +447,7 @@ impl<'a> Runtime<'a> {
             fuel: limits.fuel,
             diagnostics,
             resource: None,
+            owns_code: true,
         };
         result.install_store(limits)?;
         drop(engine_phase);
@@ -488,7 +496,6 @@ impl<'a> Runtime<'a> {
             self.api.check(error, trap)
         }
     }
-    #[cfg(test)]
     fn discard_store(&mut self) {
         // SAFETY: this is the Store owned by self. No guest handles survive it.
         unsafe { (self.api.store_delete)(self.store) };
@@ -649,7 +656,10 @@ enum ModuleMode {
 
 mod compiled_module;
 mod resource_import;
+mod retained_module;
 pub(super) use compiled_module::OFFICIAL_WASM_HASH;
+#[cfg(test)]
+pub(in crate::isolated_worker) use retained_module::state_fixture;
 
 fn run(
     args: Vec<std::ffi::OsString>,

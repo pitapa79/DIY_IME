@@ -14,6 +14,18 @@ const WIRE_LIMIT: usize = 8 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
 mod preparation;
 #[cfg(target_arch = "x86_64")]
+mod retained;
+#[cfg(target_arch = "x86_64")]
+pub use retained::{RetainedBinding, RetainedReservation, RetainedWorkerRequest, execute_retained};
+#[cfg(target_arch = "x86_64")]
+type ResourcePin = Box<dyn ResourceOwner>;
+#[cfg(target_arch = "x86_64")]
+trait ResourceOwner: Send + Sync {
+    fn observe_exit(&self) {}
+}
+#[cfg(target_arch = "x86_64")]
+impl ResourceOwner for Arc<std::sync::Mutex<adapter::ResourceRangeSession>> {}
+#[cfg(target_arch = "x86_64")]
 pub use preparation::{
     PreparationExit, PreparationOutcome, PreparationRunning, PreparationWorkerRequest,
     execute_preparation,
@@ -141,7 +153,7 @@ pub struct Running<'a> {
     observed: bool,
     exchange_used: bool,
     #[cfg(target_arch = "x86_64")]
-    _range_session: Option<Arc<std::sync::Mutex<adapter::ResourceRangeSession>>>,
+    _resource_owner: Option<ResourcePin>,
     #[cfg(test)]
     launch_started: Instant,
     #[cfg(test)]
@@ -161,6 +173,10 @@ impl<'a> Running<'a> {
     }
     fn finish(&mut self) -> ExitReceipt {
         // Every caller checked the actual process handle, never child output.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(owner) = &self._resource_owner {
+            owner.observe_exit();
+        }
         #[cfg(test)]
         let signalled = Instant::now();
         let mut code = 0;
@@ -327,7 +343,7 @@ pub(super) struct WorkerScope<'a> {
     resource_deadline: Option<Instant>,
     exchange: Option<HostExchange>,
     #[cfg(target_arch = "x86_64")]
-    range_session: Option<Arc<std::sync::Mutex<adapter::ResourceRangeSession>>>,
+    resource_owner: Option<ResourcePin>,
     #[cfg(test)]
     prepared: bool,
 }
@@ -347,7 +363,7 @@ impl<'a> WorkerScope<'a> {
             resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
-            range_session: None,
+            resource_owner: None,
             #[cfg(test)]
             prepared: false,
         }
@@ -362,7 +378,7 @@ impl<'a> WorkerScope<'a> {
             resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
-            range_session: None,
+            resource_owner: None,
             prepared: true,
         }
     }
@@ -395,7 +411,7 @@ pub fn execute<'a>(
             resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
-            range_session: None,
+            resource_owner: None,
             #[cfg(test)]
             prepared: false,
         },
@@ -461,7 +477,7 @@ pub fn execute_resources<'a>(
             activity: None,
             exchange: Some(exchange),
             resource_deadline,
-            range_session: Some(session),
+            resource_owner: Some(Box::new(session)),
             #[cfg(test)]
             prepared: false,
         },
@@ -498,7 +514,7 @@ pub(super) fn execute_with_diagnostics<'a>(
         resource_deadline,
         exchange,
         #[cfg(target_arch = "x86_64")]
-        range_session,
+        resource_owner,
         #[cfg(test)]
         prepared,
     } = scope;
@@ -689,7 +705,7 @@ pub(super) fn execute_with_diagnostics<'a>(
         observed: false,
         exchange_used: exchange.is_some(),
         #[cfg(target_arch = "x86_64")]
-        _range_session: range_session,
+        _resource_owner: resource_owner,
         #[cfg(test)]
         launch_started,
         #[cfg(test)]

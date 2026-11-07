@@ -8,6 +8,8 @@ mod prepared;
 mod ranges;
 #[cfg(test)]
 mod resource_sdk_tests;
+#[cfg(test)]
+mod retained_tests;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
 pub(in crate::isolated_worker) use prepared::ArtifactCapture;

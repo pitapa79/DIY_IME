@@ -117,8 +117,7 @@ pub(super) fn instantiate<'a>(
     reader: &'a mut dyn ResourceReader,
     emitting: bool,
 ) -> Result<Runtime<'a>, String> {
-    let range = RangeApi::load(api)?;
-    let mut guest = Runtime::prepare_module(api, limits, diagnostics, |engine, result| {
+    let guest = Runtime::prepare_module(api, limits, diagnostics, |engine, result| {
         // SAFETY: same verified Engine, live module bytes and output pointer.
         unsafe {
             api.check(
@@ -127,6 +126,16 @@ pub(super) fn instantiate<'a>(
             )
         }
     })?;
+    attach(guest, reader, emitting)
+}
+
+pub(super) fn attach<'a>(
+    mut guest: Runtime<'a>,
+    reader: &'a mut dyn ResourceReader,
+    emitting: bool,
+) -> Result<Runtime<'a>, String> {
+    let api = guest.api;
+    let range = RangeApi::load(api)?;
     guest.resource = Some(Box::new(Bridge {
         api,
         range,

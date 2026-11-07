@@ -795,6 +795,8 @@ pub use pipe::{
 };
 #[cfg(target_arch = "x86_64")]
 pub use pipe::{ResourceWorkerRequest, execute_resources};
+#[cfg(target_arch = "x86_64")]
+pub use pipe::{RetainedBinding, RetainedReservation, RetainedWorkerRequest, execute_retained};
 mod worker_trace;
 pub use pipe::{EndReason, ExitReceipt, Outcome, RunControl, Running, execute};
 
