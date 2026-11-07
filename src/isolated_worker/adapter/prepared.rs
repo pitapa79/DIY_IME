@@ -172,6 +172,24 @@ impl ArtifactCapture {
         self.completed = true;
         Ok(())
     }
+    pub(in crate::isolated_worker) fn complete_reply(
+        &mut self,
+        reply: &[u8],
+    ) -> Result<(), CoreError> {
+        // A fully validated error has no artifact. Keep the reply available for
+        // diagnosis only after the same true-exit/authority checks in settle.
+        // Success still requires nonempty, complete captured output and an ack.
+        if self.bytes.is_empty()
+            && self.pending.is_none()
+            && !self.completed
+            && wire::is_error_reply(reply)
+        {
+            self.completed = true;
+            Ok(())
+        } else {
+            self.complete()
+        }
+    }
     pub(in crate::isolated_worker) fn settle(
         &mut self,
         receipt: &ExitReceipt,

@@ -244,7 +244,7 @@ fn serve_mode(
                 }
                 session.check_current().map_err(|_| invalid())?;
                 if let Some(capture) = capture.as_deref_mut() {
-                    capture.complete().map_err(|_| invalid())?;
+                    capture.complete_reply(&reply).map_err(|_| invalid())?;
                 }
                 return Ok(reply);
             }
