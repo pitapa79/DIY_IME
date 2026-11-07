@@ -4,7 +4,11 @@ Issue #76、親 #27。基盤8本は承認を受けてmain `836725ef4bb1f498f2b85
 
 まず、現在の固定公式v1の定義・module・実設定を維持して、[静的証拠](official-static-pipeline.md)を実PermissionPlanの許可/資源準備と[保持driver](retained-worker-owner.md)へ接続する。通常の非公開準備とSession公開の仕組みを再利用し、準備失敗・取消時は旧稼働計画と辞書を残す。Nodeの意味や配布済みbytesを本体へ移植しない。
 
-調査時点では、PermissionBookの内部は資源準備が完了するまで新controllerを非公開にするが、external Hostの `prepare` 冒頭は `self.stop()` で旧Sessionを破棄する。Bookだけの再利用で旧計画が維持されるわけではない。Host側も旧activeと新pendingのSession・catalog使用証拠・活動/文脈を分け、成功した切替でのみ旧所有者を閉じる必要がある。現在の一つの `used` / `activities` / `context` を新pendingで上書きしない。
+従来はPermissionBookが新controllerを非公開にしていても、external Hostの `prepare` 冒頭の `self.stop()` が旧Sessionを破棄していた。今回、Host側も旧activeと新pendingのSession・catalog使用証拠・活動/文脈を分離した。Host設定の公式資産と照合できた固定公式計画が稼働中の場合、後続の準備失敗・取消では旧計画と捕捉済み辞書を維持し、全資源準備に成功した切替でのみ旧所有者を閉じる。それ以外の構成は従来のstop-before-prepareを維持する。
+
+取消要求の受理と切替commitは同じ操作lockで順序付ける。commit後も応答までbusyを維持し、遅れて届いたその操作への取消で切替を取り消さない。保護・権限取消・closeによる文脈の失効は別であり、commit後でもactive/pending双方を無効にする。新しい操作の状態を古い操作の完了処理で消去しない。
+
+新計画の検証・資源準備中も共通ExecutionHostへ物理枠を予約する。旧Sessionの停止後も、実行中callbackが保持するimageを弱参照で観測し、旧Workerの活動数をstatusから消さない。この観測は終了証明や資源所有権ではない。既存の物理枠・Native所有者による実終了確認を維持し、停止時は共通の実使用量が解放されるまで待つ。
 
 ## 今回追加したdriverの入口
 
@@ -16,8 +20,10 @@ Coreの他の待ち入力を妨げないよう、返信workspaceはClient構築�
 
 ## 確認した範囲と残作業
 
+実Windowsの公式bootstrap/通常Host検査では、48パッケージの導入、52定義の登録、明示許可、既存の変換結果を確認する。さらに準備取消、不正Graph、検索に一致しない末尾行が不正なTSVを試し、旧Session epochと捕捉済み辞書の維持を確認した。正常な新TSVの準備後は新epoch/結果へ切り替わり、旧RunKeyを拒否する。新pendingの存在中にresourceReadを明示失効させると旧activeとpending双方が無効になることも検査した。操作単位の取消とcommit・古い完了の順序はRust単体検査で補う。
+
 実AppContainerの検査用2 moduleを使うdriver検査を拡張した。前段公開から省略suffixの正常終端、次入力でのStore初期化・SDK読取、未実行/重複/未公開prefix/異なるsuffix、取消/保護後の公開拒否、実終了までの物理枠保持を確認する。返信workspaceは入力間も計上し、終了・IO回収後に解放する。別の64,000 bytesの待ち入力と同時に短いcallを配送でき、Wasm実read中は該当入力bytesを保持することも検査する。
 
-これらはdriverの信頼側公開hookの検査であり、実CoreがSkippedと認定した証拠や通常Hostの接続完了ではない。残る実装は、公式静的証拠のSessionへの受渡し、弱参照で循環を避けるHost所有者、実Coreの段ごとのCompletionPermit/現在性、取消・文脈・計画切替、真の停止/再補充/清掃、通常Host/実配布版の同条件計測である。
+これらはdriverの信頼側公開hookの検査であり、実CoreがSkippedと認定した証拠や通常Hostの接続完了ではない。公式静的証拠はHostのactive/pendingへ渡したが、残る実装は、弱参照で循環を避ける保持Worker所有者、実Coreの段ごとのCompletionPermit/現在性、その所有者への取消・文脈・計画切替の接続、真の停止/再補充/清掃、通常Host/実配布版の同条件計測である。
 
 最初のB2接続では公式v1の元辞書payloadを保つため、辞書全量のJSON配送と再解析は残る。その結果を測り、対応する公式準備/消費コードの検証・採用後にAを組み合わせる。v1だけの改善やdriver機能検査をP95/P99合格としない。4096文字級の大候補群の性能は後回しにするが、既存の対応範囲は切り捨てない。TSFは未着手。

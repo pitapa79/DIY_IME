@@ -35,6 +35,26 @@ try {
  const review=await host.call({method:'prepare',graph});assert.deepEqual(review.missing.map(r=>r.kind),['resourceRead']);await host.call({method:'approve',reviewId:review.reviewId,ids:review.missing.map(r=>r.id),save:true});await host.call({method:'activate',reviewId:review.reviewId});
  async function run(text,revision,startKey){const {receipt}=await host.call({method:'run',request:{startKey:String(startKey),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text,mode:'compose'}}});return until(async()=>{const {snapshot}=await host.call({method:'getRun',key:receipt.key});return snapshot.state==='terminal'&&Object.values(snapshot.physical).every(n=>n===0)?snapshot:null;});}
  for(const [text,expected,i] of [['kousui','降水',1],['honjitudesu','ほんじつです',2],['30%','30%',3],['','',4]]){if(i>1)await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision:i});const snapshot=await run(text,i,i),value=snapshot.result.ports.find(p=>p.endpoint.node==='result').value;assert.equal(value.status,'data',JSON.stringify(snapshot));assert.deepEqual(value.packet,{version:1,root:{type:'text',text:expected}});}
+ // A failed successor must not discard the approved plan or its immutable TSV.
+ const originalActive=await host.call({method:'status'}),dictionaryPath=join(resources,'dictionary.tsv'),originalDictionary=readFileSync(dictionaryPath);
+ const cancelledPreparation=host.send({method:'prepare',graph}),cancelledPreparationId=String(host.serial);await host.call({method:'cancel',requestId:cancelledPreparationId});assert.equal((await cancelledPreparation).ok,false);assert.equal((await host.call({method:'status'})).sessionEpoch,originalActive.sessionEpoch);
+ writeFileSync(dictionaryPath,'reading\tsurface\tweight\nこうすい\t不正\t99\nzzz\t末尾不正\tnot-a-number\n');
+ const broken=await host.call({method:'prepare',graph});assert.equal(broken.missing.length,0);assert.notEqual(broken.sessionEpoch,originalActive.sessionEpoch);
+ assert.equal((await host.call({method:'status'})).sessionEpoch,originalActive.sessionEpoch);
+ assert.equal((await host.send({method:'activate',reviewId:broken.reviewId})).ok,false);
+ assert.equal((await host.call({method:'status'})).sessionEpoch,originalActive.sessionEpoch);
+ await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision:5});const preserved=await run('kousui',5,5);assert.equal(preserved.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'降水');
+ const invalidGraph=structuredClone(graph);invalidGraph.version=2;assert.equal((await host.send({method:'prepare',graph:invalidGraph})).ok,false);
+ assert.equal((await host.call({method:'status'})).sessionEpoch,originalActive.sessionEpoch);
+ await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision:6});const stillPreserved=await run('kousui',6,6);assert.equal(stillPreserved.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'降水');
+ writeFileSync(dictionaryPath,'reading\tsurface\tweight\nこうすい\t香水\t99\n');
+ const successor=await host.call({method:'prepare',graph});assert.equal(successor.missing.length,0);assert.equal((await host.call({method:'status'})).sessionEpoch,originalActive.sessionEpoch);
+ const replaced=await host.call({method:'activate',reviewId:successor.reviewId});assert.equal(replaced.sessionEpoch,successor.sessionEpoch);assert.notEqual(replaced.sessionEpoch,originalActive.sessionEpoch);
+ const fresh=await run('kousui',1,1);assert.equal(fresh.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'香水');assert.equal((await host.send({method:'getRun',key:stillPreserved.key})).ok,false);
+ writeFileSync(dictionaryPath,originalDictionary);
  const again=await host.call({method:'prepare',graph});assert.equal(again.missing.length,0);await host.call({method:'activate',reviewId:again.reviewId});const recovered=await run('kousui',1,1);assert.equal(recovered.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'降水');
+ console.log('Official successor transaction: invalid TSV/Graph retained the original Session and bytes; successful preparation atomically replaced it and refused old run keys');
+ const revokedPending=await host.call({method:'prepare',graph});await host.call({method:'revoke',id:revokedPending.requests.find(r=>r.kind==='resourceRead').id});assert.equal((await host.send({method:'getRun',key:recovered.key})).ok,false);const revokedState=await host.call({method:'status'});assert.equal(revokedState.phase,'empty');assert.equal(revokedState.reviewId,null);assert.equal(revokedState.workerProcesses,0);
+ console.log('Official successor cancellation retained the old plan; explicit revocation invalidated both active and pending owners');
  console.log('Official bootstrap + production Main: all isolated installation proofs, exact 52-definition catalog, per-flow/resource consent and registered dictionary pipeline Unicode/tie/unknown/empty/saved-reopen compatibility passed.');
 }finally{if(manager)await manager.close();if(host)await host.close();if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-official-host-')))throw Error('unexpected cleanup root');rmSync(root,{recursive:true});}

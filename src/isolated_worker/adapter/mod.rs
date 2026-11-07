@@ -126,6 +126,18 @@ enum WorkerImage {
 /// All executable bytes are captured before validation, preventing later path replacement.
 #[derive(Clone)]
 pub struct WasmArtifact(Arc<Image>);
+/// Observation only. Does not retain code/resources or establish OS exit.
+pub(in crate::isolated_worker) struct ProcessActivity(std::sync::Weak<Image>);
+impl ProcessActivity {
+    pub(in crate::isolated_worker) fn is_live(&self) -> bool {
+        self.0.strong_count() != 0
+    }
+    pub(in crate::isolated_worker) fn count(&self) -> u64 {
+        self.0
+            .upgrade()
+            .map_or(0, |image| image.activity.load(Ordering::Acquire))
+    }
+}
 fn fail(code: &str, message: &str) -> CoreError {
     CoreError::new(code, message)
 }
@@ -919,6 +931,9 @@ impl WasmNode {
     }
     pub fn active_processes(&self) -> u64 {
         self.artifact.active_processes()
+    }
+    pub(in crate::isolated_worker) fn process_activity(&self) -> ProcessActivity {
+        ProcessActivity(Arc::downgrade(&self.artifact.0))
     }
     pub(super) fn permission_identity(&self) -> Result<String, CoreError> {
         let package = self
