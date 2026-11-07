@@ -7,6 +7,7 @@ name = "diy-ime2-core"
 version = "0.1.0"
 dependencies = [
  "diy-ime2-runtime",
+ "diy-ime2-wasm-resource-sdk",
  "semver",
  "serde",
  "serde_json",
@@ -15,6 +16,14 @@ dependencies = [
 
 [[package]]
 name = "diy-ime2-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "diy-ime2-wasm-resource-sdk"
 version = "0.1.0"
 dependencies = [
  "serde",

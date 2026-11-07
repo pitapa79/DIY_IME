@@ -26,6 +26,8 @@
 
 ## Wasm の読取口
 
+対応する [Guest SDK と追加要求](resource-guest-sdk.md) は本体を正本とする。個別 Node の辞書形式を SDK へ移さない。
+
 構築専用の原本読取と成果出力は [辞書準備成果の回収 v1](prepared-resource-capture.md) に分離する。読取専用モードへ成果出力を暗黙に追加しない。
 
 native Worker の `--resource-ranges-v1` は上の接続だけを選択する。通常の v1 呼出し・固定公式コンパイル成果の経路は変更しない。package の宣言だけでこのモードを選ばず、任意の第三者 package を公式扱いしない。この段階では JIT 用の明示モードだけであり、固定公式のコンパイル成果と併用しない。
