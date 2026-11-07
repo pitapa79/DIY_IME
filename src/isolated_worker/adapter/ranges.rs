@@ -59,6 +59,8 @@ pub struct ResourceRangeRequest {
 /// Keeps the selected immutable bytes and the actual authorization lease alive.
 /// A returned buffer is not proof of Worker ending or permission to publish it.
 pub struct ResourceRangeSession {
+    #[cfg(test)]
+    pub(super) after_read: Option<Box<dyn FnMut() + Send>>,
     gate: ExecutionGate,
     lease: Arc<Lease>,
     key: RunKey,
@@ -110,6 +112,8 @@ impl ResourceRangeSession {
         }
         let lease = gate.begin(target, &key, cancel.clone())?;
         let mut session = Self {
+            #[cfg(test)]
+            after_read: None,
             gate,
             lease,
             key,
@@ -122,8 +126,29 @@ impl ResourceRangeSession {
             bytes: 0,
             closed: false,
         };
-        session.authorized(|_| Ok(()))?;
+        session.check_current()?;
         Ok(session)
+    }
+
+    /// Recheck this actual lease before the native owner commits a delivery.
+    pub fn check_current(&mut self) -> Result<(), CoreError> {
+        self.authorized(|_| Ok(()))
+    }
+
+    pub(in crate::isolated_worker) fn cancellation_matches(
+        &self,
+        other: &CancellationToken,
+    ) -> bool {
+        self.cancel.same_source(other)
+    }
+
+    pub(in crate::isolated_worker) fn withdraw(&mut self) {
+        self.closed = true;
+        self.cancel.cancel();
+    }
+
+    pub(in crate::isolated_worker) fn remaining_budget(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
     }
 
     pub fn descriptions(&mut self) -> Result<Vec<ResourceRangeDescription>, CoreError> {
@@ -145,7 +170,14 @@ impl ResourceRangeSession {
     /// The transport must recheck withdrawal before delivery and retain its
     /// original process/IO owner through actual termination.
     pub fn read(&mut self, request: &ResourceRangeRequest) -> Result<Vec<u8>, CoreError> {
-        self.authorized(|session| session.read_current(request))
+        let result = self.authorized(|session| session.read_current(request));
+        #[cfg(test)]
+        if result.is_ok()
+            && let Some(hook) = &mut self.after_read
+        {
+            hook();
+        }
+        result
     }
 
     fn read_current(&mut self, request: &ResourceRangeRequest) -> Result<Vec<u8>, CoreError> {
@@ -222,10 +254,14 @@ impl ResourceRangeSession {
 }
 
 #[cfg(test)]
+#[path = "range_transport_tests.rs"]
+mod transport_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn limits() -> ResourceRangeLimits {
+    pub(super) fn limits() -> ResourceRangeLimits {
         ResourceRangeLimits {
             max_resources: 2,
             max_snapshot_bytes: 16,
@@ -236,7 +272,7 @@ mod tests {
         }
     }
 
-    fn values() -> (ExecutionGate, GrantTarget, RunKey) {
+    pub(super) fn values() -> (ExecutionGate, GrantTarget, RunKey) {
         let gate = ExecutionGate::default();
         let key: RunKey = serde_json::from_value(serde_json::json!({
             "sessionEpoch":"11111111111111111111111111111111",
@@ -253,7 +289,7 @@ mod tests {
         (gate, target, key)
     }
 
-    fn resources() -> BTreeMap<String, Arc<[u8]>> {
+    pub(super) fn resources() -> BTreeMap<String, Arc<[u8]>> {
         BTreeMap::from([
             ("a.bin".into(), Arc::from(&b"abcdefgh"[..])),
             ("b.bin".into(), Arc::from(&b"12345678"[..])),

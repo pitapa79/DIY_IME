@@ -294,6 +294,10 @@ pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
 }
 impl CancellationToken {
+    /// Host composition can require one shared cancellation owner.
+    pub fn same_source(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }

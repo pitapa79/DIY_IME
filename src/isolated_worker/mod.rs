@@ -786,6 +786,10 @@ fn cache_asset_names_reject_windows_path_aliases() {
 }
 
 mod pipe;
+#[cfg(target_arch = "x86_64")]
+mod resource_transport;
+#[cfg(target_arch = "x86_64")]
+pub use pipe::{ResourceWorkerRequest, execute_resources};
 mod worker_trace;
 pub use pipe::{EndReason, ExitReceipt, Outcome, RunControl, Running, execute};
 
