@@ -163,6 +163,9 @@ impl ResourceRangeSession {
     pub(in crate::isolated_worker) fn remaining_budget(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
     }
+    pub(in crate::isolated_worker) fn absolute_deadline(&self) -> Instant {
+        self.deadline
+    }
 
     pub(super) fn snapshot_identity(&mut self) -> Result<String, CoreError> {
         self.check_current()?;

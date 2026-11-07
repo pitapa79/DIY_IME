@@ -35,6 +35,8 @@ native Worker の `--build-resources-v1` は `DIYBLD01` で開始する。既存
 
 成果 buffer を構築前に予約し、各 chunk の配送前に回数・連続 offset・累積長を予約する。短い配送や失敗で予算を戻して再利用しない。許可の mutex を保持したまま pipe IO しない。取消所有者は RunControl と同一でなければ開始前に拒否し、期限は原本セッションの残り予算と RunControl の短い方とする。
 
+資源の絶対期限を起動前と元 process の停止判定へ引き継ぐ。起動に費やした時間を、resume 後に数える相対 walltime だけで除外しない。資源期限切れが共有 token を取消状態にした場合も、絶対期限の経過を確認した停止は Deadline と記録する。終了未確認の所有・回収条件は変更しない。
+
 `PreparationOutcome::Unconfirmed` の owner は元の `Running`、原本、途中成果と予約を保持する。利用者が owner を破棄する場合も、元の Worker の停止と IO 回収より先に原本・成果を解放しない。待機や Drop を UI スレッドで行わない。guest の完了宣言、pipe EOF、経過時間は実終了の証明にならない。
 
 ## 成果の採用条件

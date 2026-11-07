@@ -123,6 +123,7 @@ pub fn execute_preparation<'a>(
         .map_err(|_| "preparation unavailable")?;
     let mut control = control.clone();
     let remaining = request.sources.ranges.remaining_budget();
+    let resource_deadline = Some(request.sources.ranges.absolute_deadline());
     control.walltime = Some(control.walltime.map_or(remaining, |n| n.min(remaining)));
     let capture = Arc::new(Mutex::new(
         ArtifactCapture::new(request.limits).map_err(|_| "artifact reservation unavailable")?,
@@ -155,6 +156,7 @@ pub fn execute_preparation<'a>(
             job,
             cache,
             activity: None,
+            resource_deadline,
             exchange: Some(exchange),
             range_session: Some(ranges.clone()),
             #[cfg(test)]
