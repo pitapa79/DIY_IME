@@ -7,7 +7,7 @@ use crate::{
     execution_control::{CancellationToken, RunKey},
     node::CoreError,
 };
-use serde::Deserialize;
+use diy_ime2_wasm_resource_sdk::PreparationAcknowledgement;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Trusted composition binds these fingerprints to the actual verified module,
@@ -194,18 +194,11 @@ impl ArtifactCapture {
         let reply = receipt
             .output()
             .map_err(|_| fail("preparation-reply", "construction reply unavailable"))?;
-        let acknowledgement: Acknowledgement = serde_json::from_value(wire::reply(reply)?)
-            .map_err(|_| fail("preparation-reply", "invalid construction acknowledgement"))?;
-        if !acknowledgement.valid
-            || !acknowledgement.prepared
+        let acknowledgement: PreparationAcknowledgement =
+            serde_json::from_value(wire::reply(reply)?)
+                .map_err(|_| fail("preparation-reply", "invalid construction acknowledgement"))?;
+        if acknowledgement.validate().is_err()
             || acknowledgement.artifact_bytes != self.bytes.len() as u64
-            || acknowledgement.artifact_version == 0
-            || acknowledgement.artifact_format.is_empty()
-            || acknowledgement.artifact_format.len() > 128
-            || !acknowledgement
-                .artifact_format
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
         {
             return Err(fail(
                 "preparation-reply",
@@ -226,16 +219,6 @@ impl ArtifactCapture {
             format_version: acknowledgement.artifact_version,
         })
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Acknowledgement {
-    valid: bool,
-    prepared: bool,
-    artifact_format: String,
-    artifact_version: u32,
-    artifact_bytes: u64,
 }
 
 #[cfg(test)]

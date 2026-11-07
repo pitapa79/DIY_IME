@@ -14,6 +14,8 @@
 
 ## 構築専用の通信と Wasm import
 
+Guest の共通要求と安全な Rust 呼出しは [Guest SDK v1](resource-guest-sdk.md) に定義する。構築と消費は異なる import 能力を持つ module としてビルドする。
+
 native Worker の `--build-resources-v1` は `DIYBLD01` で開始する。既存 `DIYRNG01` の読取モードと混同しない。開始フレームの入力長・入力 bytes、READ/DATA/RESULT、8 MiB の入力/最終返答上限、EOF/trailing の検査は範囲取得と同じ。保持ループではなく1回限りの構築であり、構築成功には正常な実終了を要する。
 
 追加フレームは次のとおり。整数は little endian。
