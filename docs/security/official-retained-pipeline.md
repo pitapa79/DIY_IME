@@ -48,6 +48,8 @@ Node が使う範囲取得インターフェースと成果 import/export は、
 
 ## Host 側の範囲読取 API
 
+この API と native Worker の接続形式は [辞書範囲取得の native 通信 v1](resource-range-transport.md) に記載する。既存の製品経路の切替や保持ループの実装完了を意味しない。
+
 段階2の基盤として、`adapter::ResourceRangeSession` が既存の `ExecutionGate` と実行 lease を使って、不変の `Arc<[u8]>` を所有する。Host が完全な準備検証を終えた当該設定の資源だけを `open` に渡す。`open` 自身は辞書や生成成果の意味を検証しない。
 
 `ResourceRangeLimits` は資源件数・保有総量・単一/累積読取量・回数・期限を固定する。`descriptions` の ID は接続内だけで有効。`ResourceRangeRequest` の要求番号は1から連続して受理し、`read` は現在のleaseの下で予算を確保して、要求範囲を所有バッファへコピーする。範囲外・予算超過・重複・失効の後はそのセッションを閉じ、同じ実行の取消tokenを設定する。

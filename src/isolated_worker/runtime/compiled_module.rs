@@ -96,7 +96,7 @@ fn digest(bytes: &[u8]) -> Result<String, String> {
         .map_err(|_| "compiled asset SHA-256 failed".into())
 }
 
-unsafe fn symbol<T: Copy>(api: &Api, name: &CStr) -> Result<T, String> {
+pub(super) unsafe fn symbol<T: Copy>(api: &Api, name: &CStr) -> Result<T, String> {
     let pointer = unsafe { super::GetProcAddress(api._library.0, name.as_ptr().cast()) };
     if pointer.is_null() || std::mem::size_of::<T>() != std::mem::size_of_val(&pointer) {
         return Err("compiled module API unavailable".into());

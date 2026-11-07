@@ -132,6 +132,9 @@ pub struct Running<'a> {
     finished: bool,
     activity: Option<Arc<AtomicU64>>,
     observed: bool,
+    exchange_used: bool,
+    #[cfg(target_arch = "x86_64")]
+    _range_session: Option<Arc<std::sync::Mutex<adapter::ResourceRangeSession>>>,
     #[cfg(test)]
     launch_started: Instant,
     #[cfg(test)]
@@ -167,11 +170,20 @@ impl<'a> Running<'a> {
                     .and_then(|r| r)
             },
         );
-        let input = self.input.take().map_or(Ok(()), |t| {
-            t.join()
-                .map_err(|_| "Worker writer panicked".to_owned())
-                .and_then(|r| r)
-        });
+        let input = self.input.take().map_or_else(
+            || {
+                if self.exchange_used && output.is_err() {
+                    Err("Worker resource exchange failed".into())
+                } else {
+                    Ok(())
+                }
+            },
+            |t| {
+                t.join()
+                    .map_err(|_| "Worker writer panicked".to_owned())
+                    .and_then(|r| r)
+            },
+        );
         let diagnostics = self.diagnostics_requested.then(|| {
             self.diagnostics
                 .take()
@@ -305,13 +317,13 @@ pub(super) struct WorkerScope<'a> {
     job: &'a Job,
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
-    #[cfg(test)]
-    exchange: Option<TestExchange>,
+    exchange: Option<HostExchange>,
+    #[cfg(target_arch = "x86_64")]
+    range_session: Option<Arc<std::sync::Mutex<adapter::ResourceRangeSession>>>,
     #[cfg(test)]
     prepared: bool,
 }
-#[cfg(test)]
-type TestExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
+type HostExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 impl<'a> WorkerScope<'a> {
     pub(super) fn observed(
         profile: &'a Profile,
@@ -324,8 +336,9 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: Some(activity),
-            #[cfg(test)]
             exchange: None,
+            #[cfg(target_arch = "x86_64")]
+            range_session: None,
             #[cfg(test)]
             prepared: false,
         }
@@ -337,8 +350,9 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: None,
-            #[cfg(test)]
             exchange: None,
+            #[cfg(target_arch = "x86_64")]
+            range_session: None,
             prepared: true,
         }
     }
@@ -348,7 +362,7 @@ impl<'a> WorkerScope<'a> {
         self
     }
     #[cfg(test)]
-    pub(super) fn with_test_exchange(mut self, exchange: TestExchange) -> Self {
+    pub(super) fn with_test_exchange(mut self, exchange: HostExchange) -> Self {
         self.exchange = Some(exchange);
         self
     }
@@ -368,8 +382,9 @@ pub fn execute<'a>(
             job,
             cache,
             activity: None,
-            #[cfg(test)]
             exchange: None,
+            #[cfg(target_arch = "x86_64")]
+            range_session: None,
             #[cfg(test)]
             prepared: false,
         },
@@ -377,6 +392,70 @@ pub fn execute<'a>(
         args,
         request,
         control,
+    )
+}
+/// Trusted Host composition binds prepared resources to this exact invocation.
+#[cfg(target_arch = "x86_64")]
+pub struct ResourceWorkerRequest {
+    pub input: Vec<u8>,
+    pub resources: adapter::ResourceRangeSession,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn execute_resources<'a>(
+    profile: &'a Profile,
+    job: &'a Job,
+    cache: &'a Cache,
+    program: &Path,
+    args: &[OsString],
+    mut request: ResourceWorkerRequest,
+    control: &RunControl,
+) -> Result<Outcome<'a>, String> {
+    if request.input.len() > super::resource_transport::MAX_INPUT
+        || !request.resources.cancellation_matches(&control.cancel)
+    {
+        request.resources.withdraw();
+        return Err("invalid resource invocation owner or input bound".into());
+    }
+    request
+        .resources
+        .check_current()
+        .map_err(|_| "resource invocation unavailable")?;
+    // Blocking pipe IO is always bounded by the same absolute resource deadline.
+    let remaining = request.resources.remaining_budget();
+    let mut control = control.clone();
+    control.walltime = Some(
+        control
+            .walltime
+            .map_or(remaining, |limit| limit.min(remaining)),
+    );
+    let session = Arc::new(std::sync::Mutex::new(request.resources));
+    let io_session = session.clone();
+    let exchange = Box::new(move |output, input| {
+        let mut session = io_session
+            .lock()
+            .map_err(|_| "resource owner unavailable")?;
+        let result = super::resource_transport::serve(output, input, &request.input, &mut session);
+        if result.is_err() {
+            session.withdraw();
+        }
+        result.map_err(|_| "Worker resource exchange failed".into())
+    });
+    execute_observed(
+        WorkerScope {
+            profile,
+            job,
+            cache,
+            activity: None,
+            exchange: Some(exchange),
+            range_session: Some(session),
+            #[cfg(test)]
+            prepared: false,
+        },
+        program,
+        args,
+        Vec::new(),
+        &control,
     )
 }
 pub(super) fn execute_observed<'a>(
@@ -403,8 +482,9 @@ pub(super) fn execute_with_diagnostics<'a>(
         job,
         cache,
         activity,
-        #[cfg(test)]
         exchange,
+        #[cfg(target_arch = "x86_64")]
+        range_session,
         #[cfg(test)]
         prepared,
     } = scope;
@@ -590,6 +670,9 @@ pub(super) fn execute_with_diagnostics<'a>(
         finished: false,
         activity,
         observed: false,
+        exchange_used: exchange.is_some(),
+        #[cfg(target_arch = "x86_64")]
+        _range_session: range_session,
         #[cfg(test)]
         launch_started,
         #[cfg(test)]
@@ -614,9 +697,6 @@ pub(super) fn execute_with_diagnostics<'a>(
     std::mem::forget(send);
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
-    #[cfg(not(test))]
-    let pipes = Some((file, writer));
-    #[cfg(test)]
     let pipes = if let Some(exchange) = exchange {
         running.output = Some(thread::spawn(move || exchange(file, writer)));
         None

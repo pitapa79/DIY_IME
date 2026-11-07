@@ -34,6 +34,17 @@ try {
  if($LASTEXITCODE -eq 0 -or [IO.File]::ReadAllText($stderr) -notmatch 'OS isolation absent'){throw 'Unisolated Worker was not refused'}
  & $probe $worker $dll $module
  if($LASTEXITCODE -ne 0){throw 'Real v3/Wasm isolation integration failed'}
+ $oldRangeWorker=$env:DIY_RANGE_WORKER_BINARY
+ $oldRangeRuntime=$env:DIY_RANGE_RUNTIME_DLL
+ try {
+  $env:DIY_RANGE_WORKER_BINARY=$worker
+  $env:DIY_RANGE_RUNTIME_DLL=$dll
+  & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
+ } finally {
+  $env:DIY_RANGE_WORKER_BINARY=$oldRangeWorker
+  $env:DIY_RANGE_RUNTIME_DLL=$oldRangeRuntime
+ }
  & (Join-Path $target 'debug/examples/wasm_package_probe.exe') $worker $dll $module
  if($LASTEXITCODE -ne 0){throw 'Real Wasm package/catalog integration failed'}
  & (Join-Path $target 'debug/examples/wasm_package_manager_probe.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') $worker $dll $module
