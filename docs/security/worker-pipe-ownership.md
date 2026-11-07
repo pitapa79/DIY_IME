@@ -1,5 +1,7 @@
 # Host所有のWorker pipeと終了receipt（#268）
 
+固定公式経路の保持 Worker は、2026-11-07 採用の[実装契約](official-retained-pipeline.md)に従い結果採用と物理所有を分ける。実プロセスの終了・回収の証拠は本書の ExitReceipt を用いる。
+
 親#257、[実OS起動](appcontainer-worker-probe.md)の後続。
 Host側のsrc/isolated_workerにWin32起動器を置き、Node-independent Core/SDKは変更しない。
 examples/security_support/windows_worker.rsは既存probe向けの互換importにする。
