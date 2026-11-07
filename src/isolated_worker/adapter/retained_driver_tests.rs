@@ -459,6 +459,7 @@ fn real_retained_driver_inflight_cancel_and_deadline() {
         let cancel = CancellationToken::default();
         let run = 2;
         let (started_send, started) = mpsc::sync_channel(1);
+        let reading_host = fixture.host.clone();
         let mut scope = fixture_scope(
             &fixture.gate,
             &fixture.target,
@@ -467,6 +468,11 @@ fn real_retained_driver_inflight_cancel_and_deadline() {
             fixture.source.clone(),
         );
         scope.after_read = Some(Box::new(move || {
+            assert_eq!(
+                reading_host.usage().queued_input_bytes,
+                1,
+                "serialized input stays charged during real Wasm IO"
+            );
             let _ = started_send.try_send(());
         }));
         let (canceller, deadline_started) = if !deadline {
@@ -522,6 +528,119 @@ fn real_retained_driver_inflight_cancel_and_deadline() {
 
 #[test]
 #[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
+fn real_retained_driver_stage_publication() {
+    for case in [
+        "suffix",
+        "early",
+        "duplicate",
+        "unpublished-suffix",
+        "wrong-suffix",
+        "protection",
+        "cancel",
+    ] {
+        let mut fixture = Fixture::start(policy());
+        fixture
+            .client
+            .as_mut()
+            .unwrap()
+            .wait_ready(Duration::from_secs(10))
+            .unwrap();
+        let cancel = CancellationToken::default();
+        let empty = fixture_empty(&fixture.gate, &fixture.target, 2, cancel.clone());
+        let mut input = fixture
+            .client
+            .as_mut()
+            .unwrap()
+            .begin_input(fixture_key(2), cancel.clone())
+            .unwrap();
+        let mut publications = 0;
+        if case == "early" {
+            assert!(
+                input
+                    .publish_stage(|| {
+                        publications += 1;
+                        Ok(())
+                    })
+                    .is_err()
+            );
+        } else {
+            let data = input.call(b"{}".to_vec(), empty).unwrap();
+            assert_eq!(data, json!({"counter":1,"memory":1}));
+            if case != "unpublished-suffix" {
+                input
+                    .publish_stage(|| {
+                        publications += 1;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            match case {
+                "duplicate" => assert!(
+                    input
+                        .publish_stage(|| {
+                            publications += 1;
+                            Ok(())
+                        })
+                        .is_err()
+                ),
+                "protection" | "cancel" => {
+                    // A new completed stage still needs its current authority.
+                    let resource = fixture_scope(
+                        &fixture.gate,
+                        &fixture.target,
+                        2,
+                        cancel.clone(),
+                        fixture.source.clone(),
+                    );
+                    input.call(sdk_request(), resource).unwrap();
+                    if case == "protection" {
+                        fixture.gate.set_protection(true, false);
+                    } else {
+                        cancel.cancel();
+                    }
+                    assert!(
+                        input
+                            .publish_stage(|| {
+                                publications += 1;
+                                Ok(())
+                            })
+                            .is_err()
+                    );
+                }
+                "unpublished-suffix" | "wrong-suffix" | "suffix" => {
+                    let bindings: &[usize] = if case == "wrong-suffix" { &[0] } else { &[1] };
+                    let result =
+                        input.finish_skipped_suffix(bindings, || Ok("host-attested suffix"));
+                    if case == "suffix" {
+                        assert_eq!(result.unwrap(), "host-attested suffix");
+                        assert!(!fixture.pin.as_ref().unwrap().is_closed());
+                        assert_eq!(
+                            complete_input(&mut fixture, 3),
+                            json!({"copied":[97,98,99,100,101,102,103,104]})
+                        );
+                    } else {
+                        assert!(result.is_err());
+                    }
+                    assert_eq!(publications, usize::from(case != "unpublished-suffix"));
+                    assert_eq!(fixture.host.usage().physical_jobs, 1);
+                    fixture.close();
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+        }
+        drop(input);
+        assert_eq!(publications, usize::from(case != "early"));
+        assert_eq!(fixture.host.usage().physical_jobs, 1);
+        fixture.close();
+    }
+    eprintln!(
+        "retained per-stage publication and exact suffix hooks passed; actual Core skip attestation belongs to the Host coordinator"
+    );
+}
+
+#[test]
+#[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
 fn real_bounded_retained_driver() {
     let mut fixture = Fixture::start(policy());
     fixture
@@ -547,16 +666,32 @@ fn real_bounded_retained_driver() {
             .unwrap()
             .begin_input(fixture_key(run), cancel)
             .unwrap();
+        let other_queued_input = fixture
+            .host
+            .try_reserve(ResourceUsage {
+                queued_input_bytes: 64000,
+                ..ResourceUsage::default()
+            })
+            .expect(
+                "an active input must not reserve its whole aggregate maximum against Core's queue",
+            );
         assert_eq!(
             input.call(b"{}".to_vec(), empty).unwrap(),
             json!({"counter":1,"memory":1})
         );
         let data = input.call(sdk_request(), resource).unwrap();
         assert_eq!(data, json!({"copied":[97,98,99,100,101,102,103,104]}));
+        assert_eq!(
+            fixture.host.usage().queued_input_bytes,
+            64000,
+            "completed IO releases each actual input buffer before the next stage"
+        );
+        drop(other_queued_input);
         accepted.push(input.finish(|| Ok(data)).unwrap());
         assert_eq!(fixture.host.usage().physical_jobs, 1);
         assert_eq!(fixture.host.usage().queued_jobs, 0);
-        assert_eq!(fixture.host.usage().reserved_result_bytes, 0);
+        assert_eq!(fixture.host.usage().reserved_result_bytes, 8192);
+        assert_eq!(fixture.host.usage().queued_input_bytes, 0);
     }
     assert_eq!(accepted.len(), 10);
     assert!(fixture.ended.try_recv().is_err());

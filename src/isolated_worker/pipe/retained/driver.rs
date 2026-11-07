@@ -57,6 +57,7 @@ struct Call {
     scope: ResourceRangeSession,
     reply: mpsc::SyncSender<Result<(Value, ResourceRangeSession, usize), CoreError>>,
     _budget: ResourceLease,
+    _input_budget: ResourceLease,
 }
 // None closes the driver; storing the bounded call inline avoids a heap
 // allocation per stage merely to send a distinct stop variant.
@@ -138,6 +139,7 @@ pub struct RetainedClient {
     is_ready: bool,
     issued_calls: u64,
     shared: Arc<Shared>,
+    _buffers: ResourceLease,
 }
 impl RetainedClient {
     /// Stage indexes refer to the reservation's exact grant/config/resource
@@ -158,7 +160,6 @@ impl RetainedClient {
             || policy.max_calls < stages.len() as u64
             || policy.max_calls > 4096
             || policy.max_input_bytes == 0
-            || policy.max_input_bytes > host.policy().max_queued_input_bytes
             || policy.max_input_bytes > resource_transport::MAX_INPUT as u64
             || policy.max_reply_bytes == 0
             || policy.max_reply_bytes > host.policy().max_result_bytes_per_run
@@ -166,6 +167,16 @@ impl RetainedClient {
         {
             return Err(error("retained-policy"));
         }
+        // Reserve the bounded reply workspace before any Core run is admitted.
+        // Retention eviction can then see this lifetime cost rather than find
+        // too little room only after admitting an input.
+        let buffers = host.try_reserve(ResourceUsage {
+            reserved_result_bytes: policy
+                .max_reply_bytes
+                .checked_mul(2)
+                .ok_or_else(|| error("retained-policy"))?,
+            ..ResourceUsage::default()
+        })?;
         pin.validate()?;
         {
             let bindings = pin.inner.bindings.lock().unwrap_or_else(|p| p.into_inner());
@@ -184,7 +195,9 @@ impl RetainedClient {
         let driver_shared = shared.clone();
         let driver_policy = policy.clone();
         let driver_stages = stages.clone();
+        let io_buffers = buffers.clone();
         let exchange = Box::new(move |mut output: std::fs::File, mut input: std::fs::File| {
+            let _buffers = io_buffers;
             let result = (|| -> Result<Vec<u8>, String> {
                 let _watchdog = Watchdog::start(driver_shared.clone())?;
                 let mut ready = [0; 12];
@@ -284,6 +297,10 @@ impl RetainedClient {
                         driver_pin.authorize_binding(call.binding, &mut call.scope)?;
                         Ok((retained_reply(&bytes)??, bytes.len()))
                     })();
+                    // These parent-side serialized bytes are no longer used.
+                    // Release their actual charge before waking the next stage.
+                    drop(call.input);
+                    drop(call._input_budget);
                     match reply {
                         Ok((data, size)) => {
                             call.reply
@@ -322,6 +339,7 @@ impl RetainedClient {
                 is_ready: false,
                 issued_calls: 0,
                 shared,
+                _buffers: buffers,
             },
             RetainedWorkerRequest {
                 reservation: pin,
@@ -404,12 +422,6 @@ impl RetainedClient {
             .min(self.pin.inner.deadline);
         let budget = self.host.try_reserve(ResourceUsage {
             queued_jobs: 1,
-            queued_input_bytes: self.policy.max_input_bytes,
-            reserved_result_bytes: self
-                .policy
-                .max_reply_bytes
-                .checked_mul(2)
-                .ok_or_else(|| error("retained-policy"))?,
             ..ResourceUsage::default()
         })?;
         let mut active = self.shared.active.lock().unwrap_or_else(|p| p.into_inner());
@@ -430,6 +442,7 @@ impl RetainedClient {
             deadline,
             budget,
             completed: 0,
+            published: 0,
             input_bytes: 0,
             reply_bytes: 0,
             last_scope: None,
@@ -450,6 +463,7 @@ pub struct RetainedInput<'a> {
     deadline: Instant,
     budget: ResourceLease,
     completed: usize,
+    published: usize,
     input_bytes: u64,
     reply_bytes: u64,
     last_scope: Option<ResourceRangeSession>,
@@ -481,6 +495,10 @@ impl RetainedInput<'_> {
                 .filter(|v| *v <= self.client.policy.max_input_bytes)
                 .ok_or_else(|| error("retained-input-limit"))?;
             let call_deadline = scope.absolute_deadline().min(self.deadline);
+            let input_budget = self.client.host.try_reserve(ResourceUsage {
+                queued_input_bytes: input.len() as u64,
+                ..ResourceUsage::default()
+            })?;
             if let Some(active) = self
                 .client
                 .shared
@@ -500,6 +518,7 @@ impl RetainedInput<'_> {
                     scope,
                     reply,
                     _budget: self.budget.clone(),
+                    _input_budget: input_budget,
                 }))
                 .map_err(|_| error("retained-busy"))?;
             let (data, scope, size) = receive
@@ -544,6 +563,57 @@ impl RetainedInput<'_> {
         }
         result
     }
+    /// Publish one just-completed stage through its current Core permit. This
+    /// lets Core release the next required stage without closing this input.
+    /// Caller validates the Node/Packet contract before entering the closure.
+    /// The closure may enqueue a Core permit; it must not reenter the same
+    /// Gate through GuardedController (the Gate lock is already held).
+    pub fn publish_stage<T>(
+        &mut self,
+        publish: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let result = (|| {
+            if self.completed != self.published + 1 {
+                return Err(error("retained-stage-order"));
+            }
+            check_active(&self.client.shared)?;
+            let scope = self
+                .last_scope
+                .as_mut()
+                .ok_or_else(|| error("retained-input"))?;
+            self.client.pin.publish(scope, || {
+                check_active(&self.client.shared)?;
+                publish()
+            })
+        })();
+        if result.is_ok() {
+            self.published = self.completed;
+        } else {
+            self.client.stop(DriverStop::Authority);
+        }
+        result
+    }
+
+    /// Only the trusted Host may attest that Core has skipped this exact suffix
+    /// after all executed stages were published. Guest data is not skip evidence.
+    /// Host verifies the actual Core terminal/Skipped snapshot before calling;
+    /// the closure only commits that bookkeeping without reentering the Gate.
+    /// No native calls or call-budget credits are forged.
+    pub fn finish_skipped_suffix<T>(
+        mut self,
+        skipped_bindings: &[usize],
+        publish: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        if self.completed == 0
+            || self.published != self.completed
+            || skipped_bindings.is_empty()
+            || self.client.stages.get(self.completed..) != Some(skipped_bindings)
+        {
+            return Err(error("retained-stage-order"));
+        }
+        self.publish_final(publish)
+    }
+
     /// Caller validates Node port/Packet contracts and uses the current Core
     /// completion permit inside this publication; this is not direct UI access.
     pub fn finish<T>(
@@ -553,6 +623,12 @@ impl RetainedInput<'_> {
         if self.completed != self.client.stages.len() {
             return Err(error("retained-stage-order"));
         }
+        self.publish_final(publish)
+    }
+    fn publish_final<T>(
+        &mut self,
+        publish: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
         check_active(&self.client.shared)?;
         let mut scope = self
             .last_scope
