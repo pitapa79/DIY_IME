@@ -48,6 +48,10 @@ try {
   $env:DIY_RESOURCE_SDK_CONSUMER_WASM=$consumer
   & $Cargo test --locked --lib isolated_worker::adapter::resource_sdk_tests::real_resource_sdk_guests -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'SDK actual Wasm/AppContainer integration failed'}
+  & $Cargo test --locked --lib isolated_worker::adapter::retained_tests::real_retained_module_loop -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Retained module/Store lifetime integration failed'}
+  & $Cargo test --locked --lib isolated_worker::adapter::retained_driver_tests:: -- --include-ignored --nocapture --test-threads=1
+  if($LASTEXITCODE -ne 0){throw 'Retained bounded driver/cancellation/fault integration failed'}
  } finally {
   $env:DIY_RANGE_WORKER_BINARY=$oldWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRuntime

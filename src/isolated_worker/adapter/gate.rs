@@ -57,6 +57,13 @@ pub(super) struct Lease {
     grant: Arc<()>,
     cancel: CancellationToken,
 }
+impl Lease {
+    pub(super) fn same_grant(&self, other: &Self) -> bool {
+        self.target == other.target
+            && Arc::ptr_eq(&self.grant, &other.grant)
+            && Arc::ptr_eq(&self.epoch, &other.epoch)
+    }
+}
 fn denied() -> CoreError {
     CoreError::new(
         "worker-authority",
