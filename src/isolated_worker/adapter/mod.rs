@@ -4,6 +4,8 @@ mod gate;
 mod network;
 mod prepared;
 mod ranges;
+#[cfg(test)]
+mod resource_sdk_tests;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
 pub(in crate::isolated_worker) use prepared::ArtifactCapture;
