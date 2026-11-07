@@ -52,6 +52,8 @@ try {
   if($LASTEXITCODE -ne 0){throw 'Retained module/Store lifetime integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::retained_driver_tests:: -- --include-ignored --nocapture --test-threads=1
   if($LASTEXITCODE -ne 0){throw 'Retained bounded driver/cancellation/fault integration failed'}
+  & $Cargo test --locked --lib isolated_worker::package::official::fixed_pipeline::tests::real_official_fixed_review -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Official fixed pipeline static review integration failed'}
  } finally {
   $env:DIY_RANGE_WORKER_BINARY=$oldWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRuntime
