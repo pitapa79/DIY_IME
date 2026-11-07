@@ -2,8 +2,12 @@
 mod dictionary;
 mod gate;
 mod network;
+mod ranges;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
+pub use ranges::{
+    ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
+};
 mod wire;
 use super::{Cache, EndReason, ExitReceipt, Job, Outcome, Profile, RunControl};
 use crate::{

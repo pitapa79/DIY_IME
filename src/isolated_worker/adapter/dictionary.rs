@@ -54,7 +54,7 @@ fn pointer(value: &str) -> bool {
     }
     true
 }
-fn reference(value: &str) -> bool {
+pub(super) fn reference(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 4096
         && !value
