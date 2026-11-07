@@ -11,6 +11,13 @@ use std::{
 };
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
+mod preparation;
+#[cfg(target_arch = "x86_64")]
+pub use preparation::{
+    PreparationExit, PreparationOutcome, PreparationRunning, PreparationWorkerRequest,
+    execute_preparation,
+};
 #[cfg(test)]
 pub(super) const PROBE_READY: &[u8] = b"\nDIY-READY-PROBE\0";
 #[cfg(test)]

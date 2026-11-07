@@ -789,6 +789,11 @@ mod pipe;
 #[cfg(target_arch = "x86_64")]
 mod resource_transport;
 #[cfg(target_arch = "x86_64")]
+pub use pipe::{
+    PreparationExit, PreparationOutcome, PreparationRunning, PreparationWorkerRequest,
+    execute_preparation,
+};
+#[cfg(target_arch = "x86_64")]
 pub use pipe::{ResourceWorkerRequest, execute_resources};
 mod worker_trace;
 pub use pipe::{EndReason, ExitReceipt, Outcome, RunControl, Running, execute};

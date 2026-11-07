@@ -68,6 +68,8 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             ModuleMode::Compile
         } else if flag == "--resource-ranges-v1" {
             ModuleMode::ResourceRanges
+        } else if flag == "--build-resources-v1" {
+            ModuleMode::ResourceBuild
         } else if let Some(digest) = flag.strip_prefix("--compiled-official=") {
             ModuleMode::Reuse(digest.to_owned())
         } else {
@@ -640,6 +642,7 @@ mod compiled_module_probe;
 enum ModuleMode {
     Jit,
     ResourceRanges,
+    ResourceBuild,
     Compile,
     Reuse(String),
 }
@@ -702,18 +705,28 @@ fn run(
         return Err("module exceeds probe limit".into());
     }
     drop(module_phase);
-    if matches!(mode, ModuleMode::ResourceRanges) {
+    if matches!(mode, ModuleMode::ResourceRanges | ModuleMode::ResourceBuild) {
         if expected_module.is_none() || args[2] != "-" {
             return Err("resource transport requires a Host-owned invocation".into());
         }
-        let (mut client, input) = super::resource_transport::Client::start(
-            std::io::stdin().lock(),
-            std::io::stdout().lock(),
-        )
+        let building = matches!(mode, ModuleMode::ResourceBuild);
+        let stdin = std::io::stdin().lock();
+        let stdout = std::io::stdout().lock();
+        let (mut client, input) = if building {
+            super::resource_transport::Client::start_build(stdin, stdout)
+        } else {
+            super::resource_transport::Client::start(stdin, stdout)
+        }
         .map_err(|_| "resource start failed")?;
         let reply = {
-            let mut guest =
-                resource_import::instantiate(&api, &module, &limits, diagnostics, &mut client)?;
+            let mut guest = resource_import::instantiate(
+                &api,
+                &module,
+                &limits,
+                diagnostics,
+                &mut client,
+                building,
+            )?;
             let reply = guest.invoke(&input)?;
             if guest
                 .resource
@@ -758,6 +771,7 @@ fn run(
         }
         ModuleMode::Compile => unreachable!("compile returns before guest input"),
         ModuleMode::ResourceRanges => unreachable!("resource transport returns before raw input"),
+        ModuleMode::ResourceBuild => unreachable!("resource build returns before raw input"),
     };
     if expected_module.is_some() {
         // Production carries the exact bounded guest wire to Parent validation.
