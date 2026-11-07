@@ -95,25 +95,44 @@ fn unique_json(bytes: &[u8]) -> Result<(), CoreError> {
         .map_err(|_| invalid())
 }
 pub(super) fn reply(bytes: &[u8]) -> Result<Value, CoreError> {
+    let parsed = decode_reply(bytes)?;
+    match (parsed.ok, parsed.data, parsed.error) {
+        (true, Some(data), None) if !data.is_null() => Ok(data),
+        (false, None, Some(error)) => Err(checked_error(error).unwrap_or_else(invalid)),
+        _ => Err(invalid()),
+    }
+}
+fn decode_reply(bytes: &[u8]) -> Result<Reply, CoreError> {
     unique_json(bytes)?;
     let parsed: Reply = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     if parsed.api_version != 1 {
         return Err(invalid());
     }
-    match (parsed.ok, parsed.data, parsed.error) {
-        (true, Some(data), None) if !data.is_null() => Ok(data),
-        (false, None, Some(error))
-            if !error.code.is_empty()
-                && error.code.len() <= 64
-                && error
-                    .code
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-                && error.message.len() <= 4096 =>
-        {
-            Err(CoreError::new(error.code, "Wasm Node reported an error"))
-        }
-        _ => Err(invalid()),
+    Ok(parsed)
+}
+fn checked_error(error: WireError) -> Option<CoreError> {
+    if !error.code.is_empty()
+        && error.code.len() <= 64
+        && error
+            .code
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+        && error.message.len() <= 4096
+    {
+        Some(CoreError::new(error.code, "Wasm Node reported an error"))
+    } else {
+        None
+    }
+}
+pub(in crate::isolated_worker) fn is_error_reply(bytes: &[u8]) -> bool {
+    match decode_reply(bytes) {
+        Ok(Reply {
+            ok: false,
+            data: None,
+            error: Some(error),
+            ..
+        }) => checked_error(error).is_some(),
+        _ => false,
     }
 }
 fn invalid() -> CoreError {

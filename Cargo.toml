@@ -9,6 +9,11 @@ description = "DIY_IME2 の文章候補データと変換エンジン"
 [features]
 # Matched control builds for the local Windows distribution comparison.
 compiled-module-jit-baseline = []
+resource-integration-probe = []
+
+[[example]]
+name = "resource_integration_probe"
+required-features = ["resource-integration-probe"]
 
 [dependencies]
 semver = { version = "=1.0.28", features = ["serde"] }

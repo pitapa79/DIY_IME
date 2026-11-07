@@ -153,6 +153,63 @@ fn client_interleaves_reads_and_chunks_without_reusing_offsets() {
     assert!(output.windows(15).any(|b| b == chunk(0, b"ab")));
     assert!(output.windows(15).any(|b| b == chunk(2, b"cd")));
 }
+
+#[test]
+fn zero_output_node_error_keeps_exact_reply_but_never_captures_an_artifact() {
+    let error=br#"{"apiVersion":1,"ok":false,"error":{"code":"dictionary-format","message":"invalid tail"}}"#;
+    let mut child = b"DIYBLD01".to_vec();
+    child.extend(result(error));
+    let (mut source, _, _) = sources(CancellationToken::default());
+    let mut capture = ArtifactCapture::new(limits()).unwrap();
+    let reply = wire::serve_build(
+        Cursor::new(&child),
+        Vec::new(),
+        b"{}",
+        &mut source.ranges,
+        &mut capture,
+    )
+    .unwrap();
+    assert_eq!(reply, error);
+    assert!(capture.completed);
+    assert!(capture.bytes.is_empty());
+    assert_eq!(
+        super::wire::reply(&reply).unwrap_err().code,
+        "dictionary-format"
+    );
+    assert!(
+        capture.complete_reply(error).is_err(),
+        "duplicate completion"
+    );
+    for end in 0..child.len() {
+        let (mut source, _, _) = sources(CancellationToken::default());
+        assert!(
+            wire::serve_build(
+                Cursor::new(&child[..end]),
+                Vec::new(),
+                b"{}",
+                &mut source.ranges,
+                &mut ArtifactCapture::new(limits()).unwrap()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn empty_success_and_ambiguous_errors_are_still_rejected() {
+    for reply in [
+        br#"{"apiVersion":1,"ok":true,"data":{"valid":true,"prepared":true,"artifactFormat":"test","artifactVersion":1,"artifactBytes":1}}"#.as_slice(),
+        br#"{"apiVersion":1,"ok":false,"ok":false,"error":{"code":"x","message":"x"}}"#,
+        br#"{"apiVersion":2,"ok":false,"error":{"code":"x","message":"x"}}"#,
+        br#"{"apiVersion":1,"ok":false,"error":{"code":"bad code","message":"x"}}"#,
+        br#"{"apiVersion":1,"ok":false,"error":null}"#,
+        b"raw",
+    ] {
+        let (mut source,_,_)=sources(CancellationToken::default());
+        let mut child=b"DIYBLD01".to_vec();child.extend(result(reply));
+        assert!(wire::serve_build(Cursor::new(child),Vec::new(),b"{}",&mut source.ranges,&mut ArtifactCapture::new(limits()).unwrap()).is_err());
+    }
+}
 #[test]
 fn client_poisoned_by_wrong_ack_and_read_only_mode_denies_emission() {
     let mut wrong = ack(0, 2);
