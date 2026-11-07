@@ -172,10 +172,10 @@ impl ResourceRangeSession {
     pub fn read(&mut self, request: &ResourceRangeRequest) -> Result<Vec<u8>, CoreError> {
         let result = self.authorized(|session| session.read_current(request));
         #[cfg(test)]
-        if result.is_ok() {
-            if let Some(hook) = &mut self.after_read {
-                hook();
-            }
+        if result.is_ok()
+            && let Some(hook) = &mut self.after_read
+        {
+            hook();
         }
         result
     }
