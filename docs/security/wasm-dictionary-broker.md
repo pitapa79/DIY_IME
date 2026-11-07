@@ -1,5 +1,7 @@
 # Approved dictionary snapshots for Wasm Nodes
 
+固定公式経路の範囲取得と準備成果の所有は、2026-11-07 採用の[実装契約](official-retained-pipeline.md)で定義する。本書は現在の v1 broker の動作を記録する。
+
 Issue #284; builds on the [external Host](wasm-external-host.md), [permission subjects](wasm-permissions.md) and [execution GUI](wasm-execution-gui.md). The Node repository implements the guest `prepare` operation in PR #12. Dictionary parsing and lookup remain in that repository; the Host only grants, captures and transports bounded resources.
 
 ## Trusted binding configuration
