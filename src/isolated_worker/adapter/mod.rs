@@ -2,9 +2,12 @@
 mod dictionary;
 mod gate;
 mod network;
+mod prepared;
 mod ranges;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
+pub(in crate::isolated_worker) use prepared::ArtifactCapture;
+pub use prepared::{PreparationIdentity, PreparationLimits, PreparationSources, PreparedArtifact};
 pub use ranges::{
     ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
 };

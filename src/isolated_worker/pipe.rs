@@ -11,6 +11,13 @@ use std::{
 };
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
+mod preparation;
+#[cfg(target_arch = "x86_64")]
+pub use preparation::{
+    PreparationExit, PreparationOutcome, PreparationRunning, PreparationWorkerRequest,
+    execute_preparation,
+};
 #[cfg(test)]
 pub(super) const PROBE_READY: &[u8] = b"\nDIY-READY-PROBE\0";
 #[cfg(test)]
@@ -317,6 +324,7 @@ pub(super) struct WorkerScope<'a> {
     job: &'a Job,
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
+    resource_deadline: Option<Instant>,
     exchange: Option<HostExchange>,
     #[cfg(target_arch = "x86_64")]
     range_session: Option<Arc<std::sync::Mutex<adapter::ResourceRangeSession>>>,
@@ -336,6 +344,7 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: Some(activity),
+            resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
             range_session: None,
@@ -350,6 +359,7 @@ impl<'a> WorkerScope<'a> {
             job,
             cache,
             activity: None,
+            resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
             range_session: None,
@@ -382,6 +392,7 @@ pub fn execute<'a>(
             job,
             cache,
             activity: None,
+            resource_deadline: None,
             exchange: None,
             #[cfg(target_arch = "x86_64")]
             range_session: None,
@@ -423,6 +434,7 @@ pub fn execute_resources<'a>(
         .map_err(|_| "resource invocation unavailable")?;
     // Blocking pipe IO is always bounded by the same absolute resource deadline.
     let remaining = request.resources.remaining_budget();
+    let resource_deadline = Some(request.resources.absolute_deadline());
     let mut control = control.clone();
     control.walltime = Some(
         control
@@ -448,6 +460,7 @@ pub fn execute_resources<'a>(
             cache,
             activity: None,
             exchange: Some(exchange),
+            resource_deadline,
             range_session: Some(session),
             #[cfg(test)]
             prepared: false,
@@ -482,6 +495,7 @@ pub(super) fn execute_with_diagnostics<'a>(
         job,
         cache,
         activity,
+        resource_deadline,
         exchange,
         #[cfg(target_arch = "x86_64")]
         range_session,
@@ -490,6 +504,9 @@ pub(super) fn execute_with_diagnostics<'a>(
     } = scope;
     if control.cancel.is_cancelled() {
         return Ok(Outcome::CancelledBeforeStart);
+    }
+    if resource_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err("Worker resource deadline elapsed before start".into());
     }
     if request.len() > WIRE_LIMIT {
         return Err("Worker request exceeds wire limit".into());
@@ -789,7 +806,15 @@ pub(super) fn execute_with_diagnostics<'a>(
         }));
     }
     if control.cancel.is_cancelled() {
-        return Ok(running.stop(EndReason::Cancelled, control.termination_grace));
+        let reason = if resource_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            EndReason::Deadline
+        } else {
+            EndReason::Cancelled
+        };
+        return Ok(running.stop(reason, control.termination_grace));
+    }
+    if resource_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Ok(running.stop(EndReason::Deadline, control.termination_grace));
     }
     if unsafe { ResumeThread(thread_handle.0) } == u32::MAX {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
@@ -810,6 +835,10 @@ pub(super) fn execute_with_diagnostics<'a>(
         }
         let reason = if wait != WAIT_TIMEOUT {
             Some(EndReason::WaitFailed)
+        } else if resource_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // Resource expiry also cancels the shared token. Preserve the
+            // absolute deadline cause instead of relabelling it cancellation.
+            Some(EndReason::Deadline)
         } else if control.cancel.is_cancelled() {
             Some(EndReason::Cancelled)
         } else if overflow.load(Ordering::Acquire) {

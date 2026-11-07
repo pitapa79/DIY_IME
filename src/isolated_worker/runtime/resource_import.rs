@@ -61,9 +61,18 @@ impl RangeApi {
             })
         }
     }
-    unsafe fn function_type(self) -> Result<P, String> {
+    unsafe fn function_type(self, emitting: bool) -> Result<P, String> {
         // i32 resource, i64 offset, i32 length, i32 destination -> i32 length.
-        let types = [0, 1, 0, 0, 0].map(|kind| unsafe { (self.valtype_new)(kind) });
+        let kinds: &[u8] = if emitting {
+            &[0, 0, 0]
+        } else {
+            &[0, 1, 0, 0, 0]
+        };
+        let types: Vec<P> = kinds
+            .iter()
+            .map(|kind| unsafe { (self.valtype_new)(*kind) })
+            .collect();
+        let nparams = types.len() - 1;
         if types.iter().any(|p| p.is_null()) {
             for p in types.into_iter().filter(|p| !p.is_null()) {
                 unsafe { (self.valtype_delete)(p) };
@@ -75,8 +84,8 @@ impl RangeApi {
         // Vector construction takes ownership of the element handles;
         // functype_new consumes both vectors, including their contents.
         unsafe {
-            (self.vector_new)(&mut params, 4, types.as_ptr());
-            (self.vector_new)(&mut results, 1, types.as_ptr().add(4));
+            (self.vector_new)(&mut params, nparams, types.as_ptr());
+            (self.vector_new)(&mut results, 1, types.as_ptr().add(nparams));
             let result = (self.functype_new)(&mut params, &mut results);
             if result.is_null() {
                 Err("resource function type unavailable".into())
@@ -92,6 +101,7 @@ pub(super) struct Bridge<'a> {
     range: RangeApi,
     reader: &'a mut dyn ResourceReader,
     failed: bool,
+    emitting: bool,
 }
 impl Bridge<'_> {
     pub(super) fn failed(&self) -> bool {
@@ -105,6 +115,7 @@ pub(super) fn instantiate<'a>(
     limits: &Limits,
     diagnostics: Option<&'a Recorder>,
     reader: &'a mut dyn ResourceReader,
+    emitting: bool,
 ) -> Result<Runtime<'a>, String> {
     let range = RangeApi::load(api)?;
     let mut guest = Runtime::prepare_module(api, limits, diagnostics, |engine, result| {
@@ -121,6 +132,7 @@ pub(super) fn instantiate<'a>(
         range,
         reader,
         failed: false,
+        emitting,
     }));
     // The Box address stays stable until after Store deletion. The linker
     // clones type metadata; no C finalizer owns the Rust callback environment.
@@ -132,7 +144,7 @@ pub(super) fn instantiate<'a>(
             return Err("resource linker unavailable".into());
         }
         let result = (|| {
-            let ty = range.function_type()?;
+            let ty = range.function_type(false)?;
             let error = (range.define)(
                 linker,
                 b"diyime_resource_v1".as_ptr(),
@@ -146,6 +158,22 @@ pub(super) fn instantiate<'a>(
             );
             (range.functype_delete)(ty);
             api.check(error, ptr::null_mut())?;
+            if emitting {
+                let ty = range.function_type(true)?;
+                let error = (range.define)(
+                    linker,
+                    b"diyime_prepared_v1".as_ptr(),
+                    18,
+                    b"emit".as_ptr(),
+                    4,
+                    ty,
+                    emit,
+                    env,
+                    None,
+                );
+                (range.functype_delete)(ty);
+                api.check(error, ptr::null_mut())?;
+            }
             let mut trap = ptr::null_mut();
             let error = (range.instantiate)(
                 linker,
@@ -165,6 +193,73 @@ pub(super) fn instantiate<'a>(
 struct Export<'a> {
     api: &'a Api,
     value: Extern,
+}
+
+unsafe extern "C" fn emit(
+    env: P,
+    caller: P,
+    args: *const Val,
+    nargs: usize,
+    results: *mut Val,
+    nresults: usize,
+) -> P {
+    // SAFETY: this stable Box is installed only on construction-mode Stores.
+    let bridge = unsafe { &mut *env.cast::<Bridge<'_>>() };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if bridge.failed
+            || !bridge.emitting
+            || nargs != 2
+            || nresults != 1
+            || args.is_null()
+            || results.is_null()
+        {
+            return Err(());
+        }
+        let args = unsafe { std::slice::from_raw_parts(args, nargs) };
+        if args.iter().any(|v| v.kind != 0) {
+            return Err(());
+        }
+        let (source, length) = unsafe { (args[0].of.i32 as u32 as usize, args[1].of.i32) };
+        if length <= 0 || length as usize > MAX_READ {
+            return Err(());
+        }
+        let end = source.checked_add(length as usize).ok_or(())?;
+        let mut export = Extern::default();
+        if !unsafe { (bridge.range.caller_export)(caller, b"memory".as_ptr(), 6, &mut export) } {
+            return Err(());
+        }
+        let export = Export {
+            api: bridge.api,
+            value: export,
+        };
+        if export.value.kind != 3 {
+            return Err(());
+        }
+        let memory = unsafe { export.value.of.memory };
+        let context = unsafe { (bridge.range.caller_context)(caller) };
+        if context.is_null() || end > unsafe { (bridge.api.memory_size)(context, &memory) } {
+            return Err(());
+        }
+        let data = unsafe { (bridge.api.memory_data)(context, &memory) };
+        if data.is_null() {
+            return Err(());
+        }
+        // Bound and copy before IO; a guest pointer never crosses the transport.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(data.add(source), length as usize) }.to_vec();
+        bridge.reader.emit_artifact(&bytes).map_err(|_| ())?;
+        unsafe {
+            results.write(Val::i32(length as u32));
+        }
+        Ok(())
+    }));
+    if matches!(result, Ok(Ok(()))) {
+        ptr::null_mut()
+    } else {
+        bridge.failed = true;
+        let message = b"artifact output failed";
+        unsafe { (bridge.range.trap)(message.as_ptr(), message.len()) }
+    }
 }
 impl Drop for Export<'_> {
     fn drop(&mut self) {

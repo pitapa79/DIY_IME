@@ -26,6 +26,8 @@
 
 ## Wasm の読取口
 
+構築専用の原本読取と成果出力は [辞書準備成果の回収 v1](prepared-resource-capture.md) に分離する。読取専用モードへ成果出力を暗黙に追加しない。
+
 native Worker の `--resource-ranges-v1` は上の接続だけを選択する。通常の v1 呼出し・固定公式コンパイル成果の経路は変更しない。package の宣言だけでこのモードを選ばず、任意の第三者 package を公式扱いしない。この段階では JIT 用の明示モードだけであり、固定公式のコンパイル成果と併用しない。
 
 追加 import は `diyime_resource_v1.read`。型は `(i32 resource, i64 offset, i32 length, i32 destination) -> i32 copied_length`。資源 ID は正、offset は非負、length は上限内の正数とする。destination は Wasm32 の unsigned offset として扱う。従来の v1 の呼出し exports と生の入出力 bytes を保ち、既存 v1 の入力に未対応フィールドを追加しない。対応公式 Node の要求・準備成果との接続は別タスクで固定する。
