@@ -132,6 +132,11 @@ pub(super) fn run(args: &[OsString]) -> Result<(), String> {
     }
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
+    output
+        .write_all(b"DIYRDY01")
+        .and_then(|()| output.write_all(&(modules.len() as u32).to_le_bytes()))
+        .and_then(|()| output.flush())
+        .map_err(|_| "retained readiness failed")?;
     for sequence in 1..=calls {
         let Some(slot) =
             next(&mut input, sequence, modules.len()).map_err(|_| "retained header rejected")?
@@ -146,7 +151,14 @@ pub(super) fn run(args: &[OsString]) -> Result<(), String> {
             .finish_retained(&reply)
             .map_err(|_| "retained reply failed")?;
     }
-    Ok(())
+    // Give Parent time to publish the final valid reply. Budget exhaustion is
+    // not an early EOF/exit that can race that publication. No further call runs.
+    match next(&mut input, calls + 1, modules.len())
+        .map_err(|_| "retained limit header rejected")?
+    {
+        None => Ok(()),
+        Some(_) => Err("retained call budget exhausted".into()),
+    }
 }
 
 #[cfg(test)]
@@ -156,21 +168,33 @@ pub(in crate::isolated_worker) fn state_fixture(dll: &Path) -> Vec<u8> {
     let position = 16 + reply.find(":0").unwrap() + 1;
     let memory_position = 16 + reply.rfind('0').unwrap();
     let data = reply.replace('"', "\\22");
+    let bad = r#"{"apiVersion":1,"apiVersion":1,"ok":true,"data":{}}"#;
+    let bad_data = bad.replace('"', "\\22");
     let wat = format!(
         r#"(module
+        (import "diyime_resource_v1" "read" (func $read (param i32 i64 i32 i32) (result i32)))
         (memory (export "memory") 1)
         (global $counter (mut i32) (i32.const 0))
         (data (i32.const 16) "{data}")
+        (data (i32.const 256) "{bad_data}")
         (func (export "diyime_api_version") (result i32) i32.const 1)
         (func (export "diyime_alloc") (param i32) (result i32) i32.const 1024)
         (func (export "diyime_release_reply"))
         (func (export "diyime_call") (param i32 i32) (result i64)
+            local.get 0 i32.load8_u i32.const 33 i32.eq
+            if
+                i32.const 1 i64.const 0 i32.const 1 i32.const 8192 call $read drop
+                (loop $spin br $spin)
+            end
+            local.get 0 i32.load8_u i32.const 126 i32.eq if unreachable end
+            local.get 0 i32.load8_u i32.const 63 i32.eq if i64.const {bad_descriptor} return end
             global.get $counter i32.const 1 i32.add global.set $counter
             i32.const {position} global.get $counter i32.const 48 i32.add i32.store8
             i32.const 4096 i32.const 4096 i32.load8_u i32.const 1 i32.add i32.store8
             i32.const {memory_position} i32.const 4096 i32.load8_u i32.const 48 i32.add i32.store8
             i64.const {descriptor}))"#,
-        descriptor = ((reply.len() as u64) << 32) | 16
+        descriptor = ((reply.len() as u64) << 32) | 16,
+        bad_descriptor = ((bad.len() as u64) << 32) | 256
     );
     let mut bytes = Bytes {
         size: 0,

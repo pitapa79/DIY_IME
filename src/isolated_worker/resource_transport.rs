@@ -165,7 +165,7 @@ pub(super) fn serve(
     request: &[u8],
     session: &mut ResourceRangeSession,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, None, true)
+    serve_mode(output, input, request, session, None, true, MAX_INPUT)
 }
 pub(super) fn serve_build(
     output: impl Read,
@@ -174,18 +174,32 @@ pub(super) fn serve_build(
     session: &mut ResourceRangeSession,
     capture: &mut ArtifactCapture,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, Some(capture), true)
+    serve_mode(
+        output,
+        input,
+        request,
+        session,
+        Some(capture),
+        true,
+        MAX_INPUT,
+    )
 }
-// The production lifetime owner is not connected yet. Keep this parent-side
-// entrypoint test-only until that owner enforces retained connection budgets.
-#[cfg(test)]
 pub(super) fn serve_retained(
     output: impl Read,
     input: impl Write,
     request: &[u8],
     session: &mut ResourceRangeSession,
+    max_reply: usize,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, None, false)
+    serve_mode(
+        output,
+        input,
+        request,
+        session,
+        None,
+        false,
+        max_reply.min(MAX_INPUT),
+    )
 }
 fn serve_mode(
     mut output: impl Read,
@@ -194,6 +208,7 @@ fn serve_mode(
     session: &mut ResourceRangeSession,
     mut capture: Option<&mut ArtifactCapture>,
     require_eof: bool,
+    max_reply: usize,
 ) -> io::Result<Vec<u8>> {
     session.check_current().map_err(|_| invalid())?;
     if request.len() > MAX_INPUT {
@@ -254,7 +269,7 @@ fn serve_mode(
                 input.flush()?;
             }
             RESULT => {
-                let length = length(&mut output, MAX_INPUT)?;
+                let length = length(&mut output, max_reply)?;
                 let mut reply = vec![0; length];
                 output.read_exact(&mut reply)?;
                 session.check_current().map_err(|_| invalid())?;

@@ -16,7 +16,10 @@ mod preparation;
 #[cfg(target_arch = "x86_64")]
 mod retained;
 #[cfg(target_arch = "x86_64")]
-pub use retained::{RetainedBinding, RetainedReservation, RetainedWorkerRequest, execute_retained};
+pub use retained::{
+    DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedInput, RetainedReservation,
+    RetainedWorkerRequest, execute_retained,
+};
 #[cfg(target_arch = "x86_64")]
 type ResourcePin = Box<dyn ResourceOwner>;
 #[cfg(target_arch = "x86_64")]

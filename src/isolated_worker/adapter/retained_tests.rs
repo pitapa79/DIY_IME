@@ -13,7 +13,7 @@ use std::{
     thread,
 };
 
-fn fixture_host(name: &str) -> ExecutionHost {
+pub(super) fn fixture_host(name: &str) -> ExecutionHost {
     let value: Value = serde_json::from_str(include_str!(
         "../../../tests/contracts/execution_control.json"
     ))
@@ -32,10 +32,10 @@ fn fixture_host(name: &str) -> ExecutionHost {
     )
     .unwrap()
 }
-fn fixture_key(run: u64) -> RunKey {
+pub(super) fn fixture_key(run: u64) -> RunKey {
     serde_json::from_value(json!({"sessionEpoch":"11111111111111111111111111111111","planVersion":"1","runId":run.to_string(),"deliveryGeneration":"1"})).unwrap()
 }
-fn fixture_empty(
+pub(super) fn fixture_empty(
     gate: &ExecutionGate,
     target: &GrantTarget,
     run: u64,
@@ -57,7 +57,7 @@ fn fixture_empty(
     )
     .unwrap()
 }
-fn fixture_scope(
+pub(super) fn fixture_scope(
     gate: &ExecutionGate,
     target: &GrantTarget,
     run: u64,
@@ -332,6 +332,13 @@ fn real_retained_module_loop() {
         let exchange = Box::new(move |mut output: std::fs::File, mut input: std::fs::File| {
             let result = (|| -> Result<Vec<u8>, String> {
                 let mut results = Vec::new();
+                let mut ready = [0; 12];
+                output.read_exact(&mut ready).map_err(|e| e.to_string())?;
+                if &ready[..8] != b"DIYRDY01"
+                    || u32::from_le_bytes(ready[8..].try_into().unwrap()) != 2
+                {
+                    return Err("invalid retained readiness".into());
+                }
                 for sequence in 1u64..=20 {
                     let slot = ((sequence - 1) % 2) as u32;
                     let mut resources = if slot == 0 {
@@ -368,6 +375,7 @@ fn real_retained_module_loop() {
                         &mut input,
                         &serde_json::to_vec(&request).unwrap(),
                         &mut resources,
+                        16384,
                     )
                     .map_err(|e| e.to_string())?;
                     results.push(wire::reply(&bytes).map_err(|e| e.code)?);

@@ -6,6 +6,8 @@ use crate::{
     node::CoreError,
 };
 use std::sync::Mutex;
+mod driver;
+pub use driver::{DriverPolicy, DriverStop, RetainedClient, RetainedInput};
 
 pub struct RetainedBinding {
     pub module_slot: u32,
@@ -17,7 +19,7 @@ struct State {
     cancel: CancellationToken,
     deadline: Instant,
     launched: AtomicBool,
-    ended: AtomicBool,
+    ended: Mutex<bool>,
 }
 /// Cloning retains the same charged reservation, not a second budget domain.
 /// Running owns an independent clone through original-process ending and IO join.
@@ -40,6 +42,12 @@ impl RetainedReservation {
             return Err(invalid());
         }
         let mut bytes = 0u64;
+        if bindings
+            .iter()
+            .any(|binding| !binding.scope.same_execution_context(&bindings[0].scope))
+        {
+            return Err(invalid());
+        }
         let mut deadline = None;
         for binding in &mut bindings {
             if binding.module_slot >= 4 || !binding.scope.cancellation_matches(cancel) {
@@ -67,7 +75,7 @@ impl RetainedReservation {
                 cancel: cancel.clone(),
                 deadline: deadline.unwrap(),
                 launched: AtomicBool::new(false),
-                ended: AtomicBool::new(false),
+                ended: Mutex::new(false),
             }),
         })
     }
@@ -76,7 +84,7 @@ impl RetainedReservation {
     }
     /// Control-plane closure only, never an OS exit receipt or a quota refund.
     pub fn is_closed(&self) -> bool {
-        self.inner.ended.load(Ordering::Acquire)
+        *self.inner.ended.lock().unwrap_or_else(|p| p.into_inner())
             || self.inner.cancel.is_cancelled()
             || Instant::now() >= self.inner.deadline
     }
@@ -119,11 +127,43 @@ impl RetainedReservation {
         }
         Ok(())
     }
+    fn authorize_binding(
+        &self,
+        index: usize,
+        scope: &mut ResourceRangeSession,
+    ) -> Result<u32, CoreError> {
+        self.validate()?;
+        scope.check_current()?;
+        let bindings = self
+            .inner
+            .bindings
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let binding = bindings.get(index).ok_or_else(invalid)?;
+        if !binding.scope.same_snapshot_scope(scope) {
+            return Err(invalid());
+        }
+        Ok(binding.module_slot)
+    }
+    fn publish<T>(
+        &self,
+        scope: &mut ResourceRangeSession,
+        action: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        self.validate()?;
+        scope.publish_retained(|| {
+            let ended = self.inner.ended.lock().unwrap_or_else(|p| p.into_inner());
+            if *ended || self.inner.cancel.is_cancelled() || Instant::now() >= self.inner.deadline {
+                return Err(invalid());
+            }
+            action()
+        })
+    }
 }
 struct ProcessPin(RetainedReservation);
 impl ResourceOwner for ProcessPin {
     fn observe_exit(&self) {
-        self.0.inner.ended.store(true, Ordering::Release);
+        *self.0.inner.ended.lock().unwrap_or_else(|p| p.into_inner()) = true;
     }
 }
 impl Drop for ProcessPin {

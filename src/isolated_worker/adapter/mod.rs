@@ -9,6 +9,8 @@ mod ranges;
 #[cfg(test)]
 mod resource_sdk_tests;
 #[cfg(test)]
+mod retained_driver_tests;
+#[cfg(test)]
 mod retained_tests;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
@@ -18,6 +20,15 @@ pub use ranges::{
     ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
 };
 mod wire;
+pub(in crate::isolated_worker) fn retained_reply(
+    bytes: &[u8],
+) -> Result<Result<Value, crate::node::CoreError>, crate::node::CoreError> {
+    match wire::reply(bytes) {
+        Ok(data) => Ok(Ok(data)),
+        Err(error) if wire::is_error_reply(bytes) => Ok(Err(error)),
+        Err(error) => Err(error),
+    }
+}
 use super::{Cache, EndReason, ExitReceipt, Job, Outcome, Profile, RunControl};
 use crate::{
     execution_control::{

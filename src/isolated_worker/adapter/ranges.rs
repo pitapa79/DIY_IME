@@ -179,6 +179,32 @@ impl ResourceRangeSession {
                 .zip(&other.resources)
                 .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1))
     }
+    pub(in crate::isolated_worker) fn same_execution_context(&self, other: &Self) -> bool {
+        self.gate.same_authority(&other.gate)
+            && self.key.session_epoch == other.key.session_epoch
+            && self.key.plan_version == other.key.plan_version
+    }
+    pub(in crate::isolated_worker) fn run_key(&self) -> &RunKey {
+        &self.key
+    }
+    pub(in crate::isolated_worker) fn publish_retained<T>(
+        &mut self,
+        action: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let gate = self.gate.clone();
+        let lease = self.lease.clone();
+        let key = self.key.clone();
+        let result = self.current().and_then(|()| {
+            gate.publish(&lease, &key, || {
+                self.current()?;
+                action()
+            })?
+        });
+        if result.is_err() {
+            self.withdraw();
+        }
+        result
+    }
     pub(in crate::isolated_worker) fn snapshot_bytes(&self) -> Result<u64, CoreError> {
         self.resources.iter().try_fold(0u64, |sum, (_, bytes)| {
             sum.checked_add(bytes.len() as u64)
