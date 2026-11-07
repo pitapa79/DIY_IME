@@ -8,6 +8,7 @@ cargo build --locked --features resource-integration-probe --example resource_in
 ```
 
 manifestの例（すべて明示指定するテスト用ファイル）:
+Native Workerはdebug symbolを含むCIビルドも検査するため256MiB以下、固定DLLは128MiB以下とする。Nodeに渡す原本やWasmの予算とは別の検査用成分上限である。
 
 ```json
 {

@@ -124,7 +124,8 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
     if sha256(&dll).map_err(core)? != DLL_HASH {
         return Err("pinned runtime hash mismatch".into());
     }
-    let worker = read_bounded(&spec.worker, 32 * 1024 * 1024)?;
+    // CI retains native debug symbols; these are not Wasm input or guest memory.
+    let worker = read_bounded(&spec.worker, 256 * 1024 * 1024)?;
     let hashes = json!({"worker":sha256(&worker).map_err(core)?,"runtime":DLL_HASH,"producer":sha256(&producer).map_err(core)?,"consumer":sha256(&consumer).map_err(core)?});
     let mut profile = Profile::new()?;
     let job = Job::with_memory_limit(Some(512 * 1024 * 1024))?;
