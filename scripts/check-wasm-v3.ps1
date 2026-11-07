@@ -24,7 +24,7 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Guest fixture build failed; install project wasm32 target'}
  & $Cargo clippy --locked --manifest-path $fixture --target wasm32-unknown-unknown --target-dir $target -- -D warnings
  if($LASTEXITCODE -ne 0){throw 'Guest fixture clippy failed'}
- & $Cargo build --locked --bin diy-ime2-wasm-worker --bin diy-ime2-node-package --bin diy-ime2-node-manager --bin diy-ime2-external-host --example wasm_v3_probe --example wasm_package_probe --example wasm_package_manager_probe --example wasm_permission_probe --example wasm_dictionary_probe
+ & $Cargo build --locked --bin diy-ime2-wasm-worker --bin diy-ime2-node-package --bin diy-ime2-node-manager --bin diy-ime2-external-host --example wasm_v3_probe --example wasm_package_probe --example wasm_package_manager_probe --example wasm_permission_probe --example wasm_dictionary_probe --example worker_pipe_probe
  if($LASTEXITCODE -ne 0){throw 'Host Worker build failed'}
  $worker=Join-Path $target 'debug/diy-ime2-wasm-worker.exe'
  $probe=Join-Path $target 'debug/examples/wasm_v3_probe.exe'
@@ -36,14 +36,19 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Real v3/Wasm isolation integration failed'}
  $oldRangeWorker=$env:DIY_RANGE_WORKER_BINARY
  $oldRangeRuntime=$env:DIY_RANGE_RUNTIME_DLL
+ $oldPreparationCrash=$env:DIY_PREPARATION_CRASH_FIXTURE
  try {
   $env:DIY_RANGE_WORKER_BINARY=$worker
   $env:DIY_RANGE_RUNTIME_DLL=$dll
+  $env:DIY_PREPARATION_CRASH_FIXTURE=Join-Path $target 'debug/examples/worker_pipe_probe.exe'
   & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
+  & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Real artifact preparation AppContainer integration failed'}
  } finally {
   $env:DIY_RANGE_WORKER_BINARY=$oldRangeWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRangeRuntime
+  $env:DIY_PREPARATION_CRASH_FIXTURE=$oldPreparationCrash
  }
  & (Join-Path $target 'debug/examples/wasm_package_probe.exe') $worker $dll $module
  if($LASTEXITCODE -ne 0){throw 'Real Wasm package/catalog integration failed'}

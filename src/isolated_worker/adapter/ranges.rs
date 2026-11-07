@@ -86,6 +86,19 @@ impl ResourceRangeSession {
         resources: BTreeMap<String, Arc<[u8]>>,
         limits: ResourceRangeLimits,
     ) -> Result<Self, CoreError> {
+        Self::open_captured(gate, target, key, cancel, resources, limits)
+    }
+
+    // Construction-only caller supplies authorized immutable originals, not
+    // yet semantically validated dictionary artifacts. Never an execution opt-in.
+    pub(super) fn open_captured(
+        gate: ExecutionGate,
+        target: GrantTarget,
+        key: RunKey,
+        cancel: CancellationToken,
+        resources: BTreeMap<String, Arc<[u8]>>,
+        limits: ResourceRangeLimits,
+    ) -> Result<Self, CoreError> {
         let deadline = limits.deadline()?;
         if resources.is_empty()
             || resources.len() > limits.max_resources as usize
@@ -149,6 +162,22 @@ impl ResourceRangeSession {
 
     pub(in crate::isolated_worker) fn remaining_budget(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+    pub(in crate::isolated_worker) fn absolute_deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub(super) fn snapshot_identity(&mut self) -> Result<String, CoreError> {
+        self.check_current()?;
+        // Hash outside the gate mutex; immutable originals remain owned here.
+        let descriptions = self.resources.iter().map(|(name, bytes)| {
+            Ok(serde_json::json!({"reference":name,"length":bytes.len(),"sha256":super::sha256(bytes)?}))
+        }).collect::<Result<Vec<_>, CoreError>>()?;
+        let encoded = serde_json::to_vec(&descriptions)
+            .map_err(|_| fail("preparation-identity", "source identity unavailable"))?;
+        let identity = super::sha256(&encoded)?;
+        self.check_current()?;
+        Ok(identity)
     }
 
     pub fn descriptions(&mut self) -> Result<Vec<ResourceRangeDescription>, CoreError> {

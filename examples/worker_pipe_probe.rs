@@ -266,6 +266,7 @@ mod probe {
         let args: Vec<_> = std::env::args_os().skip(1).collect();
         let mode = args.first().and_then(|s| s.to_str());
         match mode {
+            Some("--preparation-crash") => preparation_crash(),
             Some("--no-read") => loop {
                 std::thread::sleep(Duration::from_secs(1));
             },
@@ -304,6 +305,50 @@ mod probe {
                 "usage: worker_pipe_probe suite | wasm <probe> <dll> <wasm> <fake-request>".into(),
             ),
         }
+    }
+
+    // Independent native crash fixture, never a production Node/runtime route.
+    // Completes the actual construction frames, observes Parent EOF, then exits
+    // abnormally. A correct final reply must not make this artifact usable.
+    fn preparation_crash() -> Result<Option<Value>, String> {
+        let mut input = std::io::stdin().lock();
+        let mut output = std::io::stdout().lock();
+        let mut header = [0; 12];
+        input.read_exact(&mut header).map_err(|_| "fixture start")?;
+        if &header[..8] != b"DIYBLD01" {
+            return Err("fixture version".into());
+        }
+        let length = u32::from_le_bytes(header[8..].try_into().unwrap()) as usize;
+        if length > 8 * 1024 * 1024 {
+            return Err("fixture input bound".into());
+        }
+        let mut request = vec![0; length];
+        input
+            .read_exact(&mut request)
+            .map_err(|_| "fixture request")?;
+        let mut frame = b"DIYBLD01".to_vec();
+        frame.push(4);
+        frame.extend(0u64.to_le_bytes());
+        frame.extend(4u32.to_le_bytes());
+        frame.extend(b"abcd");
+        output.write_all(&frame).map_err(|_| "fixture chunk")?;
+        output.flush().map_err(|_| "fixture flush")?;
+        let mut ack = [0; 13];
+        input.read_exact(&mut ack).map_err(|_| "fixture ack")?;
+        if ack[0] != 5 || ack[1..9] != 0u64.to_le_bytes() || ack[9..] != 4u32.to_le_bytes() {
+            return Err("fixture ack mismatch".into());
+        }
+        let reply=br#"{"apiVersion":1,"ok":true,"data":{"valid":true,"prepared":true,"artifactFormat":"fixture","artifactVersion":1,"artifactBytes":4}}"#;
+        output.write_all(&[3]).map_err(|_| "fixture result")?;
+        output
+            .write_all(&(reply.len() as u32).to_le_bytes())
+            .map_err(|_| "fixture result length")?;
+        output.write_all(reply).map_err(|_| "fixture reply")?;
+        output.flush().map_err(|_| "fixture flush")?;
+        if input.read(&mut [0]).map_err(|_| "fixture EOF")? != 0 {
+            return Err("fixture trailing input".into());
+        }
+        std::process::exit(73);
     }
 }
 fn main() {
