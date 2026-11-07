@@ -66,6 +66,8 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
         let mode = if flag == "--compile-official" {
             ModuleMode::Compile
+        } else if flag == "--resource-ranges-v1" {
+            ModuleMode::ResourceRanges
         } else if let Some(digest) = flag.strip_prefix("--compiled-official=") {
             ModuleMode::Reuse(digest.to_owned())
         } else {
@@ -372,6 +374,7 @@ struct Runtime<'a> {
     instance: Handle,
     fuel: Option<u64>,
     diagnostics: Option<&'a Recorder>,
+    resource: Option<Box<resource_import::Bridge<'a>>>,
 }
 impl Drop for Runtime<'_> {
     fn drop(&mut self) {
@@ -434,6 +437,7 @@ impl<'a> Runtime<'a> {
             instance: Handle::default(),
             fuel: limits.fuel,
             diagnostics,
+            resource: None,
         };
         result.install_store(limits)?;
         drop(engine_phase);
@@ -635,11 +639,13 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
 mod compiled_module_probe;
 enum ModuleMode {
     Jit,
+    ResourceRanges,
     Compile,
     Reuse(String),
 }
 
 mod compiled_module;
+mod resource_import;
 pub(super) use compiled_module::OFFICIAL_WASM_HASH;
 
 fn run(
@@ -696,6 +702,32 @@ fn run(
         return Err("module exceeds probe limit".into());
     }
     drop(module_phase);
+    if matches!(mode, ModuleMode::ResourceRanges) {
+        if expected_module.is_none() || args[2] != "-" {
+            return Err("resource transport requires a Host-owned invocation".into());
+        }
+        let (mut client, input) = super::resource_transport::Client::start(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        )
+        .map_err(|_| "resource start failed")?;
+        let reply = {
+            let mut guest =
+                resource_import::instantiate(&api, &module, &limits, diagnostics, &mut client)?;
+            let reply = guest.invoke(&input)?;
+            if guest
+                .resource
+                .as_ref()
+                .is_some_and(|bridge| bridge.failed())
+            {
+                return Err("resource read failed".into());
+            }
+            reply
+        };
+        return client
+            .finish(&reply)
+            .map_err(|_| "resource reply failed".into());
+    }
     if matches!(mode, ModuleMode::Compile) {
         use std::io::Write;
         let artifact = compiled_module::compile(&api, &limits, &module)?;
@@ -725,6 +757,7 @@ fn run(
             compiled_module::load(&api, &limits, diagnostics, &module, &digest)?
         }
         ModuleMode::Compile => unreachable!("compile returns before guest input"),
+        ModuleMode::ResourceRanges => unreachable!("resource transport returns before raw input"),
     };
     if expected_module.is_some() {
         // Production carries the exact bounded guest wire to Parent validation.
