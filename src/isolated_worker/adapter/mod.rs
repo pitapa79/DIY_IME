@@ -1,6 +1,8 @@
 //! Host-owned validated Wasm composition for v3. No default registry/GUI activation.
 mod dictionary;
 mod gate;
+#[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
+pub mod integration_probe;
 mod network;
 mod prepared;
 mod ranges;

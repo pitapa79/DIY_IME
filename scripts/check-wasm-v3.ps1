@@ -46,6 +46,7 @@ try {
   & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real artifact preparation AppContainer integration failed'}
   & (Join-Path $PSScriptRoot 'check-resource-sdk.ps1') -Cargo $Cargo -RuntimeDll $dll -Worker $worker
+  & (Join-Path $PSScriptRoot 'check-resource-integration-probe.ps1') -Cargo $Cargo -RuntimeDll $dll -Worker $worker
  } finally {
   $env:DIY_RANGE_WORKER_BINARY=$oldRangeWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRangeRuntime
