@@ -99,6 +99,12 @@ impl Fixture {
                 let module0 = cache.write("counter.wasm", &state)?;
                 let sdk = std::fs::read(sdk).map_err(|e| e.to_string())?;
                 let module1 = cache.write("consumer.wasm", &sdk)?;
+                let staged_assets = [
+                    program.clone(),
+                    runtime_path.clone(),
+                    module0.clone(),
+                    module1.clone(),
+                ];
                 cache.allow_read_execute(&profile)?;
                 let args = vec![
                     "--retained-resources-v1".into(),
@@ -145,7 +151,13 @@ impl Fixture {
                 };
                 cache.revoke_read_execute(&profile)?;
                 profile.delete()?;
-                std::fs::remove_dir_all(cache.path()).map_err(|e| e.to_string())?;
+                // The real process has ended, but Windows scanners may still
+                // hold an image without FILE_SHARE_DELETE. Keep the cleanup
+                // pin while using the same bounded retry as the product owner.
+                for asset in &staged_assets {
+                    remove_asset(asset).map_err(|e| e.message)?;
+                }
+                std::fs::remove_dir(cache.path()).map_err(|e| e.to_string())?;
                 drop(cleanup_pin);
                 result
             })();
