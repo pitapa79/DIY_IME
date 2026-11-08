@@ -65,6 +65,7 @@ pub struct ResourceRangeSession {
     lease: Arc<Lease>,
     key: RunKey,
     cancel: CancellationToken,
+    additional_cancel: Option<CancellationToken>,
     resources: Vec<(String, Arc<[u8]>)>,
     limits: ResourceRangeLimits,
     deadline: Instant,
@@ -153,6 +154,7 @@ impl ResourceRangeSession {
             lease,
             key,
             cancel,
+            additional_cancel: None,
             resources: resources.into_iter().collect(),
             limits,
             deadline,
@@ -310,7 +312,19 @@ impl ResourceRangeSession {
         Ok(resource.1[end - length..end].to_vec())
     }
 
+    pub(super) fn follow_cancellation(&mut self, token: CancellationToken) -> Result<(), CoreError> {
+        if self.additional_cancel.is_some() { self.cancel.cancel(); return Err(fail("resource-range-config", "call cancellation is already bound")); }
+        self.additional_cancel = Some(token);
+        self.current()
+    }
     fn current(&self) -> Result<(), CoreError> {
+        if self
+            .additional_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            self.cancel.cancel();
+        }
         if self.closed || self.cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "resource run is cancelled"));
         }

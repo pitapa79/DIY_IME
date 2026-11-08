@@ -156,11 +156,11 @@ impl RetainedClient {
             || policy.idle_timeout.is_zero()
             || policy.idle_timeout > Duration::from_secs(60)
             || policy.input_timeout.is_zero()
-            || policy.input_timeout > Duration::from_secs(30)
+            || policy.input_timeout > Duration::from_secs(120)
             || policy.max_calls < stages.len() as u64
             || policy.max_calls > 4096
             || policy.max_input_bytes == 0
-            || policy.max_input_bytes > resource_transport::MAX_INPUT as u64
+            || policy.max_input_bytes > 4 * resource_transport::MAX_INPUT as u64
             || policy.max_reply_bytes == 0
             || policy.max_reply_bytes > host.policy().max_result_bytes_per_run
             || policy.max_reply_bytes > resource_transport::MAX_INPUT as u64
@@ -347,6 +347,24 @@ impl RetainedClient {
             },
         ))
     }
+    /// A pending readiness observation is not a failure or a restart request.
+    pub fn poll_ready(&mut self) -> Result<bool, CoreError> {
+        self.pin.validate()?;
+        if self.is_ready {
+            return Ok(true);
+        }
+        match self.ready.try_recv() {
+            Ok(Ok(())) => {
+                self.is_ready = true;
+                Ok(true)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(false),
+            _ => {
+                self.stop(DriverStop::Transport);
+                Err(error("retained-not-ready"))
+            }
+        }
+    }
     /// Blocking execution-thread operation. The startup cost is recorded apart
     /// from ready-input latency, never silently counted as an already-ready input.
     pub fn wait_ready(&mut self, timeout: Duration) -> Result<(), CoreError> {
@@ -470,6 +488,10 @@ pub struct RetainedInput<'a> {
     finished: bool,
 }
 impl RetainedInput<'_> {
+    /// Remaining aggregate lifetime; does not replace an individual call budget.
+    pub fn remaining_budget(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
     pub fn call(
         &mut self,
         input: Vec<u8>,
@@ -477,7 +499,7 @@ impl RetainedInput<'_> {
     ) -> Result<Value, CoreError> {
         let result = (|| {
             check_active(&self.client.shared)?;
-            if input.is_empty() {
+            if input.is_empty() || input.len() > resource_transport::MAX_INPUT {
                 return Err(error("retained-input-limit"));
             }
             let binding = *self
@@ -594,12 +616,12 @@ impl RetainedInput<'_> {
         result
     }
 
-    /// Only the trusted Host may attest that Core has skipped this exact suffix
+    /// Only the trusted Host may attest that Core has finished normally without this suffix
     /// after all executed stages were published. Guest data is not skip evidence.
-    /// Host verifies the actual Core terminal/Skipped snapshot before calling;
+    /// Host verifies the actual Core terminal snapshot (Skipped or unneeded target suffix) before calling;
     /// the closure only commits that bookkeeping without reentering the Gate.
     /// No native calls or call-budget credits are forged.
-    pub fn finish_skipped_suffix<T>(
+    pub fn finish_unexecuted_suffix<T>(
         mut self,
         skipped_bindings: &[usize],
         publish: impl FnOnce() -> Result<T, CoreError>,

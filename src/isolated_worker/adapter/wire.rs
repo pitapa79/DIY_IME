@@ -184,11 +184,28 @@ pub(super) fn outputs(
             return Err(invalid());
         }
     };
-    if success.api_version != 1 || !success.ok || success.data.0.len() != definition.outputs.len() {
+    if success.api_version != 1 || !success.ok {
+        return Err(invalid());
+    }
+    checked_outputs(success.data.0, definition)
+}
+/// The retained decoder has already checked the original envelope/duplicates.
+pub(super) fn retained_outputs(
+    data: Value,
+    definition: &NodeDefinition,
+) -> Result<ErrorAwareExecution, CoreError> {
+    let outputs: UniqueOutputs = serde_json::from_value(data).map_err(|_| invalid())?;
+    checked_outputs(outputs.0, definition)
+}
+fn checked_outputs(
+    values: BTreeMap<String, WireValue>,
+    definition: &NodeDefinition,
+) -> Result<ErrorAwareExecution, CoreError> {
+    if values.len() != definition.outputs.len() {
         return Err(invalid());
     }
     let mut outputs = BTreeMap::new();
-    for (name, value) in success.data.0 {
+    for (name, value) in values {
         let port = definition
             .outputs
             .iter()

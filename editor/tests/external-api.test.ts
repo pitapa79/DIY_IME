@@ -4,6 +4,15 @@ const id = 'a'.repeat(32), epoch = 'b'.repeat(32), reviewId = 'c'.repeat(32);
 const state = { phase: 'ready', protected: false, sessionEpoch: epoch, reviewId: null, state: { revision: '0', activePlanVersion: '1', preparedToken: null, canRollback: false, latestInputRevision: 2, deliveryGeneration: '2' }, physical: { physicalJobs: 0 }, workerProcesses: 0 };
 const key = { sessionEpoch: epoch, planVersion: '1', runId: '1', inputRevision: 1, deliveryGeneration: '1' };
 const fetcher = (data: unknown) => vi.fn(async () => new Response(JSON.stringify({ ok: true, data }), { status: 200 }));
+it('separates retained native ownership from callback usage and rejects malformed observations', async () => {
+  const retainedWorker = {physicalJobs:1,ready:true,processId:123,generation:1,activeInput:false,decodedReplies:4};
+  const withWorker = {...state,physical:{physicalJobs:1},workerProcesses:1,retainedWorker};
+  expect((await createExternalApi(fetcher(withWorker)).status(id)).retainedWorker).toEqual(retainedWorker);
+  expect((await createExternalApi(fetcher(state)).status(id)).retainedWorker).toBeUndefined();
+  for(const invalid of [{...retainedWorker,physicalJobs:2},{...retainedWorker,processId:0},{...retainedWorker,processId:0x100000000},{...retainedWorker,generation:-1},{...retainedWorker,ready:'true'},{...retainedWorker,activeInput:null},{...retainedWorker,trusted:true}]) {
+    await expect(createExternalApi(fetcher({...withWorker,retainedWorker:invalid})).status(id)).rejects.toMatchObject({code:'external-response'});
+  }
+});
 it('normalizes only explicit withdrawn stale payloads and refuses a current null result', async () => {
   const snapshot = { key, state: 'terminal', eventSeq: '3', elapsedMs: 5, current: false, physical: { running: 0, cancelRequested: 0, stalled: 0, queued: 0 }, pollAfterMs: 50, result: null };
   expect((await createExternalApi(fetcher({ snapshot, state })).getRun(id, key)).snapshot.result).toBeUndefined();

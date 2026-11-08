@@ -610,7 +610,7 @@ fn real_retained_driver_stage_publication() {
                 "unpublished-suffix" | "wrong-suffix" | "suffix" => {
                     let bindings: &[usize] = if case == "wrong-suffix" { &[0] } else { &[1] };
                     let result =
-                        input.finish_skipped_suffix(bindings, || Ok("host-attested suffix"));
+                        input.finish_unexecuted_suffix(bindings, || Ok("host-attested suffix"));
                     if case == "suffix" {
                         assert_eq!(result.unwrap(), "host-attested suffix");
                         assert!(!fixture.pin.as_ref().unwrap().is_closed());

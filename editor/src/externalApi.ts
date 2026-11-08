@@ -5,6 +5,7 @@ import type { Definition, Endpoint, Graph } from './model';
 export interface ExternalStatus {
   phase: 'empty' | 'review' | 'ready' | 'protected'; protected: boolean; sessionEpoch: string | null;
   state: ExecutionWireState | null; reviewId: string | null; physical: Record<string, number>; workerProcesses: number;
+  retainedWorker?: { physicalJobs: number; ready: boolean; processId: number | null; generation: number; activeInput: boolean; decodedReplies: number };
 }
 export interface Approval { id: string; kind: 'execute' | 'inputFlow' | 'resourceRead' | 'networkUse' | 'secretUse'; packageId: string; nodes: string[]; source: Endpoint | null; resource?: { binding: string; reference: string; policySha256: string }; network?: NetworkUse }
 export interface NetworkUse {
@@ -19,10 +20,16 @@ const invalid = (): never => { throw new ExternalApiError('external-response', '
 const hash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const endpoint = (v: unknown): v is Endpoint => exact(v, ['node', 'port']) && typeof v.node === 'string' && typeof v.port === 'string';
 function status(v: unknown): ExternalStatus {
-  if (!exact(v, ['phase', 'protected', 'sessionEpoch', 'state', 'reviewId', 'physical', 'workerProcesses']) || !['empty', 'review', 'ready', 'protected'].includes(String(v.phase))
+  if (!exact(v, ['phase', 'protected', 'sessionEpoch', 'state', 'reviewId', 'physical', 'workerProcesses'], ['retainedWorker']) || !['empty', 'review', 'ready', 'protected'].includes(String(v.phase))
     || typeof v.protected !== 'boolean' || !(v.sessionEpoch === null || epoch(v.sessionEpoch)) || !(v.state === null || wireState(v.state))
     || !(v.reviewId === null || epoch(v.reviewId)) || !v.physical || typeof v.physical !== 'object' || Array.isArray(v.physical) || !Object.values(v.physical).every(n => safeInteger(n)) || !safeInteger(v.workerProcesses)) return invalid();
   if (v.phase === 'ready' && (!epoch(v.sessionEpoch) || !wireState(v.state) || v.protected)) return invalid();
+  if (Object.hasOwn(v, 'retainedWorker')) {
+    const r = v.retainedWorker;
+    if (!exact(r, ['physicalJobs', 'ready', 'processId', 'generation', 'activeInput', 'decodedReplies']) || !safeInteger(r.physicalJobs) || !safeInteger(r.decodedReplies)
+      || !safeInteger(v.physical.physicalJobs) || r.physicalJobs > v.physical.physicalJobs || typeof r.ready !== 'boolean' || typeof r.activeInput !== 'boolean'
+      || !safeInteger(r.generation) || !(r.processId === null || safeInteger(r.processId) && r.processId > 0 && r.processId <= 0xffffffff)) return invalid();
+  }
   return v as unknown as ExternalStatus;
 }
 function approvals(v: unknown): Approval[] {

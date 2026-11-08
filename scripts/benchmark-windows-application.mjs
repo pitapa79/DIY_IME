@@ -31,6 +31,8 @@ export function summarize(values){
  return {count:values.length,minMs:sorted[0],p50Ms:at(.5),p95Ms:at(.95),p99Ms:at(.99),maxMs:sorted.at(-1)};
 }
 export function physicallyEnded(snapshot){
+ // Historical helper name: these are per-run Core callback counts. They do not
+ // attest the end of a retained native process, which stays charged separately.
  requireValue(snapshot&&physicalKeys.every(k=>Number.isSafeInteger(snapshot.physical?.[k])&&snapshot.physical[k]>=0),'invalid-physical-state');
  return snapshot.state==='terminal'&&physicalKeys.every(k=>snapshot.physical[k]===0);
 }
@@ -158,6 +160,11 @@ export async function benchmark(config){
   const approveBegin=performance.now();await host({method:'approve',reviewId:review.reviewId,ids:review.missing.map(r=>r.id),save:false});const approveMs=performance.now()-approveBegin;
   const activateBegin=performance.now(),activated=await host({method:'activate',reviewId:review.reviewId}),activateMs=performance.now()-activateBegin;
   const plan=activated.state.activePlanVersion;requireValue(typeof plan==='string','active-plan');
+  let lastNative=activated.retainedWorker??null;
+  const nativeOwners=new Map();
+  function observeNative(value){if(value){lastNative={...value};if(value.processId!==null&&value.physicalJobs>0)nativeOwners.set(value.generation+':'+value.processId,{...value});}}
+  observeNative(lastNative);
+  const ownership=()=>({scope:'per-run callback ending is separate from retained original-process ending',ownerObservations:[...nativeOwners.values()],nativeProcessEnd:'not measured per sample; graceful application close is outside the sample boundary'});
   const setupMs=performance.now()-setupBegin;let revision=0,traceCursor='0',traceNextPoll=0;
   async function submit(text,mode){
    revision++;
@@ -166,19 +173,19 @@ export async function benchmark(config){
    requireValue(receipt.replayed===false,'run-replayed');
    return receipt.key;
   }
-  async function read(key){return (await host({method:'getRun',key})).snapshot;}
+  async function read(key){const value=await host({method:'getRun',key});observeNative(value.state?.retainedWorker);return value.snapshot;}
   if(hostInputRounds!==undefined){
    const scenarios=await measureHostInput({
     submit:text=>submit(text,'compose'),read,ended:physicallyEnded,verify:verifyOutput,
     summarize,pollMs:config.pollMs,rounds:hostInputRounds,
    });
    await call('api/external/connections/'+connection,undefined,'DELETE');await stop();
-   return {formatVersion:1,kind:'bundled-wasm-host-input',provenance:bundle.provenance,
+   return {formatVersion:2,ownership:ownership(),kind:'bundled-wasm-host-input',provenance:bundle.provenance,
     environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},
     measurement:{rounds:hostInputRounds,pollIntervalMs:config.pollMs,trace:'off',clock:'client monotonic',
-     boundary:'before input invalidation through observed current correct response and physical end; includes loopback JSON and polling'},
+     boundary:'before input invalidation through current correct response and Core callback ending; native lifetime is separate; includes loopback JSON and polling'},
     lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs},
-    scenarios,checks:{staleResultsSuppressed:true,allPhysicalEnded:true,trueClose:true}};
+    scenarios,checks:{staleResultsSuppressed:true,allCallbacksEnded:true,trueClose:true}};
   }
   let profiler;
   const makeDiagnostics=()=>({enabled:trace.operation!==null,mode:trace.mode,pollIntervalMs:150,pages:0,events:0,hostIntervals:0,dropped:0,recordings:0,recordingBoundary:'per-run-outside-sample',browserRenderingIncluded:false,finalDrainOutsideSamples:true,phaseSummary:new PhaseProfiler(trace.mode).summary});
@@ -197,13 +204,14 @@ export async function benchmark(config){
   }
 
   async function run(test){
-   // Reset only after the preceding run physically ended and all pages were drained.
+   // Reset after the preceding Core callbacks ended and all pages were drained.
    // This avoids age/capacity eviction during long comparisons without widening retention.
    if(trace.operation){
     profiler=new PhaseProfiler(trace.mode);traceCursor='0';traceNextPoll=0;
     const started=profiler.observe((await host(trace.operation)).trace);
     requireValue(started.recording&&started.recordingId!==null,'trace-start-not-recording');diagnostics.recordings++;
    }
+   const nativeBefore=lastNative?{...lastNative}:null;
    const begin=performance.now(),key=await submit(test.text,test.mode);
    const deadline=begin+240000;
    while(true){const snapshot=await read(key);if(physicallyEnded(snapshot)){
@@ -216,7 +224,7 @@ export async function benchmark(config){
      diagnostics.dropped+=stopped.dropped;
      mergePhaseSummaries(diagnostics.phaseSummary,profiler.finish());
     }
-    return {caseId:test.id,elapsedMs};
+    return {caseId:test.id,elapsedMs,nativeBefore,nativeAfter:lastNative?{...lastNative}:null};
    }requireValue(performance.now()<deadline,'run-timeout');await pollTrace();await delay(config.pollMs);}
   }
   let firstRun;const warmups=[],samples=[],pairs=[];
@@ -247,7 +255,7 @@ export async function benchmark(config){
     const summaries=Object.fromEntries(['off','basic'].map(mode=>[mode,summarize(samples.filter(s=>s.group===i+1&&s.mode===mode).map(s=>s.elapsedMs))]));
     return {group:i+1,summaries,p95IncreasePercent:(summaries.basic.p95Ms/summaries.off.p95Ms-1)*100};
    });
-   return {formatVersion:1,kind:'bundled-wasm-paired-trace',scope:'small bundled test-dictionary graph; not Reference IME or TSF',provenance:bundle.provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling',pollIntervalMs:config.pollMs,diagnosticPollMs:150,quantile:'nearest rank: sorted[ceil(n*p)-1]',firstRunExcluded:true,warmupsExcluded:true,caseOrder:'same case per adjacent pair; order counterbalanced by group and occurrence of each case',orderVersion:'case-occurrence-v2',recordingBoundary:'per-run-outside-sample',browserRenderingIncluded:false,finalDrainOutsideSamples:true},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,pairs,groups,diagnostics:modes,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allPhysicalEnded:true,trueClose:true,noToolchainPath:true}};
+   return {formatVersion:2,ownership:ownership(),kind:'bundled-wasm-paired-trace',scope:'small bundled test-dictionary graph; not Reference IME or TSF',provenance:bundle.provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four Core callback counts zero; retained native lifetime is separate; includes loopback JSON and polling',pollIntervalMs:config.pollMs,diagnosticPollMs:150,quantile:'nearest rank: sorted[ceil(n*p)-1]',firstRunExcluded:true,warmupsExcluded:true,caseOrder:'same case per adjacent pair; order counterbalanced by group and occurrence of each case',orderVersion:'case-occurrence-v2',recordingBoundary:'per-run-outside-sample',browserRenderingIncluded:false,finalDrainOutsideSamples:true},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,pairs,groups,diagnostics:modes,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allCallbacksEnded:true,trueClose:true,noToolchainPath:true}};
   }
   const byCase=Object.fromEntries(cases.map(c=>[c.id,samples.filter(s=>s.caseId===c.id).map(s=>s.elapsedMs)]).filter(([,v])=>v.length).map(([id,v])=>[id,summarize(v)]));
   const scope = syntheticDictionary
@@ -256,7 +264,7 @@ export async function benchmark(config){
   const provenance = syntheticDictionary
    ? {...bundle.provenance, syntheticDictionary}
    : bundle.provenance;
-  return {formatVersion:1,diagnostics,kind:'bundled-wasm-latency',scope,provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four physical counts zero; includes loopback JSON and polling',pollIntervalMs:config.pollMs,quantile:'nearest rank: sorted[ceil(n*p)-1]',warmupsExcluded:true,firstRunExcluded:true,caseOrder:'fixed round robin',notSteadyStateGuest:'every invocation retains fresh isolated Worker lifecycle'},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,samples,summary:summarize(samples.map(s=>s.elapsedMs)),byCase,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allPhysicalEnded:true,trueClose:true,noToolchainPath:true}};
+  return {formatVersion:2,ownership:ownership(),diagnostics,kind:'bundled-wasm-latency',scope,provenance,environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},measurement:{clock:'Node performance.now milliseconds',boundary:'before input invalidation/run admission through observed terminal and all four Core callback counts zero; retained native lifetime is separate; includes loopback JSON and polling',pollIntervalMs:config.pollMs,quantile:'nearest rank: sorted[ceil(n*p)-1]',warmupsExcluded:true,firstRunExcluded:true,caseOrder:'fixed round robin',notSteadyStateGuest:'every stage has a fresh Store/Instance; fixed-official process/code may be retained; see owner observations'},lifecycle:{initialReadyMs,setupMs,prepareMs,approveMs,activateMs,existingCatalogReadyMs,firstRun},warmups,samples,summary:summarize(samples.map(s=>s.elapsedMs)),byCase,checks:{bundleHashes:true,definitions:52,officialPackages:48,exactGraph:true,explicitSessionConsent:true,allOutputsVerified:true,allCallbacksEnded:true,trueClose:true,noToolchainPath:true}};
  }finally{
   clearInterval(beat);
   if(child&&!launcherEnded){try{await stop();}catch{child.kill();await bounded(closed,10000,'forced-close-timeout');}}

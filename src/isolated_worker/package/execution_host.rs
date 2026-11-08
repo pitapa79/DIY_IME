@@ -454,6 +454,7 @@ struct PendingPlan {
 struct ActivePlan {
     session: PermissionSession,
     evidence: PlanEvidence,
+    retained: Option<super::super::adapter::RetainedOwner>,
 }
 struct Runner {
     catalog: Catalog,
@@ -545,11 +546,19 @@ impl Runner {
                 .iter()
                 .map(|activity| activity.count())
                 .sum::<u64>();
+        let usage = self.host.usage();
+        let retained = self.session.as_ref().and_then(|s| s.retained.as_ref());
+        let retained_physical = retained
+            .map_or(0, |owner| owner.physical_jobs())
+            .min(usage.physical_jobs);
         Ok(
             json!({"phase":if protected{"protected"}else if self.session.is_some(){"ready"}else if self.pending.is_some(){"review"}else{"empty"},"protected":protected,
    "sessionEpoch":self.session.as_ref().map(|s|s.session.session_epoch()).or_else(||self.pending.as_ref().map(|p|p.session.session_epoch())),
    "state":self.session.as_ref().map(|s|s.session.controller().control_state().and_then(|state|crate::execution_control::protocol::WireState::from_control(state,None))).transpose()?,
-   "reviewId":self.pending.as_ref().map(|p|&p.review_id),"physical":self.host.usage(),"workerProcesses":worker_processes}),
+   "reviewId":self.pending.as_ref().map(|p|&p.review_id),"physical":usage,"workerProcesses":worker_processes,
+   "retainedWorker":{"physicalJobs":retained_physical,"ready":retained.is_some_and(|owner|owner.ready()),
+   "processId":retained.and_then(|owner|owner.process_id()),"generation":retained.map_or(0,|owner|owner.generation()),
+   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies())}}),
         )
     }
     fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
@@ -847,6 +856,12 @@ impl Runner {
                     })?)
                 };
                 let pending = self.pending.take().unwrap();
+                let retained_stages = pending
+                    .evidence
+                    .official
+                    .as_ref()
+                    .map(|proof| pending.session.retained_stages(proof))
+                    .transpose()?;
                 let transactional = pending.evidence.official.is_some()
                     || self
                         .session
@@ -855,9 +870,20 @@ impl Runner {
                 // Evaluate all preparation before dropping the previous owner.
                 let session = pending.session.activate_with_cancel(cancel.clone())?;
                 drop(preparation_slot);
+                let retained = retained_stages
+                    .map(|nodes| {
+                        super::super::adapter::RetainedOwner::install(
+                            self.host.clone(),
+                            session.controller().clone(),
+                            nodes,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
                 let new = ActivePlan {
                     session,
                     evidence: pending.evidence,
+                    retained,
                 };
                 if transactional {
                     // Order cancellation acceptance and the commit. Do not hold
@@ -894,9 +920,21 @@ impl Runner {
                     self.retire_active();
                     self.session = Some(new);
                 }
+                if let Some(owner) = self
+                    .session
+                    .as_ref()
+                    .and_then(|active| active.retained.as_ref())
+                {
+                    owner.start();
+                }
                 self.status()
             }
             Operation::Run { request } => {
+                if let Some(active) = &self.session
+                    && let Some(owner) = &active.retained
+                {
+                    owner.witness_terminal(active.session.controller());
+                }
                 let receipt = self.controller()?.start_run(request)?;
                 Ok(json!({"receipt":receipt,"state":self.status()?}))
             }
@@ -923,6 +961,11 @@ impl Runner {
                 expected_plan_version,
                 revision,
             } => {
+                if let Some(active) = &self.session
+                    && let Some(owner) = &active.retained
+                {
+                    owner.witness_terminal(active.session.controller());
+                }
                 self.controller()?
                     .invalidate_input(expected_plan_version, revision)?;
                 self.status()

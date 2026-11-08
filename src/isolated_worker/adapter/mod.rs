@@ -4,6 +4,8 @@ mod gate;
 #[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
 pub mod integration_probe;
 mod network;
+mod retained;
+pub(in crate::isolated_worker) use retained::Owner as RetainedOwner;
 mod prepared;
 mod ranges;
 #[cfg(test)]
@@ -357,7 +359,6 @@ impl CodeLease<'_> {
             .healthy
             .lock()
             .map_err(|_| fail("worker-cleanup", "code permission state unavailable"))?;
-        self.active = false;
         if self.files.cache.revoke_read_execute(self.profile).is_err() {
             *healthy = false;
             return Err(fail(
@@ -365,6 +366,7 @@ impl CodeLease<'_> {
                 "runtime read permission cleanup failed",
             ));
         }
+        self.active = false;
         Ok(())
     }
 }
@@ -852,6 +854,7 @@ impl WasmArtifact {
             package_identity: None,
             dictionary: None,
             network: None,
+            retained: retained::NodeLink::default(),
         };
         // Reuse Core's exact port/type/default validation, without invoking guest code here.
         let mut registry = Registry::new();
@@ -868,6 +871,7 @@ pub struct WasmNode {
     package_identity: Option<String>,
     dictionary: Option<DictionaryPlans>,
     network: Option<NetworkPlans>,
+    retained: retained::NodeLink,
 }
 impl WasmNode {
     pub(super) fn bind_network(mut self, plans: Option<NetworkPlans>) -> Self {
@@ -881,6 +885,7 @@ impl WasmNode {
     }
     pub(super) fn fresh_preparation(mut self) -> Self {
         self.dictionary = self.dictionary.as_ref().map(DictionaryPlans::fresh);
+        self.retained = retained::NodeLink::default();
         self
     }
     pub(super) fn bind_dictionary(mut self, plans: Option<DictionaryPlans>) -> Self {
@@ -1022,6 +1027,22 @@ impl DeferredNode for WasmNode {
         }
     }
     fn start(
+        &self,
+        invocation: OwnedInvocation,
+        completion: CompletionPermit,
+        cancel: CancellationToken,
+    ) -> Result<(), CoreError> {
+        match self.retained.start(self, (invocation, completion, cancel)) {
+            Ok(()) => Ok(()),
+            Err(arguments) => {
+                let (invocation, completion, cancel) = *arguments;
+                self.start_legacy(invocation, completion, cancel)
+            }
+        }
+    }
+}
+impl WasmNode {
+    fn start_legacy(
         &self,
         invocation: OwnedInvocation,
         completion: CompletionPermit,

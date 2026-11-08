@@ -396,6 +396,17 @@ impl DictionaryPlans {
         serde_json::to_value(payload)
             .map_err(|_| fail("dictionary-binding", "resource projection unavailable"))
     }
+    pub(super) fn snapshots(
+        &self,
+        config: &Value,
+    ) -> Result<BTreeMap<String, Arc<[u8]>>, CoreError> {
+        self.scope(config)?.ready.get().cloned().ok_or_else(|| {
+            fail(
+                "dictionary-not-prepared",
+                "approved resource snapshots are not prepared",
+            )
+        })
+    }
 }
 
 #[cfg(test)]
