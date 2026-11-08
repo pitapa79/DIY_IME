@@ -56,7 +56,7 @@ use std::{
 
 const DLL_HASH: &str = "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef";
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct WorkerPolicy {
     pub process_memory_bytes: Option<usize>,
     pub wasm_memory_bytes: Option<u64>,
