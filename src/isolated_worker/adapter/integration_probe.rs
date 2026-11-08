@@ -13,6 +13,7 @@ use std::{collections::BTreeMap, fs};
 const SOURCE_LIMIT: usize = 1024 * 1024;
 const MODULE_LIMIT: usize = 32 * 1024 * 1024;
 const ARTIFACT_LIMIT: usize = 8 * 1024 * 1024;
+const MAX_PROBE_FUEL: u64 = 5_000_000_000;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -21,6 +22,8 @@ pub struct ProbeSpec {
     pub worker: PathBuf,
     pub runtime: PathBuf,
     pub producer: PathBuf,
+    #[serde(default)]
+    pub producer_fuel: Option<u64>,
     pub consumer: PathBuf,
     pub source: PathBuf,
     pub source_reference: String,
@@ -108,6 +111,10 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
     if spec.cases.is_empty() || spec.cases.len() > 64 {
         return Err("probe needs 1..64 cases".into());
     }
+    let producer_fuel = spec.producer_fuel.unwrap_or(MAX_PROBE_FUEL);
+    if !(1..=MAX_PROBE_FUEL).contains(&producer_fuel) {
+        return Err("invalid probe producer fuel".into());
+    }
     let original: Arc<[u8]> = read_bounded(&spec.source, SOURCE_LIMIT)?.into();
     let producer = read_bounded(&spec.producer, MODULE_LIMIT)?;
     let consumer = read_bounded(&spec.consumer, MODULE_LIMIT)?;
@@ -126,7 +133,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
         || Ok(dll.clone()),
         producer,
         WorkerPolicy {
-            fuel_per_call: Some(5_000_000_000),
+            fuel_per_call: Some(producer_fuel),
             termination_grace: Duration::ZERO,
             ..WorkerPolicy::bounded_probe()
         },
@@ -191,7 +198,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
             Ok(value) => value,
             Err(error) => {
                 return Ok(
-                    json!({"syntheticScope":true,"hashes":hashes,"preparation":prepare_receipt,"preparationError":error.code,"cases":[]}),
+                    json!({"syntheticScope":true,"hashes":hashes,"producerFuel":producer_fuel,"preparation":prepare_receipt,"preparationError":error.code,"cases":[]}),
                 );
             }
         };
@@ -278,7 +285,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
             results.push(value);
         }
         Ok(
-            json!({"syntheticScope":true,"hashes":hashes,"preparation":prepare_receipt,"artifact":{"bytes":artifact.bytes().len(),"sha256":artifact.artifact_sha256(),"format":artifact.format(),"version":artifact.format_version()},"cases":results}),
+            json!({"syntheticScope":true,"hashes":hashes,"producerFuel":producer_fuel,"preparation":prepare_receipt,"artifact":{"bytes":artifact.bytes().len(),"sha256":artifact.artifact_sha256(),"format":artifact.format(),"version":artifact.format_version()},"cases":results}),
         )
     })();
     // Every live outcome was consumed, or dropped (blocking actual stop/join),
