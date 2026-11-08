@@ -998,6 +998,25 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        std::fs::remove_dir(workspace).unwrap();
+        // The actor can release the plan's code snapshots after the last
+        // accounted resource drains. Require the cache to disappear as well.
+        loop {
+            match std::fs::remove_dir(&workspace) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "retained fixture workspace still contains: {:?}",
+                        std::fs::read_dir(&workspace).map(|entries| {
+                            entries
+                                .map(|entry| entry.map(|entry| entry.file_name()))
+                                .collect::<Vec<_>>()
+                        })
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("could not remove retained fixture workspace: {error}"),
+            }
+        }
     }
 }
