@@ -94,8 +94,17 @@ function verifyBundle(folder){
  const graphBytes=readFileSync(join(sourceRoot,'examples/graphs/official-dictionary.json')),graph=JSON.parse(graphBytes);
  requireValue(isDeepStrictEqual(JSON.parse(readFileSync(join(base,'examples/graphs/official-dictionary.json'))),graph),'graph-mismatch');
  requireValue(hash(readFileSync(join(sourceRoot,'distribution/defaults/dictionary.tsv')))===files.get('defaults/dictionary.tsv').sha256,'dictionary-mismatch');
- const wasm=[...files.values()].filter(f=>f.path.endsWith('.wasm'));requireValue(wasm.length===1,'module-layout');
- return {base,graph,provenance:{bundleManifestSha256:hash(raw),sourceCommit:typeof manifest.sourceCommit==='string'&&/^[a-f0-9]{40}$/.test(manifest.sourceCommit)?manifest.sourceCommit:null,sourceKind:['pinned-pipeline','development-worktree'].includes(manifest.sourceKind)?manifest.sourceKind:'unknown',nodeVersion:manifest.nodeVersion,wasmtimeVersion:manifest.wasmtimeVersion,moduleSha256:wasm[0].sha256,graphSha256:hash(graphBytes),dictionarySha256:files.get('defaults/dictionary.tsv').sha256,workerSha256:files.get('bin/diy-ime2-wasm-worker.exe').sha256,runtimeSha256:files.get('runtime/wasmtime.dll').sha256}};
+ const module=files.get('official/official.wasm');
+ const companionPaths=['official/dictionary-producer.wasm','official/dictionary-consumer.wasm'];
+ const companions=companionPaths.filter(path=>files.has(path));
+ const wasm=[...files.keys()].filter(path=>path.endsWith('.wasm'));
+ requireValue(module&&(companions.length===0||companions.length===2)&&wasm.length===1+companions.length,'module-layout');
+ const dictionaryCompanionSha256=Object.fromEntries(companions.map(path=>{
+  const digest=files.get(path).sha256;
+  requireValue(digest===hash(readFileSync(join(sourceRoot,'distribution',path))),'dictionary-companion-mismatch');
+  return [path,digest];
+ }));
+ return {base,graph,provenance:{bundleManifestSha256:hash(raw),sourceCommit:typeof manifest.sourceCommit==='string'&&/^[a-f0-9]{40}$/.test(manifest.sourceCommit)?manifest.sourceCommit:null,sourceKind:['pinned-pipeline','development-worktree'].includes(manifest.sourceKind)?manifest.sourceKind:'unknown',nodeVersion:manifest.nodeVersion,wasmtimeVersion:manifest.wasmtimeVersion,moduleSha256:module.sha256,...(companions.length?{dictionaryCompanionSha256}:{}),graphSha256:hash(graphBytes),dictionarySha256:files.get('defaults/dictionary.tsv').sha256,workerSha256:files.get('bin/diy-ime2-wasm-worker.exe').sha256,runtimeSha256:files.get('runtime/wasmtime.dll').sha256}};
 }
 export async function benchmark(config){
  let trace=traceConfiguration(config.trace);
