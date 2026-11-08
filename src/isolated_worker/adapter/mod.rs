@@ -66,6 +66,18 @@ pub struct WorkerPolicy {
     pub termination_grace: Duration,
 }
 impl WorkerPolicy {
+    fn supports_range_pipeline(&self) -> bool {
+        self.fuel_per_call
+            .is_some_and(|v| (1..=5_000_000_000).contains(&v))
+            && self
+                .wasm_memory_bytes
+                .is_some_and(|v| (1..=128 * 1024 * 1024).contains(&v))
+            && self
+                .walltime
+                .is_some_and(|v| !v.is_zero() && v <= Duration::from_secs(30))
+            && self.termination_grace <= Duration::from_secs(5)
+    }
+
     pub fn bounded_probe() -> Self {
         Self {
             process_memory_bytes: Some(512 * 1024 * 1024),
@@ -955,6 +967,7 @@ impl WasmNode {
             &str,
         )>,
     ) -> Result<(), CoreError> {
+        let prepared = prepared.filter(|_| self.artifact.0.policy.supports_range_pipeline());
         if let Some(plans) = &self.dictionary {
             plans.initialize(config, batch, cancel.clone(), check, |snapshots| {
                 if let Some((modules, key, id)) = prepared {

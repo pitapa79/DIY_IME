@@ -201,16 +201,7 @@ impl Owner {
         // Unsupported policies keep the legacy path; never add fuel/memory caps.
         if host.policy().max_physical_jobs < 2
             || host.policy().max_queued_jobs < 1
-            || policy
-                .fuel_per_call
-                .is_none_or(|v| v == 0 || v > 5_000_000_000)
-            || policy
-                .wasm_memory_bytes
-                .is_none_or(|v| v == 0 || v > 128 * 1024 * 1024)
-            || policy
-                .walltime
-                .is_none_or(|v| v.is_zero() || v > Duration::from_secs(30))
-            || policy.termination_grace > Duration::from_secs(5)
+            || !policy.supports_range_pipeline()
             || nodes.iter().any(|node| {
                 let image = &retained_artifact(node).0;
                 node.network.is_some()
