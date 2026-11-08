@@ -892,14 +892,15 @@ mod tests {
         let graph =
             Graph::from_json(&json!({"version":1,"nodes":graph_nodes,"edges":edges}).to_string())
                 .unwrap();
-        let mut resource_policy: Value = serde_json::from_str(include_str!(
+        let resource_policy: Value = serde_json::from_str(include_str!(
             "../../../tests/contracts/execution_control.json"
         ))
         .unwrap();
-        resource_policy["resourceProfiles"]["bounded"]["maxPhysicalJobs"] = json!(2);
+        // Use the bounded fixture without host-lifetime run history so the
+        // teardown can require every resource counter to return to zero.
         let host = ExecutionHost::new(
             "actual-core-skipped-suffix",
-            ResourcePolicy::from_value(resource_policy["resourceProfiles"]["bounded"].clone())
+            ResourcePolicy::from_value(resource_policy["resourceProfiles"]["noTombstones"].clone())
                 .unwrap(),
         )
         .unwrap();
@@ -917,7 +918,7 @@ mod tests {
         for target in &targets {
             gate.approve(target.clone());
         }
-        let controller = gate.seal(raw.clone(), targets).unwrap();
+        let controller = gate.seal(raw, targets).unwrap();
         let stages = ids
             .iter()
             .zip(&configs)
@@ -981,7 +982,6 @@ mod tests {
         controller.close();
         drop(owner);
         drop(controller);
-        drop(raw);
         drop(service);
         drop(registry);
         drop(node);
