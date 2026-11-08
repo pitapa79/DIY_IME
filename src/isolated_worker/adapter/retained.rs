@@ -692,7 +692,8 @@ fn coordinate(
                     break;
                 }
                 let work = (|| {
-                    let request_phase = command.invocation.trace_host_phase(HostTracePhase::Request);
+                    let invocation = &command.invocation;
+                    let request_phase = invocation.trace_host_phase(HostTracePhase::Request);
                     if command.cancel.is_cancelled() {
                         input_cancel.cancel();
                         return Err(fail(
@@ -707,8 +708,7 @@ fn coordinate(
                         ));
                     }
                     command.node.validate_config(command.invocation.config())?;
-                    let mut request =
-                        wire::execution(&command.invocation, &command.node.definition)?;
+                    let mut request = wire::execution(invocation, &command.node.definition)?;
                     if let Some(plans) = &command.node.dictionary {
                         request["operation"]["resources"] =
                             plans.payload(command.invocation.config())?;
