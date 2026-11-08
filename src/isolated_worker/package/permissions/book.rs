@@ -6,7 +6,7 @@ use super::super::{
 use super::{ApprovalRequest, ApprovalSubject, PermissionPlan};
 use crate::{
     execution_control::{
-        CancellationToken, DecimalId, ExecutionController, ExecutionService, SessionEpoch,
+        CancellationToken, DecimalId, ExecutionController, ExecutionService, RunKey, SessionEpoch,
     },
     isolated_worker::adapter::{ExecutionGate, GrantTarget, GuardedController},
     node::CoreError,
@@ -394,14 +394,24 @@ impl PendingPermissionSession {
         self.activate_with_cancel(CancellationToken::default())
     }
     pub fn activate_with_cancel(
+        self,
+        cancel: CancellationToken,
+    ) -> Result<PermissionSession, CoreError> {
+        self.activate_official_with_cancel(cancel, None)
+    }
+    pub(in crate::isolated_worker) fn activate_official_with_cancel(
         mut self,
         cancel: CancellationToken,
+        proof: Option<&super::super::StaticOfficialPipeline>,
     ) -> Result<PermissionSession, CoreError> {
         if cancel.is_cancelled() {
             return Err(denied());
         }
         let mut state = self.book.0.lock().unwrap_or_else(|p| p.into_inner());
         let plan = self.plan.as_ref().expect("pending plan");
+        if proof.is_some_and(|proof| !proof.matches_plan(plan)) {
+            return Err(denied());
+        }
         if !PermissionBook::current(&state, &self.epoch, &self.generation)
             || plan
                 .requests
@@ -456,14 +466,32 @@ impl PendingPermissionSession {
             _binding: binding,
         };
         drop(state);
+        let companions = proof.and_then(|proof| proof.dictionary_companions());
+        let preparation_key = if companions.is_some() {
+            Some(RunKey {
+                session_epoch: self.epoch.clone(),
+                plan_version: version,
+                run_id: DecimalId::new(1)?,
+                input_revision: None,
+                delivery_generation: session.controller.control_state()?.delivery_generation,
+            })
+        } else {
+            None
+        };
         // This sealed controller remains private until all resource snapshots
         // have passed guest preparation. Binding withdrawal cancels its Worker.
-        plan.initialize_resources(cancel.clone(), &mut || {
-            if cancel.is_cancelled() || !session._binding.live.load(Ordering::Acquire) {
-                return Err(denied());
-            }
-            session.controller.control_state().map(|_| ())
-        })?;
+        plan.initialize_resources(
+            cancel.clone(),
+            &mut || {
+                if cancel.is_cancelled() || !session._binding.live.load(Ordering::Acquire) {
+                    return Err(denied());
+                }
+                session.controller.control_state().map(|_| ())
+            },
+            companions
+                .zip(preparation_key.as_ref())
+                .map(|((id, modules), key)| (id, modules, key)),
+        )?;
         if cancel.is_cancelled() || !session._binding.live.load(Ordering::Acquire) {
             return Err(denied());
         }

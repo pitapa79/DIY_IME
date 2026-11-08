@@ -4,6 +4,7 @@ use super::{Bundle, cancelled};
 use crate::{
     execution_control::CancellationToken,
     graph::Graph,
+    isolated_worker::adapter::DictionaryCompanions,
     isolated_worker::package::{
         Package, PackageLimits, VerifiedPackage, permissions::PermissionPlan,
     },
@@ -52,6 +53,7 @@ pub struct StaticOfficialPipeline {
     input_id: String,
     stages: [OfficialStage; 4],
     plan_identity: Arc<()>,
+    dictionary_companions: Option<DictionaryCompanions>,
 }
 impl StaticOfficialPipeline {
     pub fn input_id(&self) -> &str {
@@ -63,6 +65,37 @@ impl StaticOfficialPipeline {
     pub fn matches_plan(&self, plan: &PermissionPlan) -> bool {
         Arc::ptr_eq(&self.plan_identity, &plan.snapshot_identity())
     }
+    pub(in crate::isolated_worker) fn dictionary_companions(
+        &self,
+    ) -> Option<(&str, &DictionaryCompanions)> {
+        self.dictionary_companions
+            .as_ref()
+            .map(|modules| (self.stages[1].id(), modules))
+    }
+}
+
+fn dictionary_companions(directory: &Path) -> Result<Option<DictionaryCompanions>, CoreError> {
+    use super::{digest, error, read_bounded};
+    const PRODUCER: &str = "7bd798c708ddf7e04f6d63d38b4aa42c362e5dfd398d031639ba203b924d1549";
+    const CONSUMER: &str = "c773b217f039c7ce54cf3aa202274894d29c609caec288e5e9b5ec9f2c115c82";
+    let directory = directory
+        .canonicalize()
+        .map_err(|_| error("distribution directory unavailable"))?;
+    let producer = directory.join("dictionary-producer.wasm");
+    let consumer = directory.join("dictionary-consumer.wasm");
+    let absent = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    };
+    if absent(&producer) && absent(&consumer) {
+        return Ok(None);
+    }
+    let producer = read_bounded(&producer, 1024 * 1024)?;
+    let consumer = read_bounded(&consumer, 1024 * 1024)?;
+    if digest(&producer)? != PRODUCER || digest(&consumer)? != CONSUMER {
+        return Err(error("dictionary companion differs from compiled pin"));
+    }
+    Ok(Some(DictionaryCompanions { producer, consumer }))
 }
 
 /// Normal permission review plus optional static evidence. A missing match
@@ -137,6 +170,7 @@ impl OfficialGraphReview {
                 .try_into()
                 .unwrap_or_else(|_| unreachable!("four fixed stages")),
             plan_identity: plan.snapshot_identity(),
+            dictionary_companions: dictionary_companions(official_directory)?,
         };
         Ok(Self {
             plan,

@@ -93,7 +93,162 @@ pub(super) struct PreparedDictionary {
     pub(super) index: PreparedArtifact,
 }
 
+/// Both modules were captured from the pinned official companion release.
+pub(in crate::isolated_worker) struct DictionaryCompanions {
+    pub(in crate::isolated_worker) producer: Vec<u8>,
+    pub(in crate::isolated_worker) consumer: Vec<u8>,
+}
+
+impl super::WasmNode {
+    pub(super) fn initialize_prepared_dictionary(
+        &self,
+        modules: &DictionaryCompanions,
+        key: &RunKey,
+        id: &str,
+        config: &serde_json::Value,
+        originals: &BTreeMap<String, Arc<[u8]>>,
+        cancel: CancellationToken,
+    ) -> Result<(), CoreError> {
+        use crate::isolated_worker::PreparationWorkerRequest;
+        use serde_json::json;
+        use std::time::Duration;
+
+        const ORIGINAL_LIMIT: usize = 1024 * 1024;
+        const ARTIFACT_LIMIT: usize = 4 * 1024 * 1024;
+        let mut entries = originals.iter();
+        let (reference, original) = entries
+            .next()
+            .ok_or_else(|| fail("dictionary-not-prepared", "original dictionary missing"))?;
+        if self.definition.kind != "text.dictionary-exact"
+            || self.definition.version != 1
+            || config.get("path").and_then(serde_json::Value::as_str) != Some(reference.as_str())
+            || entries.next().is_some()
+            || original.len() > ORIGINAL_LIMIT
+        {
+            return Err(fail(
+                "dictionary-not-prepared",
+                "invalid prepared dictionary plan",
+            ));
+        }
+        let policy = &self.artifact.0.policy;
+        let producer = self
+            .artifact
+            .with_module(modules.producer.clone(), policy.clone())?;
+        let consumer = self
+            .artifact
+            .with_module(modules.consumer.clone(), policy.clone())?;
+        let source = PreparationSources::open(
+            self.gate.clone(),
+            self.grant_target(&key.session_epoch, key.plan_version, id),
+            key.clone(),
+            cancel.clone(),
+            originals.clone(),
+            ResourceRangeLimits {
+                max_resources: 1,
+                max_snapshot_bytes: ORIGINAL_LIMIT,
+                max_read_bytes: MAX_READ,
+                max_total_read_bytes: ORIGINAL_LIMIT,
+                max_reads: 4096,
+                budget: policy.walltime.unwrap_or(Duration::from_secs(30)),
+            },
+        )?;
+        let mut resources = serde_json::Map::new();
+        resources.insert(reference.clone(), json!({"id":1,"length":original.len()}));
+        let input = serde_json::to_vec(&wire::request(
+            &self.definition.kind,
+            self.definition.version,
+            json!({"method":"prepareArtifact","config":config,"resources":resources}),
+        ))
+        .map_err(|_| fail("worker-request", "producer request serialization failed"))?;
+        let fingerprint = |value: &serde_json::Value| {
+            sha256(
+                &serde_json::to_vec(value)
+                    .map_err(|_| fail("preparation-identity", "identity serialization failed"))?,
+            )
+        };
+        let index = producer
+            .prepare_artifact(
+                PreparationWorkerRequest {
+                    input,
+                    sources: source,
+                    identity: PreparationIdentity {
+                        producer_sha256: sha256(&modules.producer)?,
+                        definition_sha256: fingerprint(&json!(*self.definition))?,
+                        config_sha256: fingerprint(config)?,
+                    },
+                    limits: PreparationLimits {
+                        max_artifact_bytes: ARTIFACT_LIMIT,
+                        max_chunks: 4096,
+                        max_resident_bytes: 2 * ARTIFACT_LIMIT + MAX_READ,
+                    },
+                },
+                cancel,
+            )?
+            .into_artifact()?;
+        if index.format() != "dictionary-exact-index" || index.format_version() != 1 {
+            return Err(fail(
+                "dictionary-not-prepared",
+                "unexpected dictionary artifact format",
+            ));
+        }
+        self.prepared_dictionary
+            .set(PreparedDictionary { consumer, index })
+            .map_err(|_| fail("dictionary-not-prepared", "dictionary was already prepared"))
+    }
+}
+
 impl PreparedDictionary {
+    pub(super) fn request(
+        &self,
+        invocation: &crate::execution_control::OwnedInvocation,
+        definition: &crate::node::NodeDefinition,
+        scope: &mut ResourceRangeSession,
+    ) -> Result<serde_json::Value, CoreError> {
+        let mut request = wire::execution(invocation, definition)?;
+        request["operation"]["method"] = serde_json::json!("executePrepared");
+        request["operation"]["artifact"] = serde_json::to_value(self.descriptor(scope)?)
+            .map_err(|_| fail("worker-request", "artifact descriptor unavailable"))?;
+        Ok(request)
+    }
+
+    pub(super) fn execute(
+        &self,
+        input: Vec<u8>,
+        resources: ResourceRangeSession,
+        cancel: CancellationToken,
+    ) -> Result<Vec<u8>, CoreError> {
+        use crate::isolated_worker::{EndReason, ResourceWorkerRequest, execute_resources};
+        self.consumer.with_resource_worker(
+            "--resource-ranges-v1",
+            cancel,
+            |profile, job, cache, program, args, control| {
+                let receipt = super::settle(
+                    execute_resources(
+                        profile,
+                        job,
+                        cache,
+                        program,
+                        args,
+                        ResourceWorkerRequest { input, resources },
+                        control,
+                    )
+                    .map_err(|_| fail("worker-start", "dictionary lookup could not start"))?,
+                )
+                .ok_or_else(|| fail("worker-cancelled", "dictionary lookup was not started"))?;
+                if receipt.reason() != EndReason::Exited
+                    || receipt.exit_code() != Some(0)
+                    || !receipt.input_delivered()
+                {
+                    return Err(fail("worker-failed", "isolated dictionary lookup failed"));
+                }
+                receipt
+                    .output()
+                    .map(<[u8]>::to_vec)
+                    .map_err(|_| fail("worker-reply", "dictionary output unavailable"))
+            },
+        )
+    }
+
     pub(super) fn scope(
         &self,
         node: &super::WasmNode,
@@ -153,7 +308,6 @@ impl PreparedDictionary {
     }
 }
 
-#[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
 impl super::WasmArtifact {
     /// Run the construction role with immutable code and keep the range
     /// connection owned until the original process and its IO are settled.
@@ -162,7 +316,6 @@ impl super::WasmArtifact {
         request: crate::isolated_worker::PreparationWorkerRequest,
         cancel: CancellationToken,
     ) -> Result<crate::isolated_worker::PreparationExit, CoreError> {
-        use super::{Job, Profile, RunControl};
         use crate::isolated_worker::{PreparationOutcome, execute_preparation};
         use std::time::Duration;
 
@@ -172,18 +325,55 @@ impl super::WasmArtifact {
                 "producer code identity differs",
             ));
         }
+        self.with_resource_worker(
+            "--build-resources-v1",
+            cancel,
+            |profile, job, cache, program, args, control| {
+                let mut outcome =
+                    execute_preparation(profile, job, cache, program, args, request, control)
+                        .map_err(|_| fail("worker-start", "dictionary producer could not start"))?;
+                loop {
+                    match outcome {
+                        PreparationOutcome::Exited(exit) => return Ok(exit),
+                        PreparationOutcome::Unconfirmed(owner) => {
+                            outcome = owner.retry(Duration::from_millis(100));
+                        }
+                        PreparationOutcome::CancelledBeforeStart => {
+                            return Err(fail("worker-cancelled", "producer was not started"));
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    fn with_resource_worker<T>(
+        &self,
+        role: &str,
+        cancel: CancellationToken,
+        run: impl FnOnce(
+            &super::Profile,
+            &super::Job,
+            &super::Cache,
+            &std::path::Path,
+            &[std::ffi::OsString],
+            &super::RunControl,
+        ) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        use super::{Job, Profile, RunControl};
         if cancel.is_cancelled() {
-            return Err(fail("worker-cancelled", "producer was not started"));
+            return Err(fail("worker-cancelled", "resource Worker was not started"));
         }
-        let fuel = self
-            .0
-            .policy
-            .fuel_per_call
-            .ok_or_else(|| fail("worker-policy", "producer requires a bounded fuel policy"))?;
+        let fuel = self.0.policy.fuel_per_call.ok_or_else(|| {
+            fail(
+                "worker-policy",
+                "resource Worker requires a bounded fuel policy",
+            )
+        })?;
         let memory = self.0.policy.wasm_memory_bytes.ok_or_else(|| {
             fail(
                 "worker-policy",
-                "producer requires a bounded Wasm memory policy",
+                "resource Worker requires a bounded Wasm memory policy",
             )
         })?;
         let mut profile =
@@ -202,34 +392,21 @@ impl super::WasmArtifact {
                     termination_grace: self.0.policy.termination_grace,
                 };
                 let args = [
-                    "--build-resources-v1".into(),
+                    role.into(),
                     runtime.cache.path().join("wasmtime.dll").into_os_string(),
                     module.cache.path().join("node.wasm").into_os_string(),
                     self.0.module.len().to_string().into(),
                     fuel.to_string().into(),
                     memory.to_string().into(),
                 ];
-                let mut outcome = execute_preparation(
+                run(
                     &profile,
                     &job,
                     &runtime.cache,
                     &runtime.cache.path().join("worker.exe"),
                     &args,
-                    request,
                     &control,
                 )
-                .map_err(|_| fail("worker-start", "dictionary producer could not start"))?;
-                loop {
-                    match outcome {
-                        PreparationOutcome::Exited(exit) => return Ok(exit),
-                        PreparationOutcome::Unconfirmed(owner) => {
-                            outcome = owner.retry(Duration::from_millis(100));
-                        }
-                        PreparationOutcome::CancelledBeforeStart => {
-                            return Err(fail("worker-cancelled", "producer was not started"));
-                        }
-                    }
-                }
             })();
             module_lease.release()?;
             result
@@ -238,7 +415,7 @@ impl super::WasmArtifact {
         drop(runtime_lease);
         profile
             .delete()
-            .map_err(|_| fail("worker-cleanup", "producer profile cleanup failed"))?;
+            .map_err(|_| fail("worker-cleanup", "resource Worker profile cleanup failed"))?;
         result
     }
 }

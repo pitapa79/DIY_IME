@@ -1,10 +1,10 @@
 //! Immutable subjects minted from verified packages and a compiled graph.
 use super::super::{VerifiedPackage, format::digest};
 use crate::{
-    execution_control::CancellationToken,
+    execution_control::{CancellationToken, RunKey},
     graph::{Endpoint, ExecutionPlan, Graph},
     isolated_worker::adapter::{
-        ExecutionGate, NetworkUseDescription, ResourceDescription, WasmNode,
+        DictionaryCompanions, ExecutionGate, NetworkUseDescription, ResourceDescription, WasmNode,
     },
     node::{CoreError, Registry},
 };
@@ -338,6 +338,7 @@ impl PermissionPlan {
         &self,
         cancel: CancellationToken,
         check: &mut dyn FnMut() -> Result<(), CoreError>,
+        prepared: Option<(&str, &DictionaryCompanions, &RunKey)>,
     ) -> Result<(), CoreError> {
         let providers: Vec<_> = self
             .nodes
@@ -361,8 +362,15 @@ impl PermissionPlan {
                 .capture_resources(&node.config, &mut batch, &cancel, check)?;
         }
         for node in &self.nodes {
-            node.node
-                .initialize_resources(&node.config, &mut batch, cancel.clone(), check)?;
+            node.node.initialize_resources(
+                &node.config,
+                &mut batch,
+                cancel.clone(),
+                check,
+                prepared
+                    .filter(|(id, _, _)| *id == node.id)
+                    .map(|(id, modules, key)| (modules, key, id)),
+            )?;
         }
         Ok(())
     }

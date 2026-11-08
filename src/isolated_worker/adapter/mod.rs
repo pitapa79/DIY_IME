@@ -17,6 +17,7 @@ mod retained_tests;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
 pub(in crate::isolated_worker) use prepared::ArtifactCapture;
+pub(in crate::isolated_worker) use prepared::DictionaryCompanions;
 pub use prepared::{PreparationIdentity, PreparationLimits, PreparationSources, PreparedArtifact};
 pub use ranges::{
     ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
@@ -948,16 +949,44 @@ impl WasmNode {
         batch: &mut DictionaryBatch<'_>,
         cancel: CancellationToken,
         check: &mut dyn FnMut() -> Result<(), CoreError>,
+        prepared: Option<(
+            &DictionaryCompanions,
+            &crate::execution_control::RunKey,
+            &str,
+        )>,
     ) -> Result<(), CoreError> {
         if let Some(plans) = &self.dictionary {
-            plans.initialize(
-                &self.artifact,
-                &self.definition,
-                config,
-                batch,
-                cancel,
-                check,
-            )?;
+            plans.initialize(config, batch, cancel.clone(), check, |snapshots| {
+                if let Some((modules, key, id)) = prepared {
+                    return self.initialize_prepared_dictionary(
+                        modules, key, id, config, snapshots, cancel,
+                    );
+                }
+                let payload: std::collections::BTreeMap<_, _> = snapshots
+                    .iter()
+                    .map(|(id, bytes)| (id, bytes.as_ref()))
+                    .collect();
+                let valid = wire::reply(&self.artifact.call(
+                    &wire::request(
+                        &self.definition.kind,
+                        self.definition.version,
+                        json!({"method":"prepare","config":config,"resources":payload}),
+                    ),
+                    cancel,
+                )?)?;
+                if valid.as_object().is_none_or(|v| v.len() != 2)
+                    || valid["valid"] != true
+                    || !valid["prepared"].is_boolean()
+                {
+                    return Err(fail("worker-reply", "invalid resource preparation reply"));
+                }
+                Ok(())
+            })?;
+        } else if prepared.is_some() {
+            return Err(fail(
+                "dictionary-not-prepared",
+                "approved dictionary binding missing",
+            ));
         }
         Ok(())
     }
@@ -1089,6 +1118,28 @@ impl WasmNode {
                         invocation.context().node_id,
                     );
                     let lease = node.gate.begin(target, key, cancel.clone())?;
+                    if let Some(prepared) = node.prepared_dictionary.get() {
+                        let mut scope = prepared.scope(
+                            &node, invocation.context().node_id, key, cancel.clone(),
+                            node.artifact.0.policy.walltime.unwrap_or(Duration::from_secs(30)),
+                        )?;
+                        let request = prepared.request(&invocation, &node.definition, &mut scope)?;
+                        let bytes = serde_json::to_vec(&request)
+                            .map_err(|_| fail("worker-request", "request serialization failed"))?;
+                        drop(request_phase);
+                        let reply = prepared.execute(bytes, scope, cancel.clone())?;
+                        let wire::ExecutionStep::Outputs(result) = wire::execution_step(&reply, &node.definition)? else {
+                            return Err(fail("package-capability", "prepared dictionary cannot request network"));
+                        };
+                        node.gate.publish(&lease, key, || {
+                            if cancel.is_cancelled() {
+                                return Err(fail("worker-cancelled", "invocation cancelled"));
+                            }
+                            completion.complete(Ok(result));
+                            Ok(())
+                        })??;
+                        return Ok(());
+                    }
                     let mut request = wire::execution(&invocation, &node.definition)?;
                     if let Some(plans) = &node.dictionary {
                         request["operation"]["resources"] = plans.payload(invocation.config())?;

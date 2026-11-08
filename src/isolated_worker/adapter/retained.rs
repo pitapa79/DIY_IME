@@ -710,7 +710,6 @@ fn coordinate(
                         ));
                     }
                     command.node.validate_config(command.invocation.config())?;
-                    let mut request = wire::execution(invocation, &command.node.definition)?;
                     let mut scope = scope(
                         &command.node,
                         &ids[completed],
@@ -720,16 +719,16 @@ fn coordinate(
                         command.node.artifact.0.policy.walltime.unwrap(),
                     )?;
                     scope.follow_cancellation(command.cancel.clone())?;
-                    if let Some(prepared) = command.node.prepared_dictionary.get() {
-                        request["operation"]["method"] = json!("executePrepared");
-                        request["operation"]["artifact"] = serde_json::to_value(
-                            prepared.descriptor(&mut scope)?,
-                        )
-                        .map_err(|_| fail("worker-request", "artifact descriptor unavailable"))?;
-                    } else if let Some(plans) = &command.node.dictionary {
-                        request["operation"]["resources"] =
-                            plans.payload(command.invocation.config())?;
-                    }
+                    let request = if let Some(prepared) = command.node.prepared_dictionary.get() {
+                        prepared.request(invocation, &command.node.definition, &mut scope)?
+                    } else {
+                        let mut request = wire::execution(invocation, &command.node.definition)?;
+                        if let Some(plans) = &command.node.dictionary {
+                            request["operation"]["resources"] =
+                                plans.payload(command.invocation.config())?;
+                        }
+                        request
+                    };
                     let bytes = serde_json::to_vec(&request)
                         .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     drop(request_phase);

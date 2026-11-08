@@ -41,3 +41,24 @@ Host statusの追加の `retainedWorker` は物理予約数、readiness観測、
 上記driver単体検査だけを、実CoreのSkipped認定や通常Hostの接続完了の証拠にはしない。別の `check-retained-host.mjs` では通常Host・公開済みの同じ公式module/manifestを使い、同PIDでの最終/かな/候補・Unicode/空入力/Backspace/確定、prefix終端の反復、後発異常終了による採用済み結果の非遡及を検査する。残る検証は取消/置換・文脈・計画切替と失敗境界、Session/broker会計、通常Host/実配布版の同条件計測である。途中の検査成功を#76/#27の完了と扱わない。
 
 最初のB2接続では公式v1の元辞書payloadを保つため、辞書全量のJSON配送と再解析は残る。その結果を測り、対応する公式準備/消費コードの検証・採用後にAを組み合わせる。v1だけの改善やdriver機能検査をP95/P99合格としない。4096文字級の大候補群の性能は後回しにするが、既存の対応範囲は切り捨てない。TSFは未着手。
+
+## Prepared dictionary candidate
+
+For the fixed official pipeline, the Host checks both companion modules against
+compiled SHA-256 pins before binding them to the reviewed permission plan.
+Activation constructs an opaque index from the authorized original and checks
+the producer's real exit and current permission before publishing the session.
+The dictionary stage reads the index through the bounded resource transport.
+A session with one physical slot uses a fresh consumer Worker under the same
+range policy and publishes only after its confirmed exit.
+
+The candidate bytes are from [Node CI artifact 13634769507](https://github.com/pitapa79/DIY_IME_node/actions/runs/42526514484/artifacts/13634769507)
+at Node commit `4ba3dda21faff23214ea21baaeccdbbddca344fe`. The ZIP digest and each module
+digest were checked against the build receipt.
+
+| Module | SHA-256 |
+| --- | --- |
+| dictionary-producer.wasm | `7bd798c708ddf7e04f6d63d38b4aa42c362e5dfd398d031639ba203b924d1549` |
+| dictionary-consumer.wasm | `c773b217f039c7ce54cf3aa202274894d29c609caec288e5e9b5ec9f2c115c82` |
+
+The official v1 module and its package pin keep their original provenance.

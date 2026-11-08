@@ -68,6 +68,10 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Official bootstrap/catalog/registered graph integration failed'}
  & $Node (Join-Path $root 'scripts/check-retained-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') $worker $dll (Join-Path $root 'distribution/official')
  if($LASTEXITCODE -ne 0){throw 'Ordinary retained Host identity/cancellation/replenishment integration failed'}
+ if(Test-Path -LiteralPath (Join-Path $root 'distribution/official/dictionary-producer.wasm')){
+  & $Node (Join-Path $root 'scripts/check-retained-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') $worker $dll (Join-Path $root 'distribution/official') --single-worker
+  if($LASTEXITCODE -ne 0){throw 'Prepared dictionary single Worker integration failed'}
+ }
  $taskPreviousWorker=$env:DIY_RANGE_WORKER_BINARY
  $taskPreviousDll=$env:DIY_RANGE_RUNTIME_DLL
  $taskPreviousFixture=$env:DIY_RETAINED_HOST_FIXTURE_WASM
