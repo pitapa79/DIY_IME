@@ -212,7 +212,7 @@ impl Owner {
                 .is_none_or(|v| v.is_zero() || v > Duration::from_secs(30))
             || policy.termination_grace > Duration::from_secs(5)
             || nodes.iter().any(|node| {
-                let image = &node.artifact.0;
+                let image = &retained_artifact(node).0;
                 node.network.is_some()
                     || image.policy != *policy
                     || !Arc::ptr_eq(&image.runtime_files, &nodes[0].artifact.0.runtime_files)
@@ -365,6 +365,9 @@ fn scope(
     cancel: CancellationToken,
     budget: Duration,
 ) -> Result<ResourceRangeSession, CoreError> {
+    if let Some(prepared) = node.prepared_dictionary.get() {
+        return prepared.scope(node, id, key, cancel, budget);
+    }
     let resources = node
         .dictionary
         .as_ref()
@@ -390,6 +393,13 @@ fn scope(
         limits,
     )
 }
+
+fn retained_artifact(node: &WasmNode) -> &WasmArtifact {
+    node.prepared_dictionary
+        .get()
+        .map_or(&node.artifact, |prepared| &prepared.consumer)
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -420,12 +430,13 @@ impl Native {
             .zip(ids)
             .zip(configs)
             .map(|((node, id), config)| {
+                let artifact = retained_artifact(node);
                 let slot = modules
                     .iter()
-                    .position(|module| module.0.module == node.artifact.0.module)
+                    .position(|module| module.0.module == artifact.0.module)
                     .unwrap_or_else(|| {
                         let slot = modules.len();
-                        modules.push(node.artifact.clone());
+                        modules.push(artifact.clone());
                         slot
                     });
                 Ok(RetainedBinding {
@@ -700,12 +711,6 @@ fn coordinate(
                     }
                     command.node.validate_config(command.invocation.config())?;
                     let mut request = wire::execution(invocation, &command.node.definition)?;
-                    if let Some(plans) = &command.node.dictionary {
-                        request["operation"]["resources"] =
-                            plans.payload(command.invocation.config())?;
-                    }
-                    let bytes = serde_json::to_vec(&request)
-                        .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     let mut scope = scope(
                         &command.node,
                         &ids[completed],
@@ -715,6 +720,18 @@ fn coordinate(
                         command.node.artifact.0.policy.walltime.unwrap(),
                     )?;
                     scope.follow_cancellation(command.cancel.clone())?;
+                    if let Some(prepared) = command.node.prepared_dictionary.get() {
+                        request["operation"]["method"] = json!("executePrepared");
+                        request["operation"]["artifact"] = serde_json::to_value(
+                            prepared.descriptor(&mut scope)?,
+                        )
+                        .map_err(|_| fail("worker-request", "artifact descriptor unavailable"))?;
+                    } else if let Some(plans) = &command.node.dictionary {
+                        request["operation"]["resources"] =
+                            plans.payload(command.invocation.config())?;
+                    }
+                    let bytes = serde_json::to_vec(&request)
+                        .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     drop(request_phase);
                     let data = input.as_mut().unwrap().call(bytes, scope)?;
                     shared.replies.fetch_add(1, Ordering::AcqRel);
@@ -866,15 +883,24 @@ mod tests {
                 CancellationToken::default(),
             )
             .unwrap();
-        let alternate_node = alternate_artifact
+        let alternate_node = artifact
             .prepare(
                 "fixture.wasm.chain-alt",
                 1,
-                vec![json!({"mode":"noOutput"})],
+                vec![json!({"mode":"preparedNoOutput"})],
                 gate.clone(),
                 CancellationToken::default(),
             )
             .unwrap();
+        assert!(
+            alternate_node
+                .prepared_dictionary
+                .set(super::prepared::PreparedDictionary {
+                    consumer: alternate_artifact.clone(),
+                    index: PreparedArtifact::retained_fixture(),
+                })
+                .is_ok()
+        );
         let mut registry = Registry::new();
         register_system_nodes(&mut registry).unwrap();
         registry.register_deferred(node.clone()).unwrap();
@@ -882,7 +908,7 @@ mod tests {
         let ids: Vec<_> = (0..4).map(|n| format!("stage{n}")).collect();
         let nodes = [&node, &alternate_node, &node, &node];
         let configs: Vec<_> = (0..4)
-            .map(|n| json!({"mode":if n==1{"noOutput"}else{"echo"}}))
+            .map(|n| json!({"mode":if n==1{"preparedNoOutput"}else{"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
         graph_nodes.extend(ids.iter().zip(&configs).zip(nodes).map(

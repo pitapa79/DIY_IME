@@ -877,6 +877,7 @@ impl WasmArtifact {
             gate,
             package_identity: None,
             dictionary: None,
+            prepared_dictionary: Arc::default(),
             network: None,
             retained: retained::NodeLink::default(),
         };
@@ -894,6 +895,7 @@ pub struct WasmNode {
     gate: ExecutionGate,
     package_identity: Option<String>,
     dictionary: Option<DictionaryPlans>,
+    prepared_dictionary: Arc<std::sync::OnceLock<prepared::PreparedDictionary>>,
     network: Option<NetworkPlans>,
     retained: retained::NodeLink,
 }
@@ -909,6 +911,7 @@ impl WasmNode {
     }
     pub(super) fn fresh_preparation(mut self) -> Self {
         self.dictionary = self.dictionary.as_ref().map(DictionaryPlans::fresh);
+        self.prepared_dictionary = Arc::default();
         self.retained = retained::NodeLink::default();
         self
     }

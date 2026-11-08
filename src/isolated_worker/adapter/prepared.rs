@@ -86,6 +86,73 @@ pub struct PreparedArtifact {
     format_version: u32,
 }
 
+/// Session-local consumer code and the immutable bytes produced for its
+/// approved configuration. The original plan remains the execution grant.
+pub(super) struct PreparedDictionary {
+    pub(super) consumer: super::WasmArtifact,
+    pub(super) index: PreparedArtifact,
+}
+
+impl PreparedDictionary {
+    pub(super) fn scope(
+        &self,
+        node: &super::WasmNode,
+        id: &str,
+        key: &RunKey,
+        cancel: CancellationToken,
+        budget: std::time::Duration,
+    ) -> Result<ResourceRangeSession, CoreError> {
+        let bytes = self.index.bytes();
+        if self.index.format() != "dictionary-exact-index"
+            || self.index.format_version() != 1
+            || bytes.is_empty()
+            || bytes.len() > 4 * 1024 * 1024
+        {
+            return Err(fail(
+                "dictionary-not-prepared",
+                "invalid dictionary artifact",
+            ));
+        }
+        ResourceRangeSession::open(
+            node.gate.clone(),
+            node.grant_target(&key.session_epoch, key.plan_version, id),
+            key.clone(),
+            cancel,
+            BTreeMap::from([("prepared.bin".into(), bytes.clone())]),
+            ResourceRangeLimits {
+                max_resources: 1,
+                max_snapshot_bytes: 4 * 1024 * 1024,
+                max_read_bytes: MAX_READ,
+                max_total_read_bytes: 8 * 1024 * 1024,
+                max_reads: 4096,
+                budget,
+            },
+        )
+    }
+
+    pub(super) fn descriptor(
+        &self,
+        scope: &mut ResourceRangeSession,
+    ) -> Result<diy_ime2_wasm_resource_sdk::ArtifactDescriptor, CoreError> {
+        use diy_ime2_wasm_resource_sdk::{ArtifactDescriptor, ResourceDescriptor};
+        let resources = scope.descriptions()?;
+        let [resource] = resources.as_slice() else {
+            return Err(fail("dictionary-not-prepared", "missing dictionary scope"));
+        };
+        if resource.reference != "prepared.bin" || resource.length != self.index.bytes().len() {
+            return Err(fail("dictionary-not-prepared", "dictionary scope differs"));
+        }
+        Ok(ArtifactDescriptor {
+            resource: ResourceDescriptor {
+                id: resource.id,
+                length: resource.length as u64,
+            },
+            format: self.index.format().into(),
+            version: self.index.format_version(),
+        })
+    }
+}
+
 #[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
 impl super::WasmArtifact {
     /// Run the construction role with immutable code and keep the range
@@ -176,6 +243,22 @@ impl super::WasmArtifact {
     }
 }
 impl PreparedArtifact {
+    #[cfg(test)]
+    pub(super) fn retained_fixture() -> Self {
+        Self {
+            bytes: Arc::from(&b"fixture"[..]),
+            identity: PreparationIdentity {
+                producer_sha256: "0".repeat(64),
+                definition_sha256: "0".repeat(64),
+                config_sha256: "0".repeat(64),
+            },
+            source_sha256: "0".repeat(64),
+            artifact_sha256: "0".repeat(64),
+            format: "dictionary-exact-index".into(),
+            format_version: 1,
+        }
+    }
+
     pub fn bytes(&self) -> &Arc<[u8]> {
         &self.bytes
     }

@@ -63,6 +63,7 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
                         | "malformed"
                         | "forge"
                         | "noOutput"
+                        | "preparedNoOutput"
                         | "duplicatePort"
                         | "duplicateEnvelope"
                         | "duplicateMeta"
@@ -117,7 +118,20 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             }
             json!({"out":{"state":"data","packet":{"version":1,"root":{"type":"text","text":serde_json::to_string(&request).unwrap()}}}})
         }
+        "executePrepared" if mode == Some("preparedNoOutput") => {
+            if request["node"]["kind"] != "fixture.wasm.chain-alt"
+                || op.get("resources").is_some()
+                || op["artifact"]
+                    != json!({"resource":{"id":1,"length":7},"format":"dictionary-exact-index","version":1})
+            {
+                return serde_json::to_vec(&failure("fixture-prepared-scope")).unwrap();
+            }
+            json!({"out":{"state":"noOutput"}})
+        }
         "execute" => {
+            if mode == Some("preparedNoOutput") {
+                return serde_json::to_vec(&failure("fixture-prepared-required")).unwrap();
+            }
             if mode.is_some_and(|s| s.starts_with("network")) {
                 let text = op["inputs"]["in"]["packet"]["root"]["text"]
                     .as_str()
