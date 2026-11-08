@@ -108,6 +108,13 @@ try{
  const restored=await client.call({method:'prepare',graph:graph()});assert.equal(restored.missing.length,0);
  await client.call({method:'activate',reviewId:restored.reviewId});
  await execute(client);
+ await approve(client,'hold',false);
+ const replaced=await client.call({method:'run',request:startRequest()});
+ await until(async()=>(await client.call({method:'status'})).workerProcesses>0);
+ await client.call({method:'invalidateInput',expectedPlanVersion:'1',revision:2});
+ const superseded=(await client.call({method:'getRun',key:replaced.receipt.key})).snapshot;
+ assert.equal(superseded.current,false);assert.equal(superseded.result,null);
+ await until(async()=>{const s=await client.call({method:'status'});return s.workerProcesses===0&&s.physical.physicalJobs===0;});
  const held=await approve(client,'hold',false);
  const heldRun=await client.call({method:'run',request:startRequest()});
  await until(async()=>(await client.call({method:'status'})).workerProcesses>0);

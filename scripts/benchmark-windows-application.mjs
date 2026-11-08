@@ -112,7 +112,7 @@ export async function benchmark(config){
  const hostInputRounds=config.hostInputRounds;
  if(hostInputRounds!==undefined){
   requireValue(Number.isSafeInteger(hostInputRounds)&&hostInputRounds>=1&&hostInputRounds<=1000,'host-input-rounds');
-  requireValue(!schedule&&!trace.operation&&config.syntheticRows===undefined,'host-input-mode');
+  requireValue(!schedule&&!trace.operation,'host-input-mode');
  }
  const progressEvery=config.progressEvery??0;
  requireValue(Number.isSafeInteger(progressEvery)&&progressEvery>=0&&progressEvery<=10000,'progress-interval');
@@ -189,7 +189,8 @@ export async function benchmark(config){
     summarize,pollMs:config.pollMs,rounds:hostInputRounds,
    });
    await call('api/external/connections/'+connection,undefined,'DELETE');await stop();
-   return {formatVersion:2,ownership:ownership(),kind:'bundled-wasm-host-input',provenance:bundle.provenance,
+   if(syntheticDictionary)requireValue(hash(readFileSync(dictionaryPath))===syntheticDictionary.sha256,'synthetic-dictionary-changed');
+   return {formatVersion:2,ownership:ownership(),kind:'bundled-wasm-host-input',provenance:syntheticDictionary?{...bundle.provenance,syntheticDictionary}:bundle.provenance,
     environment:{platform:platform(),arch:arch(),osRelease:release(),driverNode:process.versions.node},
     measurement:{rounds:hostInputRounds,pollIntervalMs:config.pollMs,trace:'off',clock:'client monotonic',
      boundary:'before input invalidation through current correct response and Core callback ending; native lifetime is separate; includes loopback JSON and polling'},
