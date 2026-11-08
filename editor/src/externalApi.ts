@@ -27,7 +27,8 @@ function status(v: unknown): ExternalStatus {
   if (Object.hasOwn(v, 'retainedWorker')) {
     const r = v.retainedWorker;
     if (!exact(r, ['physicalJobs', 'ready', 'processId', 'generation', 'activeInput', 'decodedReplies']) || !safeInteger(r.physicalJobs) || !safeInteger(r.decodedReplies)
-      || !safeInteger(v.physical.physicalJobs) || r.physicalJobs > v.physical.physicalJobs || typeof r.ready !== 'boolean' || typeof r.activeInput !== 'boolean'
+      || !('physicalJobs' in v.physical) || !safeInteger(v.physical.physicalJobs) || r.physicalJobs > v.physical.physicalJobs
+      || typeof r.ready !== 'boolean' || typeof r.activeInput !== 'boolean'
       || !safeInteger(r.generation) || !(r.processId === null || safeInteger(r.processId) && r.processId > 0 && r.processId <= 0xffffffff)) return invalid();
   }
   return v as unknown as ExternalStatus;
