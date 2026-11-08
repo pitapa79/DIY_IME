@@ -692,6 +692,7 @@ fn coordinate(
                     break;
                 }
                 let work = (|| {
+                    let request_phase = command.invocation.trace_host_phase(HostTracePhase::Request);
                     if command.cancel.is_cancelled() {
                         input_cancel.cancel();
                         return Err(fail(
@@ -723,6 +724,7 @@ fn coordinate(
                         command.node.artifact.0.policy.walltime.unwrap(),
                     )?;
                     scope.follow_cancellation(command.cancel.clone())?;
+                    drop(request_phase);
                     let data = input.as_mut().unwrap().call(bytes, scope)?;
                     shared.replies.fetch_add(1, Ordering::AcqRel);
                     let outputs = wire::retained_outputs(data, &command.node.definition)?;
