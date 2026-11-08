@@ -301,9 +301,15 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
     if cache.path().parent() != Some(parent.as_path()) {
         return Err("unexpected probe cache location".into());
     }
-    for name in ["worker.exe", "wasmtime.dll", "producer.wasm", "consumer.wasm"] {
+    for name in [
+        "worker.exe",
+        "wasmtime.dll",
+        "producer.wasm",
+        "consumer.wasm",
+    ] {
         remove_asset(&cache.path().join(name)).map_err(core)?;
     }
-    fs::remove_dir(cache.path()).map_err(|error| format!("probe staging cleanup failed: {error}"))?;
+    fs::remove_dir(cache.path())
+        .map_err(|error| format!("probe staging cleanup failed: {error}"))?;
     result
 }
