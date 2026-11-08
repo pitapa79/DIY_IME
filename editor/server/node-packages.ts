@@ -7,6 +7,7 @@ export interface PackageManagerOptions { executable: string; config: string }
 interface Pending {
   accept: (value: unknown) => void; reject: (error: Error) => void;
   signal?: AbortSignal; abort: () => void; aborted: boolean;
+  resultRead: boolean;
 }
 /** One trusted Host manager; browser data never chooses command, path or root. */
 export class PackageManager {
@@ -22,7 +23,7 @@ export class PackageManager {
   private closing = false;
   private ended?: Promise<void>;
   private end?: () => void;
-  constructor(private readonly options: PackageManagerOptions, role: 'package' | 'execution' = 'package') {
+  constructor(private readonly options: PackageManagerOptions, private readonly role: 'package' | 'execution' = 'package') {
     if (statSync(options.config).size > 1024 * 1024) throw new Error('Node manager configuration exceeds limit');
     const config = JSON.parse(readFileSync(options.config, 'utf8')) as { limits?: { batchBytes?: unknown; catalogBytes?: unknown }; requestBytes?: unknown; responseBytes?: unknown };
     const batch = config.limits?.batchBytes ?? 512 * 1024 * 1024;
@@ -95,13 +96,14 @@ export class PackageManager {
     void this.close();
   }
   call(operation: Record<string, unknown>, payload?: Buffer, signal?: AbortSignal, control = false): Promise<unknown> {
-    if (this.pending.size >= 16 || this.pending.size && !control) return Promise.reject(new BridgeError('package-busy', '別のパッケージ処理が終了するまでお待ちください。', 409));
+    const resultRead = this.role === 'execution' && operation.method === 'getRun';
+    if (this.pending.size >= 16 || !control && [...this.pending.values()].some(pending => pending.resultRead === resultRead)) return Promise.reject(new BridgeError('package-busy', '別のパッケージ処理が終了するまでお待ちください。', 409));
     if (this.closing || this.failure) return Promise.reject(this.failure ?? new BridgeError('package-closed', 'ノード管理は終了しています。', 503));
     if (signal?.aborted) return Promise.reject(new BridgeError('aborted', '処理を取り消しました。', 499));
     this.start();
     const id = (++this.serial).toString();
     return new Promise((accept, reject) => {
-      const pending: Pending = { accept, reject, signal, aborted: false, abort: () => {
+      const pending: Pending = { accept, reject, signal, resultRead, aborted: false, abort: () => {
         if (pending.aborted) return; pending.aborted = true;
         if (!this.closing) { try { this.frame('cancel_' + id, { method: 'cancel', requestId: id }); } catch { void this.close(); } }
       } };

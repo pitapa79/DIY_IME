@@ -111,7 +111,11 @@ try{
  const held=await approve(client,'hold',false);
  const heldRun=await client.call({method:'run',request:startRequest()});
  await until(async()=>(await client.call({method:'status'})).workerProcesses>0);
+ const heldQuery=client.send({method:'getRun',key:heldRun.receipt.key});
+ assert.equal((await client.call({method:'status'})).phase,'ready');
  await client.call({method:'protection',enabled:true});
+ const withdrawn=await heldQuery;
+ if(withdrawn.ok)assert.equal(withdrawn.data.snapshot.result,null);
  assert.equal((await client.send({method:'getRun',key:heldRun.receipt.key})).ok,false);
  await until(async()=>{const s=await client.call({method:'status'});assert.equal(s.phase,'protected');return s.workerProcesses===0&&s.physical.physicalJobs===0;});
  assert.equal((await client.send({method:'protection',enabled:false,automatic:false})).ok,false);

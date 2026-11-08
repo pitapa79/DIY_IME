@@ -58,16 +58,16 @@ function secretMetadata(v: unknown): SecretMetadata {
   return v as unknown as SecretMetadata;
 }
 export function createExternalApi(fetcher: typeof fetch = fetch) {
-  async function request<T>(path: string, method: string, body: unknown, decode: (v: unknown) => T): Promise<T> {
+  async function request<T>(path: string, method: string, body: unknown, decode: (v: unknown) => T, signal?: AbortSignal): Promise<T> {
     let response: Response, value: unknown;
-    try { response = await fetcher(path, { method, ...(method === 'DELETE' ? { keepalive: true } : {}), ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });value = await response.json(); }
+    try { response = await fetcher(path, { method, ...(signal ? { signal } : {}), ...(method === 'DELETE' ? { keepalive: true } : {}), ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });value = await response.json(); }
     catch { throw new ExternalApiError('external-connection', '応答を確認できません。開始要求は再送せず照会してください。'); }
     if (exact(value, ['ok', 'error']) && value.ok === false && errorValue(value.error) && !response.ok) throw new ExternalApiError(value.error.code, value.error.message, response.status >= 500 || response.status === 499);
     if (!response.ok || !exact(value, ['ok', 'data']) || value.ok !== true) return invalid();
     return decode(value.data);
   }
   const path = (id: string) => epoch(id) ? '/api/external/connections/' + id : invalid();
-  const call = <T,>(id: string, operation: Record<string, unknown>, decode: (v: unknown) => T) => request(path(id) + '/request', 'POST', operation, decode);
+  const call = <T,>(id: string, operation: Record<string, unknown>, decode: (v: unknown) => T, signal?: AbortSignal) => request(path(id) + '/request', 'POST', operation, decode, signal);
   const snapshot = (v: unknown, key: ExecutionRunKey) => {
     if (!exact(v, ['snapshot', 'state']) || !v.snapshot || typeof v.snapshot !== 'object') return invalid();
     const raw = v.snapshot as Record<string, unknown>;
@@ -108,7 +108,7 @@ export function createExternalApi(fetcher: typeof fetch = fetch) {
         || v.receipt.key.planVersion !== start.expectedPlanVersion || v.receipt.key.inputRevision !== start.input?.revision) return invalid();
       const state = status(v.state);if (v.receipt.key.sessionEpoch !== state.sessionEpoch) return invalid();return { key: v.receipt.key, state };
     }),
-    getRun: (id: string, key: ExecutionRunKey) => call(id, { method: 'getRun', key }, v => snapshot(v, key)),
+    getRun: (id: string, key: ExecutionRunKey, signal?: AbortSignal) => call(id, { method: 'getRun', key }, v => snapshot(v, key), signal),
     cancelRun: (id: string, key: ExecutionRunKey) => call(id, { method: 'cancelRun', key }, v => snapshot(v, key)),
     getStart: (id: string, startKey: string) => {
       if (!decimal(startKey)) return invalid();return call(id, { method: 'getStart', startKey }, v => {

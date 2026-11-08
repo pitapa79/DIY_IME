@@ -119,9 +119,9 @@ export default function ExternalExecutionPanel(props: Props) {
       }
     });
   }
-  async function inspect(o: Owner, generation: object, tracked: Run) {
-    if (!tracked.key) return;const value = await client.getRun(o.id, tracked.key);
-    if (!current(o, generation) || (runRef.current?.epoch !== tracked.epoch || runRef.current?.startKey !== tracked.startKey)) return;
+  async function inspect(o: Owner, generation: object, tracked: Run, signal?: AbortSignal) {
+    if (!tracked.key) return;const value = await client.getRun(o.id, tracked.key, signal);
+    if (signal?.aborted || !current(o, generation) || (runRef.current?.epoch !== tracked.epoch || runRef.current?.startKey !== tracked.startKey)) return;
     acceptStatus(value.state);
     if (value.state.phase === 'ready' && value.state.sessionEpoch === tracked.epoch && sameRun(value.snapshot.key, tracked.key)
       && (!tracked.snapshot || BigInt(value.snapshot.eventSeq) >= BigInt(tracked.snapshot.eventSeq))) track({ ...tracked, snapshot: value.snapshot });
@@ -136,11 +136,32 @@ export default function ExternalExecutionPanel(props: Props) {
   }
   useEffect(() => {
     const o = owner.current;if (!o || busy || controlBusy || stopping) return;const generation = o.generation;
+    const tracked = runRef.current;
+    if (tracked?.key && !tracked.unknown && tracked.snapshot?.current !== false && tracked.snapshot?.state !== 'terminal') {
+      const read = new AbortController();
+      const observe = async () => {
+        for (let attempt = 0; !read.signal.aborted; attempt++) {
+          try { await inspect(o, generation, tracked, read.signal);return; }
+          catch (error) {
+            if (attempt >= 4 || !(error instanceof ExternalApiError) || !['package-busy', 'external-busy'].includes(error.code)) throw error;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        }
+      };
+      void observe().catch(error => {
+        if (read.signal.aborted || !current(o, generation) || runRef.current !== tracked) return;
+        setIssue(errorText(error));
+        track({ ...tracked, snapshot: undefined, unknown: true });
+        setUncertain(true);
+        latest.current.onStatuses(null);
+      });
+      return () => read.abort();
+    }
     const timer = setTimeout(() => { void work('状態確認', async () => {
       const tracked = runRef.current;
       if (tracked?.key && !tracked.unknown && !(tracked.snapshot?.state === 'terminal' && Object.values(tracked.snapshot.physical).every(n => n === 0))) await inspect(o, generation, tracked);
       else { const value = await client.status(o.id);if (current(o, generation)) acceptStatus(value); }
-    }); }, run?.key && !run.unknown && run.snapshot?.state !== 'terminal' ? 100 : 1000);
+    }); }, 1000);
     return () => clearTimeout(timer);
   }, [connected, status, run, busy, controlBusy, stopping]);
   // Input edits hide delivered data during render, then invalidate the Host without preparing/approving again.
