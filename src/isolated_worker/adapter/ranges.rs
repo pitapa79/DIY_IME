@@ -312,8 +312,17 @@ impl ResourceRangeSession {
         Ok(resource.1[end - length..end].to_vec())
     }
 
-    pub(super) fn follow_cancellation(&mut self, token: CancellationToken) -> Result<(), CoreError> {
-        if self.additional_cancel.is_some() { self.cancel.cancel(); return Err(fail("resource-range-config", "call cancellation is already bound")); }
+    pub(super) fn follow_cancellation(
+        &mut self,
+        token: CancellationToken,
+    ) -> Result<(), CoreError> {
+        if self.additional_cancel.is_some() {
+            self.cancel.cancel();
+            return Err(fail(
+                "resource-range-config",
+                "call cancellation is already bound",
+            ));
+        }
         self.additional_cancel = Some(token);
         self.current()
     }

@@ -929,7 +929,11 @@ mod tests {
         owner.start();
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while !owner.ready() {
-            assert!(std::time::Instant::now() < deadline, "remaining ownership: {:?}", host.usage());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "remaining ownership: {:?}",
+                host.usage()
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
         let pid = owner.process_id().unwrap();
@@ -983,8 +987,15 @@ mod tests {
         drop(node);
         drop(artifact);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while host.usage() != ResourceUsage::default() {
-            assert!(std::time::Instant::now() < deadline);
+        loop {
+            let usage = host.usage();
+            if usage == ResourceUsage::default() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "remaining ownership after closing retained worker: {usage:?}"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
         std::fs::remove_dir(workspace).unwrap();
