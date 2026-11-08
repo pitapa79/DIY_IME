@@ -998,16 +998,17 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        // The actor can release the plan's code snapshots after the last
-        // accounted resource drains. Require the cache to disappear as well.
+        // Cache::new leaves the shared staging parents in place. This test
+        // owns its workspace, so remove those parents only once they are empty.
+        let staging = workspace.join("target/appcontainer-probes");
         loop {
-            match std::fs::remove_dir(&workspace) {
+            match std::fs::remove_dir(&staging) {
                 Ok(()) => break,
                 Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
                     assert!(
                         std::time::Instant::now() < deadline,
-                        "retained fixture workspace still contains: {:?}",
-                        std::fs::read_dir(&workspace).map(|entries| {
+                        "retained fixture staging still contains: {:?}",
+                        std::fs::read_dir(&staging).map(|entries| {
                             entries
                                 .map(|entry| entry.map(|entry| entry.file_name()))
                                 .collect::<Vec<_>>()
@@ -1015,8 +1016,10 @@ mod tests {
                     );
                     std::thread::sleep(Duration::from_millis(2));
                 }
-                Err(error) => panic!("could not remove retained fixture workspace: {error}"),
+                Err(error) => panic!("could not remove retained fixture staging: {error}"),
             }
         }
+        std::fs::remove_dir(workspace.join("target")).unwrap();
+        std::fs::remove_dir(workspace).unwrap();
     }
 }
