@@ -453,6 +453,23 @@ impl WasmArtifact {
         module: Vec<u8>,
         policy: WorkerPolicy,
     ) -> Result<Self, CoreError> {
+        Self::capture_assets(
+            workspace,
+            // Trusted Host executables can include debug symbols during verification.
+            || asset(worker, 128 * 1024 * 1024),
+            || asset(runtime_dll, 256 * 1024 * 1024),
+            module,
+            policy,
+        )
+    }
+
+    fn capture_assets(
+        workspace: &Path,
+        worker: impl FnOnce() -> Result<Arc<[u8]>, CoreError>,
+        dll: impl FnOnce() -> Result<Arc<[u8]>, CoreError>,
+        module: Vec<u8>,
+        policy: WorkerPolicy,
+    ) -> Result<Self, CoreError> {
         if !module.starts_with(b"\0asm\x01\0\0\0") {
             return Err(fail("worker-module", "binary Wasm v1 required"));
         }
@@ -465,9 +482,8 @@ impl WasmArtifact {
         }
         let workspace = std::fs::canonicalize(workspace)
             .map_err(|_| fail("worker-asset", "Host cache workspace unavailable"))?;
-        // Trusted Host executables can include debug symbols during verification.
-        let worker = asset(worker, 128 * 1024 * 1024)?;
-        let dll = asset(runtime_dll, 256 * 1024 * 1024)?;
+        let worker = worker()?;
+        let dll = dll()?;
         let dll_hash = sha256(&dll)?;
         if dll_hash != DLL_HASH {
             return Err(fail(
@@ -556,6 +572,41 @@ impl WasmArtifact {
     }
     fn call(&self, request: &Value, cancel: CancellationToken) -> Result<Vec<u8>, CoreError> {
         self.call_traced(request, cancel, None, 0)
+    }
+
+    fn runtime_code_files(&self) -> Result<Arc<CodeFiles>, CoreError> {
+        let mut captured = self
+            .0
+            .runtime_files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if captured.is_none() {
+            *captured = Some(Arc::new(CodeFiles::new(
+                &self.0.workspace,
+                &[
+                    ("worker.exe", &self.0.worker),
+                    ("wasmtime.dll", &self.0.dll),
+                ],
+                &self.0.code_budget,
+            )?));
+        }
+        Ok(captured.as_ref().expect("captured runtime").clone())
+    }
+
+    fn module_code_files(&self) -> Result<Arc<CodeFiles>, CoreError> {
+        let mut captured = self
+            .0
+            .module_files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if captured.is_none() {
+            *captured = Some(Arc::new(CodeFiles::new(
+                &self.0.workspace,
+                &[("node.wasm", &self.0.module)],
+                &self.0.code_budget,
+            )?));
+        }
+        Ok(captured.as_ref().expect("captured module").clone())
     }
     fn call_traced(
         &self,
@@ -650,46 +701,19 @@ impl WasmArtifact {
                 "AppContainer unavailable; refusing execution",
             )
         })?;
-        let runtime_files = {
-            let mut captured = self
-                .0
-                .runtime_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if captured.is_none() {
-                *captured = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[
-                        ("worker.exe", &self.0.worker),
-                        ("wasmtime.dll", &self.0.dll),
-                    ],
-                    &self.0.code_budget,
-                )?));
-            }
-            captured.as_ref().expect("captured runtime").clone()
-        };
+        let runtime_files = self.runtime_code_files()?;
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
-        let raw_module = || {
-            let mut captured = self
-                .0
-                .module_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if captured.is_none() {
-                *captured = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[("node.wasm", &self.0.module)],
-                    &self.0.code_budget,
-                )?));
-            }
-            Ok::<_, CoreError>(captured.as_ref().expect("captured module").clone())
-        };
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
-            WorkerImage::Jit => (raw_module()?, "node.wasm", self.0.module.len(), None),
+            WorkerImage::Jit => (
+                self.module_code_files()?,
+                "node.wasm",
+                self.0.module.len(),
+                None,
+            ),
             WorkerImage::Compile => (
-                raw_module()?,
+                self.module_code_files()?,
                 "node.wasm",
                 self.0.module.len(),
                 Some("--compile-official".into()),

@@ -506,38 +506,10 @@ impl WasmArtifact {
     ) -> Result<Option<ExitReceipt>, CoreError> {
         let mut profile =
             Profile::new().map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?;
-        let runtime = {
-            let mut files = self
-                .0
-                .runtime_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if files.is_none() {
-                *files = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[
-                        ("worker.exe", &self.0.worker),
-                        ("wasmtime.dll", &self.0.dll),
-                    ],
-                    &self.0.code_budget,
-                )?));
-            }
-            files.as_ref().unwrap().clone()
-        };
+        let runtime = self.runtime_code_files()?;
         let module_files = modules
             .iter()
-            .map(|artifact| {
-                let image = &artifact.0;
-                let mut files = image.module_files.lock().unwrap_or_else(|p| p.into_inner());
-                if files.is_none() {
-                    *files = Some(Arc::new(CodeFiles::new(
-                        &image.workspace,
-                        &[("node.wasm", &image.module)],
-                        &image.code_budget,
-                    )?));
-                }
-                Ok(files.as_ref().unwrap().clone())
-            })
+            .map(WasmArtifact::module_code_files)
             .collect::<Result<Vec<_>, CoreError>>()?;
         let mut runtime_lease = runtime.lease(&profile)?;
         let mut module_leases = Vec::new();

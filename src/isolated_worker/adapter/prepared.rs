@@ -85,6 +85,96 @@ pub struct PreparedArtifact {
     format: String,
     format_version: u32,
 }
+
+#[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
+impl super::WasmArtifact {
+    /// Run the construction role with immutable code and keep the range
+    /// connection owned until the original process and its IO are settled.
+    pub(super) fn prepare_artifact(
+        &self,
+        request: crate::isolated_worker::PreparationWorkerRequest,
+        cancel: CancellationToken,
+    ) -> Result<crate::isolated_worker::PreparationExit, CoreError> {
+        use super::{Job, Profile, RunControl};
+        use crate::isolated_worker::{PreparationOutcome, execute_preparation};
+        use std::time::Duration;
+
+        if self.identity().rsplit(':').next() != Some(&request.identity.producer_sha256) {
+            return Err(fail(
+                "preparation-identity",
+                "producer code identity differs",
+            ));
+        }
+        if cancel.is_cancelled() {
+            return Err(fail("worker-cancelled", "producer was not started"));
+        }
+        let fuel = self
+            .0
+            .policy
+            .fuel_per_call
+            .ok_or_else(|| fail("worker-policy", "producer requires a bounded fuel policy"))?;
+        let memory = self.0.policy.wasm_memory_bytes.ok_or_else(|| {
+            fail(
+                "worker-policy",
+                "producer requires a bounded Wasm memory policy",
+            )
+        })?;
+        let mut profile =
+            Profile::new().map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?;
+        let runtime = self.runtime_code_files()?;
+        let module = self.module_code_files()?;
+        let mut runtime_lease = runtime.lease(&profile)?;
+        let result = (|| {
+            let mut module_lease = module.lease(&profile)?;
+            let result = (|| {
+                let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
+                    .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
+                let control = RunControl {
+                    cancel,
+                    walltime: self.0.policy.walltime,
+                    termination_grace: self.0.policy.termination_grace,
+                };
+                let args = [
+                    "--build-resources-v1".into(),
+                    runtime.cache.path().join("wasmtime.dll").into_os_string(),
+                    module.cache.path().join("node.wasm").into_os_string(),
+                    self.0.module.len().to_string().into(),
+                    fuel.to_string().into(),
+                    memory.to_string().into(),
+                ];
+                let mut outcome = execute_preparation(
+                    &profile,
+                    &job,
+                    &runtime.cache,
+                    &runtime.cache.path().join("worker.exe"),
+                    &args,
+                    request,
+                    &control,
+                )
+                .map_err(|_| fail("worker-start", "dictionary producer could not start"))?;
+                loop {
+                    match outcome {
+                        PreparationOutcome::Exited(exit) => return Ok(exit),
+                        PreparationOutcome::Unconfirmed(owner) => {
+                            outcome = owner.retry(Duration::from_millis(100));
+                        }
+                        PreparationOutcome::CancelledBeforeStart => {
+                            return Err(fail("worker-cancelled", "producer was not started"));
+                        }
+                    }
+                }
+            })();
+            module_lease.release()?;
+            result
+        })();
+        runtime_lease.release()?;
+        drop(runtime_lease);
+        profile
+            .delete()
+            .map_err(|_| fail("worker-cleanup", "producer profile cleanup failed"))?;
+        result
+    }
+}
 impl PreparedArtifact {
     pub fn bytes(&self) -> &Arc<[u8]> {
         &self.bytes
