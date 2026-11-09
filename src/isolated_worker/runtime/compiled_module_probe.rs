@@ -99,14 +99,31 @@ fn child() {
     });
     let ready_module = if mode == "ready-generic-jit" {
         let bytes = fs::read("generic.wasm").unwrap();
-        assert_eq!(digest(&bytes), fs::read_to_string("generic.sha256").unwrap());
+        assert_eq!(
+            digest(&bytes),
+            fs::read_to_string("generic.sha256").unwrap()
+        );
         let api = api.as_ref().unwrap();
-        { let mut stdout = std::io::stdout().lock(); stdout.write_all(b"RAW_PRECOMPILE_V1\n").unwrap(); stdout.flush().unwrap(); }
-        Some(Runtime::prepare_module(api, &limits(), None, |engine, result| {
-            // SAFETY: fixture bytes remain alive during compilation.
-            unsafe { api.check((api.module_new)(engine, bytes.as_ptr(), bytes.len(), result), ptr::null_mut()) }
-        }).unwrap())
-    } else { ready_module };
+        {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(b"RAW_PRECOMPILE_V1\n").unwrap();
+            stdout.flush().unwrap();
+        }
+        Some(
+            Runtime::prepare_module(api, &limits(), None, |engine, result| {
+                // SAFETY: fixture bytes remain alive during compilation.
+                unsafe {
+                    api.check(
+                        (api.module_new)(engine, bytes.as_ptr(), bytes.len(), result),
+                        ptr::null_mut(),
+                    )
+                }
+            })
+            .unwrap(),
+        )
+    } else {
+        ready_module
+    };
     if mode.starts_with("ready-") {
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(PROBE_READY).unwrap();
