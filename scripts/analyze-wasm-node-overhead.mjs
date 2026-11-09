@@ -4,8 +4,11 @@ import { readFileSync } from 'node:fs';
 const [path] = process.argv.slice(2);
 assert(path, 'usage: node scripts/analyze-wasm-node-overhead.mjs REPORT.json');
 const report = JSON.parse(readFileSync(path, 'utf8'));
+const fixtureA = '1301ed6b7c9693bffe328cf8ae56a99c1db68a13f30abfe2604997a346dee2ca';
+const fixtureB = '49f60add1f5a97d0774c5d0cadedcf1844b6236ef7e1fc6b97064ddc09685bf4';
+const knownFixtures = report.moduleSha256?.join(',') === [fixtureA, fixtureB, fixtureA].join(',');
 
-function analyze({ tracePages, diagnostic, revision }) {
+function analyze({ tracePages, diagnostic, revision }, fixtureBounds) {
   assert(tracePages?.length && diagnostic, 'missing detailed diagnostic');
   const events = tracePages.flatMap(page => {
     assert.equal(Number(page.dropped), 0, 'trace dropped events');
@@ -38,7 +41,14 @@ function analyze({ tracePages, diagnostic, revision }) {
     const guestCallUs = Number(BigInt(call.worker.finishedUs) - BigInt(call.worker.startedUs));
     assert(guestCallUs >= 0 && readyToResolvedUs >= guestCallUs, 'invalid node timings');
     assert(BigInt(end.atUs) <= BigInt(publication.atUs), 'node resolved after publication');
-    return { node: start.node, kind: start.nodeKind, readyToResolvedUs, guestCallUs };
+    // In these pinned forward/join fixtures, all node-specific work occurs
+    // inside diyime_call. That call also contains ABI work, so it only bounds
+    // the removable time from above.
+    const bounds = fixtureBounds ? {
+      readyToResolvedOverheadLowerUs: readyToResolvedUs - guestCallUs,
+      readyToResolvedOverheadUpperUs: readyToResolvedUs,
+    } : {};
+    return { node: start.node, kind: start.nodeKind, readyToResolvedUs, guestCallUs, ...bounds };
   });
   const acceptedToPublishedUs = Number(BigInt(publication.atUs) - BigInt(accepted.atUs));
   assert(acceptedToPublishedUs >= 0, 'invalid publication time');
@@ -49,9 +59,11 @@ function analyze({ tracePages, diagnostic, revision }) {
 let exclusions = 0;
 const scenarios = report.scenarios.map(scenario => {
   const { shape, count, mixed = false } = scenario;
+  const fixtureBounds = knownFixtures && !scenario.official && !scenario.mixedOrigin
+    && ['serial', 'parallel', 'join'].includes(shape);
   const diagnostics = (scenario.diagnostics ?? [scenario]).map(input => {
     try {
-      return { revision: input.revision, ...analyze(input) };
+      return { revision: input.revision, ...analyze(input, fixtureBounds) };
     } catch (error) {
       exclusions++;
       return { revision: input.revision, excluded: error.message };
