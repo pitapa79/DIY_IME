@@ -7,6 +7,7 @@ import { sameRun, type ExecutionRunKey, type ExecutionSnapshot } from './executi
 import { decodeExecution } from './executionPayload';
 import ExecutionResults from './ExecutionResults';
 interface Props {
+  documentScope?: number;
   timelineVisible?: boolean;
   graph: Graph; input: RuntimeInput; inputError?: string; composing: boolean; hasDrafts: boolean; connection?: GraphEdge;
   onClearConnection: () => void; onDefinitions: (nodes: Definition[]) => void; onCatalogError: () => void;
@@ -49,6 +50,7 @@ export default function ExternalExecutionPanel(props: Props) {
   const [targetSelection, setTargetSelection] = useState<string[]>([]), [budget, setBudget] = useState('');
   const [issue, setIssue] = useState<string | null>(null), [stopping, setStopping] = useState(false), [invalidated, setInvalidated] = useState('');
   const attempt = useRef<{ valid: boolean; handedOff: boolean } | null>(null);
+  const currentDocument = useRef(props.documentScope);
   const current = (o: Owner, generation: object) => alive.current && owner.current === o && o.generation === generation;
   const track = (value: Run | null) => { runRef.current = value;setRun(value); };
   const acceptStatus = (value: ExternalStatus) => {
@@ -192,7 +194,20 @@ export default function ExternalExecutionPanel(props: Props) {
     try { await client.close(o.id); } catch (error) { if (alive.current) setIssue(errorText(error)); }
     finally { if (alive.current) { setStopping(false);setBusy(null); } }
   }
-  useEffect(() => { const leave = () => { setSecretValue('');if (attempt.current) { attempt.current.valid = false;if (!owner.current) setStopping(true); }void disconnect(); };window.addEventListener('pagehide', leave);return () => window.removeEventListener('pagehide', leave); });
+  function leave() {
+    setSecretValue('');
+    if (attempt.current) {
+      attempt.current.valid = false;
+      if (!owner.current) setStopping(true);
+    }
+    void disconnect();
+  }
+  useLayoutEffect(() => {
+    if (currentDocument.current === props.documentScope) return;
+    currentDocument.current = props.documentScope;
+    leave();
+  });
+  useEffect(() => { window.addEventListener('pagehide', leave);return () => window.removeEventListener('pagehide', leave); });
   const snapshot = run?.snapshot;
   const allowed = !uncertain && !!snapshot?.current && !!status?.state && status.phase === 'ready' && !status.protected && matches && run!.epoch === status.sessionEpoch
     && run!.graph === editedGraph && run!.input === inputKey && snapshot.key.deliveryGeneration === status.state.deliveryGeneration && snapshot.key.inputRevision === (needsRuntimeInput(props.graph) ? props.input.revision : undefined);

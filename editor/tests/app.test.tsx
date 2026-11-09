@@ -620,3 +620,22 @@ it('distribution starts externally without opening or falling back to a legacy s
   await waitFor(() => expect(fetcher).toHaveBeenCalled());
   expect(mocks.openSession).not.toHaveBeenCalled();expect(mocks.definitions).not.toHaveBeenCalled();expect(mocks.runActive).not.toHaveBeenCalled();
 });
+
+it('disconnects the external Host when the same sample is opened as another document', async () => {
+  const status = { phase: 'empty', protected: false, sessionEpoch: null, state: null, reviewId: null, physical: { physicalJobs: 0 }, workerProcesses: 0 };
+  const fetcher = vi.fn(async (path: string, init: RequestInit) => {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    const data = path.endsWith('/connections') ? { connectionId: 'a'.repeat(32), status }
+      : body.method === 'definitions' ? { definitions: [], state: status }
+      : body.method === 'saved' ? { ids: [] } : { closed: true };
+    return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<App externalOnly />);
+  await waitFor(() => expect((screen.getByLabelText('ファイル名') as HTMLInputElement).value).toBe('official-dictionary.json'));
+  fireEvent.click(button('実行Hostに接続'));
+  await waitFor(() => expect((button('グラフを確認') as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.change(screen.getByLabelText('サンプルを読み込む'), { target: { value: 'official-dictionary' } });
+  await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === 'DELETE')).toBe(true));
+  expect(await screen.findByRole('button', { name: '実行Hostに接続' })).toBeTruthy();
+});
