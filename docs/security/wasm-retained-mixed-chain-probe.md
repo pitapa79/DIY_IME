@@ -110,3 +110,12 @@ cargo test --locked --lib compare_core_parallel_independent_outputs -- --ignored
 ```powershell
 cargo test --locked --lib split_owner_termination_during_input -- --ignored --nocapture
 ```
+## 分離 owner の入力途中の保護と再開始
+
+異なる2モジュールの並列分岐・容量4枠で、2 owner の PID と生存を実プロセス handle で確認した。stage1 の検査用 Wasm が入力を受理して保持中に保護を有効化し、同じ run の参照が拒否されること、保護解除後も旧結果が復活しないことを確認した。session close で両 owner を join し、保持した元の2つの process handle がいずれも signal され、Host の全資源がゼロとなり試験用作業領域を削除できた。
+
+その後、別の新しい Host・gate・session で同じ2分岐を再生成し、2つの正答と session close 後の資源回収を確認した。これは同一 Host 内の再接続ではない。単一の直接 Core テストで、通常 External Host での応答、権限撤回、複数入力の競合を検証しない。生ログは `issue87-split-owner-protection.log`。`cargo fmt --all -- --check` も成功した。
+
+```powershell
+cargo test --locked --lib split_owner_protection_during_input_and_fresh_session -- --ignored --nocapture
+```

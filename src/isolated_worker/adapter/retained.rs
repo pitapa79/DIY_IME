@@ -845,14 +845,14 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None, 4, 3, 0, None, false, false);
+        run_core_fixture(None, 4, 3, 0, None, false, false, false);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 4, 24, 0, None, false, false);
+            run_core_fixture(Some(retained), 4, 24, 0, None, false, false, false);
         }
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn compare_core_chain_lengths() {
         for stages in [1, 2, 8, 16] {
             for retained in [false, true] {
-                run_core_fixture(Some(retained), stages, 8, 0, None, false, false);
+                run_core_fixture(Some(retained), stages, 8, 0, None, false, false, false);
             }
         }
     }
@@ -870,7 +870,16 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_chain_cadences() {
         for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
-            run_core_fixture(Some(retained), 4, 16, interval_ms, None, false, false);
+            run_core_fixture(
+                Some(retained),
+                4,
+                16,
+                interval_ms,
+                None,
+                false,
+                false,
+                false,
+            );
         }
     }
 
@@ -885,7 +894,16 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)), false, false);
+            run_core_fixture(
+                Some(retained),
+                2,
+                16,
+                0,
+                Some((split, 4)),
+                false,
+                false,
+                false,
+            );
         }
     }
 
@@ -893,7 +911,16 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_isolation_groups_at_default_capacity() {
         for (retained, split) in [(false, false), (true, false), (true, true)] {
-            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)), false, false);
+            run_core_fixture(
+                Some(retained),
+                2,
+                8,
+                0,
+                Some((split, 2)),
+                false,
+                false,
+                false,
+            );
         }
     }
 
@@ -908,7 +935,16 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)), false, false);
+            run_core_fixture(
+                Some(retained),
+                2,
+                24,
+                20,
+                Some((split, 4)),
+                false,
+                false,
+                false,
+            );
         }
     }
 
@@ -916,14 +952,30 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_parallel_independent_outputs() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some((true, 4)), true, false);
+            run_core_fixture(
+                Some(retained),
+                2,
+                16,
+                0,
+                Some((true, 4)),
+                true,
+                false,
+                false,
+            );
         }
     }
 
     #[test]
     #[ignore = "requires real Windows Worker/runtime and two chain fixture builds"]
     fn split_owner_termination_during_input() {
-        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, true);
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, true, false);
+    }
+
+    #[test]
+    #[ignore = "requires real Windows Worker/runtime and two chain fixture builds"]
+    fn split_owner_protection_during_input_and_fresh_session() {
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, false, true);
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, false, false);
     }
 
     fn run_core_fixture(
@@ -934,6 +986,7 @@ mod tests {
         isolation_comparison: Option<(bool, u64)>,
         parallel: bool,
         kill_owner: bool,
+        protect_owner: bool,
     ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
@@ -984,7 +1037,7 @@ mod tests {
         .prepare(
             "fixture.wasm.chain-alt",
             1,
-            vec![json!({"mode":if kill_owner { "executeHold" } else if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
+            vec![json!({"mode":if kill_owner || protect_owner { "executeHold" } else if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
             gate.clone(),
             CancellationToken::default(),
         )
@@ -1015,7 +1068,7 @@ mod tests {
             })
             .collect();
         let configs: Vec<_> = (0..stage_count)
-            .map(|n| json!({"mode":if kill_owner && n==1 { "executeHold" } else if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
+            .map(|n| json!({"mode":if (kill_owner || protect_owner) && n==1 { "executeHold" } else if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
         graph_nodes.extend(ids.iter().zip(&configs).zip(nodes.iter().copied()).map(
@@ -1169,6 +1222,20 @@ mod tests {
             println!("capacity probe: both slots held, queued input cancelled, owners released");
             first_revision = 2;
         }
+        let mut protected_handles = Vec::new();
+        if protect_owner {
+            use windows_sys::Win32::{
+                Foundation::WAIT_TIMEOUT,
+                System::Threading::{OpenProcess, WaitForSingleObject},
+            };
+            for (owner, pid) in owners.iter().zip(&pids) {
+                assert_eq!(owner.process_id(), Some(*pid));
+                let handle = unsafe { OpenProcess(0x0010_0000, 0, u32::try_from(*pid).unwrap()) };
+                assert!(!handle.is_null());
+                assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+                protected_handles.push(handle);
+            }
+        }
         let mut last_key = None;
         let sample_marker = |marker: &str| {
             if interval_ms > 0
@@ -1221,6 +1288,28 @@ mod tests {
                 .collect();
             let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":output_targets,"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
+            if protect_owner {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !owners[1].active_input() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "second owner never accepted input"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                gate.set_protection(true, false);
+                assert!(
+                    controller.get_run(&receipt.key).is_err(),
+                    "protected result readable"
+                );
+                gate.set_protection(false, false);
+                assert!(
+                    controller.get_run(&receipt.key).is_err(),
+                    "old result revived"
+                );
+                println!("split-protection old_result_denied=true after_clear_denied=true");
+                break;
+            }
             if kill_owner {
                 let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 while !owners[1].active_input() {
@@ -1357,6 +1446,23 @@ mod tests {
         let cleanup_started = std::time::Instant::now();
         controller.close();
         drop(owners);
+        for handle in protected_handles {
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, WAIT_OBJECT_0},
+                System::Threading::WaitForSingleObject,
+            };
+            assert_eq!(
+                unsafe { WaitForSingleObject(handle, 10_000) },
+                WAIT_OBJECT_0,
+                "original owner not reaped"
+            );
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+        if protect_owner {
+            println!("split-protection original_owner_handles_signalled=2");
+        }
         drop(controller);
         drop(service);
         drop(registry);
