@@ -88,3 +88,17 @@ ready-or-fallback の遅延比較は未実施。現行補充ハーネスは lane
 ```powershell
 cargo test --locked --lib cancel_generic_raw_idle_worker -- --ignored --nocapture
 ```
+## 制御した未準備判定と1枠フォールバック
+
+検査専用の1枠対照を追加した。投機 Worker が原本を JIT し実際には ready マーカーを送った時点で、その通知をスケジューラに渡さないよう試験が制御し、同時刻を入力到着として未準備扱いにする。投機 Worker を取消して OS の終了を確認し、Job と ACL / profile を回収した**後にのみ**同じ入力の通常 JIT Worker を起動する。対照は同一入力を投機なしで入力到着時に起動。16組を交互順に測り、32/32件の応答一致・通常 Worker の正常終了と、16/16件の投機 Worker の取消・物理終了を確認した。投機と代替を重複起動しない。
+
+| 入力到着からの時間 | 投機なし P50 / P95 | 制御した未準備→取消→代替 P50 / P95 |
+| --- | ---: | ---: |
+| 代替または通常 Worker の実終了確認 | 78.81 / 1097.56 ms | 94.32 / 106.05 ms |
+| 最終回収 | 84.76 / 1104.26 ms | 100.10 / 112.19 ms |
+
+未準備側の投機 Worker の終了確認は P50 / P95 12.10 / 18.03 ms、回収は17.98 / 23.74 ms。各 P95 は16件の最大値であり、投機なし側には約1.1秒の外れ値が含まれる。これは待機中の1入力を必ず処理する人工的な miss の単発試験で、実際の準備途中での到着や実用スケジューラの readiness race、入力置換・破棄・連続入力は測らない。投機側は実際にはマーカー送信済みであり、未準備は通知を意図的に伏せた判定である。生ログは `issue86-generic-raw-controlled-fallback.log`。
+
+```powershell
+cargo test --locked --lib compare_raw_controlled_miss_fallback -- --ignored --nocapture
+```

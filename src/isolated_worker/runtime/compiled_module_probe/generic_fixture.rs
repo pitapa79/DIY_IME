@@ -398,3 +398,95 @@ fn cancel_generic_raw_idle_worker() {
     fs::remove_dir(cache.path()).unwrap();
     naming.delete().unwrap();
 }
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_raw_controlled_miss_fallback() {
+    use crate::execution_control::CancellationToken;
+    use std::{sync::{atomic::AtomicU64, mpsc}, thread};
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let fixture = fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache.copy(&std::env::current_exe().unwrap(), "probe.exe").unwrap();
+    let dll = cache.copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll").unwrap();
+    let module = cache.copy(&fixture, "generic.wasm").unwrap();
+    let hash = cache.write("generic.sha256", digest(&fs::read(&fixture).unwrap()).as_bytes()).unwrap();
+    let mode = cache.write("mode.txt", b"ready-generic-jit").unwrap();
+    for pair in 0..16 {
+        for miss in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+            let text = format!("fallback-{pair}");
+            let mut arrival = None;
+            let mut speculative_exit_us = 0;
+            let mut speculative_recovery_us = 0;
+            if miss {
+                let mut profile = Profile::new().unwrap();
+                cache.allow_read_execute(&profile).unwrap();
+                let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+                let cancel = CancellationToken::default();
+                let control = RunControl { cancel: cancel.clone(), walltime: Some(Duration::from_secs(10)), ..RunControl::default() };
+                let (marker_tx, marker_rx) = mpsc::sync_channel(1);
+                thread::scope(|scope| {
+                    let worker = WorkerScope::observed(&profile, &job, &cache, AtomicU64::new(0).into())
+                        .with_test_exchange(Box::new(move |output, _input| {
+                            let mut output = std::io::BufReader::new(output);
+                            speculative::read_marker(&mut output, PROBE_READY).map_err(|e| e.to_string())?;
+                            marker_tx.send(()).map_err(|e| e.to_string())?;
+                            let mut tail = Vec::new();
+                            output.take((CAP + 1) as u64).read_to_end(&mut tail).map_err(|e| e.to_string())?;
+                            Ok(tail)
+                        }));
+                    let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+                    let trigger = scope.spawn(move || {
+                        marker_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                        // The test deliberately withholds ready from the scheduler.
+                        let arrival = Instant::now();
+                        cancel.cancel();
+                        arrival
+                    });
+                    let Outcome::Exited(receipt) = execute_observed(worker, &exe, &args, Vec::new(), &control).unwrap() else { panic!("speculative exit unconfirmed") };
+                    let at = trigger.join().unwrap();
+                    assert_eq!(receipt.reason(), EndReason::Cancelled);
+                    speculative_exit_us = receipt.signalled_at.saturating_duration_since(at).as_micros();
+                    arrival = Some(at);
+                });
+                drop(job);
+                cache.revoke_read_execute(&profile).unwrap();
+                profile.delete().unwrap();
+                speculative_recovery_us = arrival.unwrap().elapsed().as_micros();
+            }
+            let at = arrival.unwrap_or_else(Instant::now);
+            // This launch occurs only after the speculative process and profile are recovered.
+            let mut profile = Profile::new().unwrap();
+            cache.allow_read_execute(&profile).unwrap();
+            let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+            let control = RunControl { walltime: Some(Duration::from_secs(10)), ..RunControl::default() };
+            let bytes = request(&text);
+            let worker = WorkerScope::observed(&profile, &job, &cache, AtomicU64::new(0).into())
+                .with_test_exchange(Box::new(move |output, mut input| {
+                    let mut output = std::io::BufReader::new(output);
+                    speculative::read_marker(&mut output, PROBE_READY).map_err(|e| e.to_string())?;
+                    input.write_all(&bytes).map_err(|e| e.to_string())?;
+                    drop(input);
+                    let mut result = Vec::new();
+                    output.take((CAP + 1) as u64).read_to_end(&mut result).map_err(|e| e.to_string())?;
+                    Ok(result)
+                }));
+            let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+            let Outcome::Exited(receipt) = execute_observed(worker, &exe, &args, Vec::new(), &control).unwrap() else { panic!("fallback exit unconfirmed") };
+            assert_eq!(receipt.reason(), EndReason::Exited);
+            assert_eq!(receipt.exit_code(), Some(0));
+            let confirmed_us = receipt.signalled_at.saturating_duration_since(at).as_micros();
+            let (_, result) = probe_frame(receipt.output().unwrap());
+            let value: serde_json::Value = serde_json::from_slice(result).unwrap();
+            assert_eq!(value["ok"], true);
+            assert_eq!(value["data"]["out"]["packet"]["root"]["text"], text);
+            drop(job);
+            cache.revoke_read_execute(&profile).unwrap();
+            profile.delete().unwrap();
+            println!("raw-controlled-fallback pair={pair} miss={miss} speculative_exit_us={speculative_exit_us} speculative_recovery_us={speculative_recovery_us} confirmed_us={confirmed_us} recovered_us={}", at.elapsed().as_micros());
+        }
+    }
+    for path in [mode, hash, module, dll, exe] { fs::remove_file(path).unwrap(); }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
+}
