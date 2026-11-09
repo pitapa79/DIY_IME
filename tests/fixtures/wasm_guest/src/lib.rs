@@ -56,6 +56,7 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
                     "echo"
                         | "cpu"
                         | "echo2"
+                        | "forward"
                         | "hold"
                         | "executeHold"
                         | "oversize"
@@ -193,7 +194,9 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             if mode == Some("forge") {
                 return br#"{"apiVersion":1,"ok":true,"data":{"out":{"state":"noOutput"}},"physicalExit":true}"#.to_vec();
             }
-            if mode == Some("noOutput") {
+            if mode == Some("forward") {
+                json!({"out":{"state":"data","packet":op["inputs"]["in"]["packet"]}})
+            } else if mode == Some("noOutput") {
                 json!({"out":{"state":"noOutput"}})
             } else {
                 json!({"out":{"state":"data","packet":{"version":1,"root":{"type":"text","text":String::from_utf8(bytes.to_vec()).unwrap()}}}})
