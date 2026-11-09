@@ -21,10 +21,15 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             // Existing fixture.wasm/alt declarations remain unchanged.
             if matches!(
                 request["node"]["kind"].as_str(),
-                Some("fixture.wasm.chain" | "fixture.wasm.chain-alt")
+                Some("fixture.wasm.chain" | "fixture.wasm.chain-alt" | "fixture.wasm.join")
             ) {
                 definition["kind"] = request["node"]["kind"].clone();
                 definition["outputs"][0]["language"] = json!("ja-Latn");
+            }
+            if request["node"]["kind"] == "fixture.wasm.join" {
+                let mut other = definition["inputs"][0].clone();
+                other["port"]["id"] = json!("other");
+                definition["inputs"].as_array_mut().unwrap().push(other);
             }
             if request["node"]["kind"] == "fixture.wasm.duplicate" {
                 definition["kind"] = request["node"]["kind"].clone();
@@ -57,6 +62,7 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
                         | "cpu"
                         | "echo2"
                         | "forward"
+                        | "join"
                         | "hold"
                         | "executeHold"
                         | "oversize"
@@ -196,6 +202,14 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             }
             if mode == Some("forward") {
                 json!({"out":{"state":"data","packet":op["inputs"]["in"]["packet"]}})
+            } else if mode == Some("join") {
+                let left = op["inputs"]["in"]["packet"]["root"]["text"]
+                    .as_str()
+                    .unwrap();
+                let right = op["inputs"]["other"]["packet"]["root"]["text"]
+                    .as_str()
+                    .unwrap();
+                json!({"out":{"state":"data","packet":{"version":1,"root":{"type":"text","text":format!("{left}|{right}")}}}})
             } else if mode == Some("noOutput") {
                 json!({"out":{"state":"noOutput"}})
             } else {
