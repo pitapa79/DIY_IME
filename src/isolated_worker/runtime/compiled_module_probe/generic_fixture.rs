@@ -343,3 +343,58 @@ fn refill(raw: bool) {
     fs::remove_dir(cache.path()).unwrap();
     naming.delete().unwrap();
 }
+
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn cancel_generic_raw_idle_worker() {
+    use crate::execution_control::CancellationToken;
+    use std::{sync::{atomic::AtomicU64, mpsc}, thread};
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let fixture = fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache.copy(&std::env::current_exe().unwrap(), "probe.exe").unwrap();
+    let dll = cache.copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll").unwrap();
+    let module = cache.copy(&fixture, "generic.wasm").unwrap();
+    let hash = cache.write("generic.sha256", digest(&fs::read(&fixture).unwrap()).as_bytes()).unwrap();
+    let mode = cache.write("mode.txt", b"ready-generic-jit").unwrap();
+    for index in 0..16 {
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+        let cancel = CancellationToken::default();
+        let control = RunControl { cancel: cancel.clone(), walltime: Some(Duration::from_secs(10)), ..RunControl::default() };
+        let (ready_send, ready_receive) = mpsc::sync_channel(1);
+        let started = Instant::now();
+        thread::scope(|scope| {
+            let worker = WorkerScope::observed(&profile, &job, &cache, AtomicU64::new(0).into())
+                .with_test_exchange(Box::new(move |output, _input| {
+                    let mut output = std::io::BufReader::new(output);
+                    speculative::read_marker(&mut output, PROBE_READY).map_err(|e| e.to_string())?;
+                    ready_send.send(Instant::now()).map_err(|e| e.to_string())?;
+                    let mut tail = Vec::new();
+                    output.take((CAP + 1) as u64).read_to_end(&mut tail).map_err(|e| e.to_string())?;
+                    Ok(tail)
+                }));
+            let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+            let cancel_thread = scope.spawn(move || {
+                let ready = ready_receive.recv_timeout(Duration::from_secs(10)).unwrap();
+                let cancelled = Instant::now();
+                cancel.cancel();
+                (ready, cancelled)
+            });
+            let Outcome::Exited(receipt) = execute_observed(worker, &exe, &args, Vec::new(), &control).unwrap() else { panic!("physical exit unconfirmed") };
+            let (ready, cancelled) = cancel_thread.join().unwrap();
+            assert_eq!(receipt.reason(), EndReason::Cancelled);
+            let signalled_us = receipt.signalled_at.saturating_duration_since(cancelled).as_micros();
+            let (cpu, peak) = job_usage(&job);
+            drop(job);
+            cache.revoke_read_execute(&profile).unwrap();
+            profile.delete().unwrap();
+            println!("raw-idle-cancel index={index} ready_us={} signalled_us={signalled_us} recovered_us={} cpu_100ns={cpu} peak_job_bytes={peak}", ready.duration_since(started).as_micros(), cancelled.elapsed().as_micros());
+        });
+    }
+    for path in [mode, hash, module, dll, exe] { fs::remove_file(path).unwrap(); }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
+}

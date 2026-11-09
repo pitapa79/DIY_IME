@@ -79,3 +79,12 @@ cargo test --locked --lib compare_generic_one_shot_refill -- --ignored --nocaptu
 ```powershell
 cargo test --locked --lib compare_generic_raw_one_shot_refill -- --ignored --nocapture
 ```
+## 準備後に未使用の Worker を取り消す検査
+
+ready-or-fallback の遅延比較は未実施。現行補充ハーネスは lane スレッドが `execute_observed` と準備通知・入力送信・回収を一括所有し、予定時刻に未準備の Worker を判定して取り消し、同じ物理枠の終了を確認してから代替を起動するスケジューラを持たない。実装には、準備途中の所有者と取消 token をスケジューラに公開し、物理終了・回収まで枠を予約したまま待ち、代替の起動をその後に許す状態機械が必要。さらに枯渇時に入力を待機・置換・破棄する条件を定義する必要がある。単に追加 Worker を起動すると同じ上限の比較にならない。
+
+代わりに原本 JIT Worker が ready を通知した直後、入力を送らず取消し、OS の終了確認と Job / ACL / profile 回収を16回測定した。全16回で取消と物理終了を確認。取消から終了確認の P50 / P95 は12.62 / 18.21 ms、回収完了は18.55 / 24.99 ms。単体 Job CPU P50 は250 ms、Job ピークメモリ P50 は約44.2 MiB（各 Worker 単体）。準備完了から直ちに取消した検査であり、準備途中の取消、代替起動、予定時刻からの応答、入力の置換・破棄を測っていない。16件の P95 は最大値であり、デバッグ検査と合成 Wasm の範囲に限る。生ログは `issue86-generic-raw-idle-cancel.log`。
+
+```powershell
+cargo test --locked --lib cancel_generic_raw_idle_worker -- --ignored --nocapture
+```
