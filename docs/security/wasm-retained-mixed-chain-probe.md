@@ -13,10 +13,22 @@
 
 ## 再現
 
+同じ条件で、段数を変えた追加試験も実施した。各条件は8件正答。下表は初回を除く7件の中央値で、裾の分位点を判断するには少ない。保持側の初回準備は92–124 ms。全条件で入力の失効、保護後の照会拒否、所有資源とコード資産の回収を確認した。
+
+| 直列段数 | 使い捨て P50 | 保持 P50 |
+| ---: | ---: | ---: |
+| 1 | 85.67 ms | 1.09 ms |
+| 2 | 169.64 ms | 1.64 ms |
+| 8 | 680.41 ms | 5.25 ms |
+| 16 | 1387.88 ms | 10.81 ms |
+
+4段以外では試験から内部の構築関数を直接呼ぶ。製品側の入口は従来どおり4段を要求する。
+
 #85 の検査用ソースから標準 release と `CARGO_PROFILE_RELEASE_OPT_LEVEL=2` を異なる target ディレクトリでビルドする。標準と代替の絶対パスを `DIY_RETAINED_HOST_FIXTURE_WASM` と `DIY_RETAINED_ALT_FIXTURE_WASM` に設定する。配布物の Worker と DLL を `DIY_RANGE_WORKER_BINARY` と `DIY_RANGE_RUNTIME_DLL` に指定する。
 
 ```powershell
 cargo test --locked --lib compare_core_mixed_chain -- --ignored --nocapture
+cargo test --locked --lib compare_core_chain_lengths -- --ignored --nocapture
 ```
 
-試験は直接 Core の検査用構成に既存の保持所有者を接続する。通常 Host の適格性判定は試験対象外。相互に異なる Wasm が同一 AppContainer を共有する場合、OS 分離の単位と結果の採用時点が従来と異なる。これらの仕様判断は #88 で扱う。ノード数、分岐、権限付き資源、20/100 ms、CPU/RAM、実行中の取消・異常終了は次の比較に残る。
+試験は直接 Core の検査用構成に保持所有者を接続する。通常 Host の適格性判定は試験対象外。相互に異なる Wasm が同一 AppContainer を共有する場合、OS 分離の単位と結果の採用時点が従来と異なる。これらの仕様判断は #88 で扱う。分岐、権限付き資源、20/100 ms、CPU/RAM、実行中の取消・異常終了は次の比較に残る。

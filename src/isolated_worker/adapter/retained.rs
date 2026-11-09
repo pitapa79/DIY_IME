@@ -186,6 +186,17 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
+        if stages.len() != 4 {
+            return Err(fail("retained-plan", "four prepared stages required"));
+        }
+        Self::install_stages(host, controller, stages)
+    }
+
+    fn install_stages(
+        host: ExecutionHost,
+        controller: GuardedController,
+        stages: Vec<(String, WasmNode, Value)>,
+    ) -> Result<Option<Self>, CoreError> {
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
         let mut configs = Vec::new();
@@ -193,9 +204,6 @@ impl Owner {
             ids.push(id);
             nodes.push(node);
             configs.push(config);
-        }
-        if nodes.len() != 4 {
-            return Err(fail("retained-plan", "four prepared stages required"));
         }
         let policy = &nodes[0].artifact.0.policy;
         // Unsupported policies keep the legacy path; never add fuel/memory caps.
@@ -448,7 +456,7 @@ impl Native {
         let (client, request) = RetainedClient::channel(
             host.clone(),
             pin.clone(),
-            vec![0, 1, 2, 3],
+            (0..nodes.len()).collect(),
             DriverPolicy {
                 idle_timeout: Duration::from_secs(60),
                 input_timeout: Duration::from_secs(120),
@@ -750,7 +758,7 @@ fn coordinate(
                 completed += 1;
                 let _ = command.done.send(());
             }
-            if completed == 4 {
+            if completed == nodes.len() {
                 finished = input.take().unwrap().finish(|| Ok(())).is_ok();
                 break;
             }
@@ -759,7 +767,7 @@ fn coordinate(
             }
             let snapshot = controller.get_run(&key);
             if shared.completed(&key) || snapshot.as_ref().is_ok_and(successful) {
-                let suffix: Vec<_> = (completed..4).collect();
+                let suffix: Vec<_> = (completed..nodes.len()).collect();
                 finished = input
                     .take()
                     .unwrap()
@@ -785,7 +793,7 @@ fn coordinate(
                     } else {
                         pending = Some(command);
                         if shared.completed(&key) {
-                            let suffix: Vec<_> = (completed..4).collect();
+                            let suffix: Vec<_> = (completed..nodes.len()).collect();
                             finished = input
                                 .take()
                                 .unwrap()
@@ -837,18 +845,28 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None);
+        run_core_fixture(None, 4, 3);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained));
+            run_core_fixture(Some(retained), 4, 24);
         }
     }
 
-    fn run_core_fixture(retained: Option<bool>) {
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_chain_lengths() {
+        for stages in [1, 2, 8, 16] {
+            for retained in [false, true] {
+                run_core_fixture(Some(retained), stages, 8);
+            }
+        }
+    }
+
+    fn run_core_fixture(retained: Option<bool>, stage_count: usize, count: u64) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
         };
@@ -918,29 +936,28 @@ mod tests {
         register_system_nodes(&mut registry).unwrap();
         registry.register_deferred(node.clone()).unwrap();
         registry.register_deferred(alternate_node.clone()).unwrap();
-        let ids: Vec<_> = (0..4).map(|n| format!("stage{n}")).collect();
-        let nodes = [
-            &node,
-            &alternate_node,
-            &node,
-            if retained.is_some() {
-                &alternate_node
-            } else {
-                &node
-            },
-        ];
-        let configs: Vec<_> = (0..4)
+        let ids: Vec<_> = (0..stage_count).map(|n| format!("stage{n}")).collect();
+        let nodes: Vec<_> = (0..stage_count)
+            .map(|index| {
+                if index == 1 || (retained.is_some() && index % 2 == 1) {
+                    &alternate_node
+                } else {
+                    &node
+                }
+            })
+            .collect();
+        let configs: Vec<_> = (0..stage_count)
             .map(|n| json!({"mode":if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
-        graph_nodes.extend(ids.iter().zip(&configs).zip(nodes).map(
+        graph_nodes.extend(ids.iter().zip(&configs).zip(nodes.iter().copied()).map(
             |((id, config), node)| {
                 json!({"id":id,"kind":node.definition.kind,"version":1,"config":config})
             },
         ));
         let mut edges =
             vec![json!({"from":{"node":"input","port":"out"},"to":{"node":ids[0],"port":"in"}})];
-        edges.extend((0..3).map(
+        edges.extend((0..stage_count - 1).map(
             |i| json!({"from":{"node":ids[i],"port":"out"},"to":{"node":ids[i+1],"port":"in"}}),
         ));
         let graph =
@@ -967,7 +984,7 @@ mod tests {
             .unwrap();
         let targets: Vec<_> = ids
             .iter()
-            .zip(nodes)
+            .zip(nodes.iter().copied())
             .map(|(id, node)| {
                 node.grant_target(raw.session_epoch(), DecimalId::new(1).unwrap(), id)
             })
@@ -984,7 +1001,12 @@ mod tests {
             .collect();
         let ready_started = std::time::Instant::now();
         let owner = if retained != Some(false) {
-            let owner = Owner::install(host.clone(), controller.clone(), stages)
+            let install = if stage_count == 4 {
+                Owner::install
+            } else {
+                Owner::install_stages
+            };
+            let owner = install(host.clone(), controller.clone(), stages)
                 .unwrap()
                 .unwrap();
             owner.start();
@@ -1004,12 +1026,11 @@ mod tests {
         };
         if let Some(mode) = retained {
             println!(
-                "mixed-core retained={mode} ready_us={}",
+                "mixed-core retained={mode} stages={stage_count} ready_us={}",
                 ready_started.elapsed().as_micros()
             );
         }
         let pid = owner.as_ref().and_then(Owner::process_id);
-        let count = if retained.is_some() { 24 } else { 3 };
         let mut last_key = None;
         for revision in 1..=count {
             let start = std::time::Instant::now();
@@ -1028,7 +1049,7 @@ mod tests {
                 }
             }
             let input = format!("sample-{revision}");
-            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[3],"port":"out"}],"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
+            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[stage_count - 1],"port":"out"}],"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
             if retained.is_some() {
                 last_key = Some(receipt.key.clone());
@@ -1060,7 +1081,9 @@ mod tests {
                         .unwrap();
                     assert_eq!(port.value["packet"]["root"]["text"], input);
                 }
-                println!("mixed-core retained={mode} revision={revision} elapsed_us={elapsed}");
+                println!(
+                    "mixed-core retained={mode} stages={stage_count} revision={revision} elapsed_us={elapsed}"
+                );
             } else {
                 assert_eq!(result.delivery, RunDelivery::NoOutput);
                 for id in &ids[2..] {
@@ -1074,7 +1097,12 @@ mod tests {
                 assert_eq!(owner.process_id(), pid);
                 assert_eq!(
                     owner.shared.replies.load(Ordering::Acquire),
-                    revision * if retained.is_some() { 4 } else { 2 },
+                    revision
+                        * if retained.is_some() {
+                            stage_count as u64
+                        } else {
+                            2
+                        },
                     "every executed stage must return exactly one reply"
                 );
             }
