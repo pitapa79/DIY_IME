@@ -13,6 +13,7 @@ use std::{
 };
 
 mod dictionary_wire;
+mod generic_fixture;
 
 const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
@@ -127,6 +128,8 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode.starts_with("generic-") {
+        generic_fixture::child(api.as_ref().unwrap(), &mode, input)
     } else if mode == "dictionary-wire" {
         dictionary_wire::guest(api.as_ref().unwrap(), input)
     } else if mode == "persistent" {
