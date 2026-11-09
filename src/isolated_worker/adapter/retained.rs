@@ -837,6 +837,18 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
+        run_core_fixture(None);
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_mixed_chain() {
+        for retained in [false, true, true, false] {
+            run_core_fixture(Some(retained));
+        }
+    }
+
+    fn run_core_fixture(retained: Option<bool>) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
         };
@@ -860,45 +872,65 @@ mod tests {
             WasmArtifact::capture(&workspace, &worker, &dll, module.clone(), policy.clone())
                 .unwrap();
         // A valid custom section gives the second stage a separate code identity.
-        let mut alternate_module = module;
-        alternate_module.extend_from_slice(&[0, 2, 1, b'x']);
+        let mut alternate_module = module.clone();
+        if retained.is_some() {
+            alternate_module = std::fs::read(required("DIY_RETAINED_ALT_FIXTURE_WASM")).unwrap();
+            assert_ne!(module, alternate_module);
+        } else {
+            alternate_module.extend_from_slice(&[0, 2, 1, b'x']);
+        }
         let alternate_artifact = artifact.with_module(alternate_module, policy).unwrap();
         let gate = ExecutionGate::default();
         let node = artifact
             .prepare(
                 "fixture.wasm.chain",
                 1,
-                vec![json!({"mode":"noOutput"})],
+                vec![json!({"mode":if retained.is_some() { "forward" } else { "noOutput" }})],
                 gate.clone(),
                 CancellationToken::default(),
             )
             .unwrap();
-        let alternate_node = artifact
-            .prepare(
-                "fixture.wasm.chain-alt",
-                1,
-                vec![json!({"mode":"preparedNoOutput"})],
-                gate.clone(),
-                CancellationToken::default(),
-            )
-            .unwrap();
-        assert!(
-            alternate_node
-                .prepared_dictionary
-                .set(super::prepared::PreparedDictionary {
-                    consumer: alternate_artifact.clone(),
-                    index: PreparedArtifact::retained_fixture(),
-                })
-                .is_ok()
-        );
+        let alternate_node = if retained.is_some() {
+            &alternate_artifact
+        } else {
+            &artifact
+        }
+        .prepare(
+            "fixture.wasm.chain-alt",
+            1,
+            vec![json!({"mode":if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
+            gate.clone(),
+            CancellationToken::default(),
+        )
+        .unwrap();
+        if retained.is_none() {
+            assert!(
+                alternate_node
+                    .prepared_dictionary
+                    .set(super::prepared::PreparedDictionary {
+                        consumer: alternate_artifact.clone(),
+                        index: PreparedArtifact::retained_fixture(),
+                    })
+                    .is_ok()
+            );
+        }
         let mut registry = Registry::new();
         register_system_nodes(&mut registry).unwrap();
         registry.register_deferred(node.clone()).unwrap();
         registry.register_deferred(alternate_node.clone()).unwrap();
         let ids: Vec<_> = (0..4).map(|n| format!("stage{n}")).collect();
-        let nodes = [&node, &alternate_node, &node, &node];
+        let nodes = [
+            &node,
+            &alternate_node,
+            &node,
+            if retained.is_some() {
+                &alternate_node
+            } else {
+                &node
+            },
+        ];
         let configs: Vec<_> = (0..4)
-            .map(|n| json!({"mode":if n==1{"preparedNoOutput"}else{"echo"}}))
+            .map(|n| json!({"mode":if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
         graph_nodes.extend(ids.iter().zip(&configs).zip(nodes).map(
@@ -950,32 +982,60 @@ mod tests {
             .zip(nodes)
             .map(|((id, config), node)| (id.clone(), node.clone(), config.clone()))
             .collect();
-        let owner = Owner::install(host.clone(), controller.clone(), stages)
-            .unwrap()
-            .unwrap();
-        owner.start();
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while !owner.ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "remaining ownership: {:?}",
-                host.usage()
+        let ready_started = std::time::Instant::now();
+        let owner = if retained != Some(false) {
+            let owner = Owner::install(host.clone(), controller.clone(), stages)
+                .unwrap()
+                .unwrap();
+            owner.start();
+            let deadline = ready_started + Duration::from_secs(20);
+            while !owner.ready() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "remaining ownership: {:?}",
+                    host.usage()
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Some(owner)
+        } else {
+            drop(stages);
+            None
+        };
+        if let Some(mode) = retained {
+            println!(
+                "mixed-core retained={mode} ready_us={}",
+                ready_started.elapsed().as_micros()
             );
-            std::thread::sleep(Duration::from_millis(2));
         }
-        let pid = owner.process_id().unwrap();
-        for revision in 1..=3 {
+        let pid = owner.as_ref().and_then(Owner::process_id);
+        let count = if retained.is_some() { 24 } else { 3 };
+        let mut last_key = None;
+        for revision in 1..=count {
+            let start = std::time::Instant::now();
             if revision > 1 {
-                owner.witness_terminal(&controller);
+                if let Some(owner) = &owner {
+                    owner.witness_terminal(&controller);
+                }
                 controller
                     .invalidate_input(DecimalId::new(1).unwrap(), revision)
                     .unwrap();
+                if let Some(previous) = &last_key {
+                    let stale = controller.get_run(previous).unwrap();
+                    // Direct Core snapshots retain history. The External Host
+                    // filters the payload before responding to its client.
+                    assert!(!stale.current);
+                }
             }
-            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[3],"port":"out"}],"input":{"revision":revision,"text":"sample","mode":"compose"}})).unwrap();
+            let input = format!("sample-{revision}");
+            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[3],"port":"out"}],"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
+            if retained.is_some() {
+                last_key = Some(receipt.key.clone());
+            }
             let deadline = std::time::Instant::now() + Duration::from_secs(20);
             let snapshot = loop {
-                let snapshot = controller.get_run(&receipt.key).unwrap();
+                let snapshot = controller.wait_run(&receipt.key).unwrap();
                 if snapshot.state == RunPhase::Terminal
                     && snapshot.physical.running == 0
                     && snapshot.physical.cancel_requested == 0
@@ -987,24 +1047,45 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(2));
             };
-            assert_eq!(
-                snapshot.result.as_ref().unwrap().delivery,
-                RunDelivery::NoOutput
-            );
+            let elapsed = start.elapsed().as_micros();
             let result = snapshot.result.unwrap();
-            for id in &ids[2..] {
+            if let Some(mode) = retained {
+                assert_eq!(result.delivery, RunDelivery::Complete);
+                assert!(result.causes.is_empty());
+                for id in &ids {
+                    let port = result
+                        .ports
+                        .iter()
+                        .find(|port| port.endpoint.node == *id)
+                        .unwrap();
+                    assert_eq!(port.value["packet"]["root"]["text"], input);
+                }
+                println!("mixed-core retained={mode} revision={revision} elapsed_us={elapsed}");
+            } else {
+                assert_eq!(result.delivery, RunDelivery::NoOutput);
+                for id in &ids[2..] {
+                    assert_eq!(
+                        result.nodes.iter().find(|n| n["nodeId"] == *id).unwrap()["status"],
+                        "skipped"
+                    );
+                }
+            }
+            if let Some(owner) = &owner {
+                assert_eq!(owner.process_id(), pid);
                 assert_eq!(
-                    result.nodes.iter().find(|n| n["nodeId"] == *id).unwrap()["status"],
-                    "skipped"
+                    owner.shared.replies.load(Ordering::Acquire),
+                    revision * if retained.is_some() { 4 } else { 2 },
+                    "every executed stage must return exactly one reply"
                 );
             }
-            assert_eq!(owner.process_id(), Some(pid));
-            assert_eq!(
-                owner.shared.replies.load(Ordering::Acquire),
-                revision * 2,
-                "Core Skipped suffix must not cause invented native calls"
-            );
         }
+        if let Some(key) = last_key {
+            gate.set_protection(true, false);
+            assert!(controller.get_run(&key).is_err());
+            gate.set_protection(false, false);
+            assert!(controller.get_run(&key).is_err());
+        }
+        let cleanup_started = std::time::Instant::now();
         controller.close();
         drop(owner);
         drop(controller);
@@ -1049,5 +1130,11 @@ mod tests {
         }
         std::fs::remove_dir(workspace.join("target")).unwrap();
         std::fs::remove_dir(workspace).unwrap();
+        if let Some(mode) = retained {
+            println!(
+                "mixed-core retained={mode} session_cleanup_us={}",
+                cleanup_started.elapsed().as_micros()
+            );
+        }
     }
 }
