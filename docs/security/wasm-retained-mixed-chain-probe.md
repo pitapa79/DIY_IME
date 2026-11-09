@@ -101,3 +101,12 @@ cargo test --locked --lib compare_core_isolation_groups_at_default_capacity -- -
 ```powershell
 cargo test --locked --lib compare_core_parallel_independent_outputs -- --ignored --nocapture
 ```
+## 分離 owner の片側異常終了
+
+上の2分岐・異なる2モジュール・容量4枠で、stage1 の検査用 Wasm を入力中に停止する構成にした。2つの保持 owner の異なる PID を確認し、stage1 が入力を受理した後にその PID のプロセス handle を開いた。対象が未終了であることと owner の PID が一致することを確認して、その handle だけに `TerminateProcess` を実行し、OS の signal を待った。もう一方の owner は終了直後も未終了と確認した。
+
+その入力の Core snapshot は current のまま terminal となり、配送は `Failed`、原因は stage1 の `retained-transport` だった（terminal reason は `Completed`）。完了時に入力用の running / cancel-requested / stalled / queued がゼロとなり、session close 後は両 owner の thread を join、Host 全資源がゼロとなって試験用作業領域も削除できた。1回の決定的な synthetic fault であり、通常 External Host の公開応答、実際の第三者 Node、他の同時入力や再起動後の成功、保護・権限変更との競合を証明しない。生ログは `issue87-split-owner-fault.log`。
+
+```powershell
+cargo test --locked --lib split_owner_termination_during_input -- --ignored --nocapture
+```

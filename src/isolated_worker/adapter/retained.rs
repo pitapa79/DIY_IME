@@ -845,14 +845,14 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None, 4, 3, 0, None, false);
+        run_core_fixture(None, 4, 3, 0, None, false, false);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 4, 24, 0, None, false);
+            run_core_fixture(Some(retained), 4, 24, 0, None, false, false);
         }
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn compare_core_chain_lengths() {
         for stages in [1, 2, 8, 16] {
             for retained in [false, true] {
-                run_core_fixture(Some(retained), stages, 8, 0, None, false);
+                run_core_fixture(Some(retained), stages, 8, 0, None, false, false);
             }
         }
     }
@@ -870,7 +870,7 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_chain_cadences() {
         for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
-            run_core_fixture(Some(retained), 4, 16, interval_ms, None, false);
+            run_core_fixture(Some(retained), 4, 16, interval_ms, None, false, false);
         }
     }
 
@@ -885,7 +885,7 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)), false);
+            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)), false, false);
         }
     }
 
@@ -893,7 +893,7 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_isolation_groups_at_default_capacity() {
         for (retained, split) in [(false, false), (true, false), (true, true)] {
-            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)), false);
+            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)), false, false);
         }
     }
 
@@ -908,7 +908,7 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)), false);
+            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)), false, false);
         }
     }
 
@@ -916,8 +916,14 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_parallel_independent_outputs() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some((true, 4)), true);
+            run_core_fixture(Some(retained), 2, 16, 0, Some((true, 4)), true, false);
         }
+    }
+
+    #[test]
+    #[ignore = "requires real Windows Worker/runtime and two chain fixture builds"]
+    fn split_owner_termination_during_input() {
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, true);
     }
 
     fn run_core_fixture(
@@ -927,6 +933,7 @@ mod tests {
         interval_ms: u64,
         isolation_comparison: Option<(bool, u64)>,
         parallel: bool,
+        kill_owner: bool,
     ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
@@ -977,7 +984,7 @@ mod tests {
         .prepare(
             "fixture.wasm.chain-alt",
             1,
-            vec![json!({"mode":if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
+            vec![json!({"mode":if kill_owner { "executeHold" } else if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
             gate.clone(),
             CancellationToken::default(),
         )
@@ -1008,7 +1015,7 @@ mod tests {
             })
             .collect();
         let configs: Vec<_> = (0..stage_count)
-            .map(|n| json!({"mode":if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
+            .map(|n| json!({"mode":if kill_owner && n==1 { "executeHold" } else if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
         graph_nodes.extend(ids.iter().zip(&configs).zip(nodes.iter().copied()).map(
@@ -1214,6 +1221,43 @@ mod tests {
                 .collect();
             let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":output_targets,"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
+            if kill_owner {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !owners[1].active_input() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "second owner never accepted input"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                use windows_sys::Win32::{
+                    Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                    System::Threading::{
+                        OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+                    },
+                };
+                let other_pid = u32::try_from(pids[0]).unwrap();
+                let other = unsafe { OpenProcess(0x0010_0000, 0, other_pid) };
+                assert!(!other.is_null());
+                assert_eq!(owners[0].process_id(), Some(u64::from(other_pid)));
+                assert_eq!(unsafe { WaitForSingleObject(other, 0) }, WAIT_TIMEOUT);
+                let pid = u32::try_from(pids[1]).unwrap();
+                let handle = unsafe { OpenProcess(PROCESS_TERMINATE | 0x0010_0000, 0, pid) };
+                assert!(!handle.is_null());
+                assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+                assert_eq!(owners[1].process_id(), Some(u64::from(pid)));
+                assert_ne!(unsafe { TerminateProcess(handle, 77) }, 0);
+                assert_eq!(
+                    unsafe { WaitForSingleObject(handle, 10_000) },
+                    WAIT_OBJECT_0
+                );
+                assert_eq!(unsafe { WaitForSingleObject(other, 0) }, WAIT_TIMEOUT);
+                unsafe {
+                    CloseHandle(handle);
+                    CloseHandle(other);
+                }
+                println!("split-fault killed_owner=1 pid={pid} signalled=true");
+            }
             if retained.is_some() {
                 last_key = Some(receipt.key.clone());
             }
@@ -1234,9 +1278,28 @@ mod tests {
             let elapsed = start.elapsed().as_micros();
             let result = snapshot.result.unwrap();
             if let Some(mode) = retained {
-                assert_eq!(result.delivery, RunDelivery::Complete);
-                assert!(result.causes.is_empty());
-                for id in &ids {
+                if kill_owner {
+                    println!(
+                        "split-fault current={} delivery={:?} reason={:?} causes={:?} ports={}",
+                        snapshot.current,
+                        result.delivery,
+                        result.reason,
+                        result.causes,
+                        result.ports.len()
+                    );
+                    assert!(snapshot.current);
+                    assert_eq!(result.delivery, RunDelivery::Failed);
+                    assert!(
+                        result
+                            .causes
+                            .iter()
+                            .any(|cause| cause["id"]["nodeId"] == "stage1")
+                    );
+                } else {
+                    assert_eq!(result.delivery, RunDelivery::Complete);
+                    assert!(result.causes.is_empty());
+                }
+                for id in if kill_owner { &ids[..0] } else { &ids[..] } {
                     let port = result
                         .ports
                         .iter()
@@ -1268,7 +1331,7 @@ mod tests {
                     );
                 }
             }
-            for (owner, pid) in owners.iter().zip(&pids) {
+            for (owner, pid) in owners.iter().zip(&pids).filter(|_| !kill_owner) {
                 assert_eq!(owner.process_id(), Some(*pid));
                 assert_eq!(
                     owner.shared.replies.load(Ordering::Acquire),
