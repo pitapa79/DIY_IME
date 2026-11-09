@@ -153,3 +153,10 @@ cargo test --locked --lib compare_raw_latest_wins -- --ignored --nocapture
 ```powershell
 cargo test --locked --lib compare_raw_serial_matrix -- --ignored --nocapture
 ```
+## 準備済み Worker への入力前に実 gate を失効
+
+実 AppContainer 内で raw-JIT の検査用 Worker を ready まで準備し、同じ入力について実 `ExecutionGate` の grant と lease を取得した。ready 通知直後に grant を revoke し、lease の取消を確認。gate の `publish` 内で Worker の stdin に検査文字列を書こうとしたが拒否され、書込みは0回だった。再承認後も旧 lease では同じ配送クロージャが拒否された。Worker は取消理由で OS 終了を確認し、活動数ゼロ、Job・ACL・profile・一時資産を回収した。1回の native テストで、実 gate と実 Worker を用いるが、配送前の `publish` は検査用 harness が明示的に接続している。通常 Host に事前起動 Worker の配送機構が存在する、またはその本番経路の race が検証されたことを意味しない。保護、複数段、同時更新や権限付き Node の事前配送も対象外。生ログは `issue86-raw-revocation-before-delivery.log`。
+
+```powershell
+cargo test --locked --lib revoke_ready_raw_worker_before_delivery -- --ignored --nocapture
+```
