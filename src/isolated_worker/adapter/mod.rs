@@ -17,6 +17,7 @@ mod retained_tests;
 pub(in crate::isolated_worker) use network::NetworkPlans;
 pub use network::{NetworkConfiguration, NetworkLimits, NetworkProvider, NetworkUseDescription};
 pub(in crate::isolated_worker) use prepared::ArtifactCapture;
+pub(in crate::isolated_worker) use prepared::DictionaryCompanions;
 pub use prepared::{PreparationIdentity, PreparationLimits, PreparationSources, PreparedArtifact};
 pub use ranges::{
     ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
@@ -56,7 +57,7 @@ use std::{
 
 const DLL_HASH: &str = "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef";
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct WorkerPolicy {
     pub process_memory_bytes: Option<usize>,
     pub wasm_memory_bytes: Option<u64>,
@@ -65,6 +66,18 @@ pub struct WorkerPolicy {
     pub termination_grace: Duration,
 }
 impl WorkerPolicy {
+    fn supports_range_pipeline(&self) -> bool {
+        self.fuel_per_call
+            .is_some_and(|v| (1..=5_000_000_000).contains(&v))
+            && self
+                .wasm_memory_bytes
+                .is_some_and(|v| (1..=128 * 1024 * 1024).contains(&v))
+            && self
+                .walltime
+                .is_some_and(|v| !v.is_zero() && v <= Duration::from_secs(30))
+            && self.termination_grace <= Duration::from_secs(5)
+    }
+
     pub fn bounded_probe() -> Self {
         Self {
             process_memory_bytes: Some(512 * 1024 * 1024),
@@ -453,6 +466,23 @@ impl WasmArtifact {
         module: Vec<u8>,
         policy: WorkerPolicy,
     ) -> Result<Self, CoreError> {
+        Self::capture_assets(
+            workspace,
+            // Trusted Host executables can include debug symbols during verification.
+            || asset(worker, 128 * 1024 * 1024),
+            || asset(runtime_dll, 256 * 1024 * 1024),
+            module,
+            policy,
+        )
+    }
+
+    fn capture_assets(
+        workspace: &Path,
+        worker: impl FnOnce() -> Result<Arc<[u8]>, CoreError>,
+        dll: impl FnOnce() -> Result<Arc<[u8]>, CoreError>,
+        module: Vec<u8>,
+        policy: WorkerPolicy,
+    ) -> Result<Self, CoreError> {
         if !module.starts_with(b"\0asm\x01\0\0\0") {
             return Err(fail("worker-module", "binary Wasm v1 required"));
         }
@@ -465,9 +495,8 @@ impl WasmArtifact {
         }
         let workspace = std::fs::canonicalize(workspace)
             .map_err(|_| fail("worker-asset", "Host cache workspace unavailable"))?;
-        // Trusted Host executables can include debug symbols during verification.
-        let worker = asset(worker, 128 * 1024 * 1024)?;
-        let dll = asset(runtime_dll, 256 * 1024 * 1024)?;
+        let worker = worker()?;
+        let dll = dll()?;
         let dll_hash = sha256(&dll)?;
         if dll_hash != DLL_HASH {
             return Err(fail(
@@ -556,6 +585,41 @@ impl WasmArtifact {
     }
     fn call(&self, request: &Value, cancel: CancellationToken) -> Result<Vec<u8>, CoreError> {
         self.call_traced(request, cancel, None, 0)
+    }
+
+    fn runtime_code_files(&self) -> Result<Arc<CodeFiles>, CoreError> {
+        let mut captured = self
+            .0
+            .runtime_files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if captured.is_none() {
+            *captured = Some(Arc::new(CodeFiles::new(
+                &self.0.workspace,
+                &[
+                    ("worker.exe", &self.0.worker),
+                    ("wasmtime.dll", &self.0.dll),
+                ],
+                &self.0.code_budget,
+            )?));
+        }
+        Ok(captured.as_ref().expect("captured runtime").clone())
+    }
+
+    fn module_code_files(&self) -> Result<Arc<CodeFiles>, CoreError> {
+        let mut captured = self
+            .0
+            .module_files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if captured.is_none() {
+            *captured = Some(Arc::new(CodeFiles::new(
+                &self.0.workspace,
+                &[("node.wasm", &self.0.module)],
+                &self.0.code_budget,
+            )?));
+        }
+        Ok(captured.as_ref().expect("captured module").clone())
     }
     fn call_traced(
         &self,
@@ -650,46 +714,19 @@ impl WasmArtifact {
                 "AppContainer unavailable; refusing execution",
             )
         })?;
-        let runtime_files = {
-            let mut captured = self
-                .0
-                .runtime_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if captured.is_none() {
-                *captured = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[
-                        ("worker.exe", &self.0.worker),
-                        ("wasmtime.dll", &self.0.dll),
-                    ],
-                    &self.0.code_budget,
-                )?));
-            }
-            captured.as_ref().expect("captured runtime").clone()
-        };
+        let runtime_files = self.runtime_code_files()?;
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
-        let raw_module = || {
-            let mut captured = self
-                .0
-                .module_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if captured.is_none() {
-                *captured = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[("node.wasm", &self.0.module)],
-                    &self.0.code_budget,
-                )?));
-            }
-            Ok::<_, CoreError>(captured.as_ref().expect("captured module").clone())
-        };
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
-            WorkerImage::Jit => (raw_module()?, "node.wasm", self.0.module.len(), None),
+            WorkerImage::Jit => (
+                self.module_code_files()?,
+                "node.wasm",
+                self.0.module.len(),
+                None,
+            ),
             WorkerImage::Compile => (
-                raw_module()?,
+                self.module_code_files()?,
                 "node.wasm",
                 self.0.module.len(),
                 Some("--compile-official".into()),
@@ -853,6 +890,7 @@ impl WasmArtifact {
             gate,
             package_identity: None,
             dictionary: None,
+            prepared_dictionary: Arc::default(),
             network: None,
             retained: retained::NodeLink::default(),
         };
@@ -870,6 +908,7 @@ pub struct WasmNode {
     gate: ExecutionGate,
     package_identity: Option<String>,
     dictionary: Option<DictionaryPlans>,
+    prepared_dictionary: Arc<std::sync::OnceLock<prepared::PreparedDictionary>>,
     network: Option<NetworkPlans>,
     retained: retained::NodeLink,
 }
@@ -885,6 +924,7 @@ impl WasmNode {
     }
     pub(super) fn fresh_preparation(mut self) -> Self {
         self.dictionary = self.dictionary.as_ref().map(DictionaryPlans::fresh);
+        self.prepared_dictionary = Arc::default();
         self.retained = retained::NodeLink::default();
         self
     }
@@ -921,16 +961,45 @@ impl WasmNode {
         batch: &mut DictionaryBatch<'_>,
         cancel: CancellationToken,
         check: &mut dyn FnMut() -> Result<(), CoreError>,
+        prepared: Option<(
+            &DictionaryCompanions,
+            &crate::execution_control::RunKey,
+            &str,
+        )>,
     ) -> Result<(), CoreError> {
+        let prepared = prepared.filter(|_| self.artifact.0.policy.supports_range_pipeline());
         if let Some(plans) = &self.dictionary {
-            plans.initialize(
-                &self.artifact,
-                &self.definition,
-                config,
-                batch,
-                cancel,
-                check,
-            )?;
+            plans.initialize(config, batch, cancel.clone(), check, |snapshots| {
+                if let Some((modules, key, id)) = prepared {
+                    return self.initialize_prepared_dictionary(
+                        modules, key, id, config, snapshots, cancel,
+                    );
+                }
+                let payload: std::collections::BTreeMap<_, _> = snapshots
+                    .iter()
+                    .map(|(id, bytes)| (id, bytes.as_ref()))
+                    .collect();
+                let valid = wire::reply(&self.artifact.call(
+                    &wire::request(
+                        &self.definition.kind,
+                        self.definition.version,
+                        json!({"method":"prepare","config":config,"resources":payload}),
+                    ),
+                    cancel,
+                )?)?;
+                if valid.as_object().is_none_or(|v| v.len() != 2)
+                    || valid["valid"] != true
+                    || !valid["prepared"].is_boolean()
+                {
+                    return Err(fail("worker-reply", "invalid resource preparation reply"));
+                }
+                Ok(())
+            })?;
+        } else if prepared.is_some() {
+            return Err(fail(
+                "dictionary-not-prepared",
+                "approved dictionary binding missing",
+            ));
         }
         Ok(())
     }
@@ -1062,6 +1131,28 @@ impl WasmNode {
                         invocation.context().node_id,
                     );
                     let lease = node.gate.begin(target, key, cancel.clone())?;
+                    if let Some(prepared) = node.prepared_dictionary.get() {
+                        let mut scope = prepared.scope(
+                            &node, invocation.context().node_id, key, cancel.clone(),
+                            node.artifact.0.policy.walltime.unwrap_or(Duration::from_secs(30)),
+                        )?;
+                        let request = prepared.request(&invocation, &node.definition, &mut scope)?;
+                        let bytes = serde_json::to_vec(&request)
+                            .map_err(|_| fail("worker-request", "request serialization failed"))?;
+                        drop(request_phase);
+                        let reply = prepared.execute(bytes, scope, cancel.clone())?;
+                        let wire::ExecutionStep::Outputs(result) = wire::execution_step(&reply, &node.definition)? else {
+                            return Err(fail("package-capability", "prepared dictionary cannot request network"));
+                        };
+                        node.gate.publish(&lease, key, || {
+                            if cancel.is_cancelled() {
+                                return Err(fail("worker-cancelled", "invocation cancelled"));
+                            }
+                            completion.complete(Ok(result));
+                            Ok(())
+                        })??;
+                        return Ok(());
+                    }
                     let mut request = wire::execution(&invocation, &node.definition)?;
                     if let Some(plans) = &node.dictionary {
                         request["operation"]["resources"] = plans.payload(invocation.config())?;

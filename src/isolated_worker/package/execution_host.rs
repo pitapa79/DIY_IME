@@ -868,7 +868,10 @@ impl Runner {
                         .as_ref()
                         .is_some_and(|old| old.evidence.official.is_some());
                 // Evaluate all preparation before dropping the previous owner.
-                let session = pending.session.activate_with_cancel(cancel.clone())?;
+                let session = pending.session.activate_official_with_cancel(
+                    cancel.clone(),
+                    pending.evidence.official.as_ref(),
+                )?;
                 drop(preparation_slot);
                 let retained = retained_stages
                     .map(|nodes| {

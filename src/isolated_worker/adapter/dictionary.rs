@@ -1,12 +1,14 @@
 //! Fixed Host dictionary bindings. Declarations/reviews do not read file bodies.
-use super::{WasmArtifact, fail, sha256, wire};
+use super::{fail, sha256};
 use crate::{
     execution_control::CancellationToken,
-    node::{CoreError, NodeDefinition, PrepareResources},
+    node::{CoreError, PrepareResources},
     resources::{ResourceBatch, ResourceLimits, ResourceRoot},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -323,12 +325,11 @@ impl DictionaryPlans {
     }
     pub fn initialize(
         &self,
-        artifact: &WasmArtifact,
-        definition: &NodeDefinition,
         config: &Value,
         batch: &mut DictionaryBatch<'_>,
         cancel: CancellationToken,
         check: &mut dyn FnMut() -> Result<(), CoreError>,
+        validate: impl FnOnce(&BTreeMap<String, Arc<[u8]>>) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
         if cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "resource preparation cancelled"));
@@ -357,24 +358,7 @@ impl DictionaryPlans {
                 .ok_or_else(|| fail("dictionary-not-prepared", "resource capture is incomplete"))?;
             snapshots.insert(reference.clone(), bytes);
         }
-        let payload: BTreeMap<_, _> = snapshots
-            .iter()
-            .map(|(id, bytes)| (id, bytes.as_ref()))
-            .collect();
-        let valid = wire::reply(&artifact.call(
-            &wire::request(
-                &definition.kind,
-                definition.version,
-                json!({"method":"prepare","config":config,"resources":payload}),
-            ),
-            cancel.clone(),
-        )?)?;
-        if valid.as_object().is_none_or(|v| v.len() != 2)
-            || valid["valid"] != true
-            || !valid["prepared"].is_boolean()
-        {
-            return Err(fail("worker-reply", "invalid resource preparation reply"));
-        }
+        validate(&snapshots)?;
         if cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "resource preparation cancelled"));
         }

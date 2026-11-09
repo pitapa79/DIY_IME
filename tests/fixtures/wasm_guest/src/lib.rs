@@ -19,8 +19,11 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             let mut definition = json!({"kind":if request["node"]["kind"]=="fixture.wasm.alt" {"fixture.wasm.alt"}else{"fixture.wasm"},"version":1,"inputs":[{"port":{"id":"in","dataType":{"id":"text-packet","version":1},"language":"ja-Latn","root":"text"},"required":true}],"outputs":[{"id":"out","dataType":{"id":"text-packet","version":1},"language":null,"root":"text"}],"configSchema":{"type":"object"},"defaultConfig":{"mode":"echo"}});
             // Separate chain fixture: preserve the declared input language.
             // Existing fixture.wasm/alt declarations remain unchanged.
-            if request["node"]["kind"] == "fixture.wasm.chain" {
-                definition["kind"] = json!("fixture.wasm.chain");
+            if matches!(
+                request["node"]["kind"].as_str(),
+                Some("fixture.wasm.chain" | "fixture.wasm.chain-alt")
+            ) {
+                definition["kind"] = request["node"]["kind"].clone();
                 definition["outputs"][0]["language"] = json!("ja-Latn");
             }
             if request["node"]["kind"] == "fixture.wasm.duplicate" {
@@ -60,6 +63,7 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
                         | "malformed"
                         | "forge"
                         | "noOutput"
+                        | "preparedNoOutput"
                         | "duplicatePort"
                         | "duplicateEnvelope"
                         | "duplicateMeta"
@@ -114,7 +118,20 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
             }
             json!({"out":{"state":"data","packet":{"version":1,"root":{"type":"text","text":serde_json::to_string(&request).unwrap()}}}})
         }
+        "executePrepared" if mode == Some("preparedNoOutput") => {
+            if request["node"]["kind"] != "fixture.wasm.chain-alt"
+                || op.get("resources").is_some()
+                || op["artifact"]
+                    != json!({"resource":{"id":1,"length":7},"format":"dictionary-exact-index","version":1})
+            {
+                return serde_json::to_vec(&failure("fixture-prepared-scope")).unwrap();
+            }
+            json!({"out":{"state":"noOutput"}})
+        }
         "execute" => {
+            if mode == Some("preparedNoOutput") {
+                return serde_json::to_vec(&failure("fixture-prepared-required")).unwrap();
+            }
             if mode.is_some_and(|s| s.starts_with("network")) {
                 let text = op["inputs"]["in"]["packet"]["root"]["text"]
                     .as_str()

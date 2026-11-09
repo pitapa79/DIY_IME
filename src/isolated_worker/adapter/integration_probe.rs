@@ -3,10 +3,7 @@
 use super::*;
 use crate::{
     execution_control::RunKey,
-    isolated_worker::{
-        PreparationOutcome, PreparationWorkerRequest, ResourceWorkerRequest, execute_preparation,
-        execute_resources,
-    },
+    isolated_worker::{PreparationWorkerRequest, ResourceWorkerRequest, execute_resources},
 };
 use diy_ime2_wasm_resource_sdk::{
     ArtifactDescriptor, Mode, NodeIdentity, Operation, Request, ResourceDescriptor, ResourceMap,
@@ -16,6 +13,7 @@ use std::{collections::BTreeMap, fs};
 const SOURCE_LIMIT: usize = 1024 * 1024;
 const MODULE_LIMIT: usize = 32 * 1024 * 1024;
 const ARTIFACT_LIMIT: usize = 8 * 1024 * 1024;
+const MAX_PROBE_FUEL: u64 = 5_000_000_000;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -24,6 +22,8 @@ pub struct ProbeSpec {
     pub worker: PathBuf,
     pub runtime: PathBuf,
     pub producer: PathBuf,
+    #[serde(default)]
+    pub producer_fuel: Option<u64>,
     pub consumer: PathBuf,
     pub source: PathBuf,
     pub source_reference: String,
@@ -73,14 +73,9 @@ fn limits(length: usize) -> ResourceRangeLimits {
         budget: Duration::from_secs(30),
     }
 }
-fn args(runtime: &Path, module: &Path, length: usize, prepare: bool) -> Vec<OsString> {
+fn args(runtime: &Path, module: &Path, length: usize) -> Vec<OsString> {
     vec![
-        if prepare {
-            "--build-resources-v1"
-        } else {
-            "--resource-ranges-v1"
-        }
-        .into(),
+        "--resource-ranges-v1".into(),
         runtime.into(),
         module.into(),
         length.to_string().into(),
@@ -116,23 +111,39 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
     if spec.cases.is_empty() || spec.cases.len() > 64 {
         return Err("probe needs 1..64 cases".into());
     }
+    let producer_fuel = spec.producer_fuel.unwrap_or(MAX_PROBE_FUEL);
+    if !(1..=MAX_PROBE_FUEL).contains(&producer_fuel) {
+        return Err("invalid probe producer fuel".into());
+    }
     let original: Arc<[u8]> = read_bounded(&spec.source, SOURCE_LIMIT)?.into();
     let producer = read_bounded(&spec.producer, MODULE_LIMIT)?;
     let consumer = read_bounded(&spec.consumer, MODULE_LIMIT)?;
     // Runtime identity is a production pin, not a manifest self-claim.
-    let dll = read_bounded(&spec.runtime, 128 * 1024 * 1024)?;
+    let dll: Arc<[u8]> = read_bounded(&spec.runtime, 128 * 1024 * 1024)?.into();
     if sha256(&dll).map_err(core)? != DLL_HASH {
         return Err("pinned runtime hash mismatch".into());
     }
     // CI retains native debug symbols; these are not Wasm input or guest memory.
-    let worker = read_bounded(&spec.worker, 256 * 1024 * 1024)?;
-    let hashes = json!({"worker":sha256(&worker).map_err(core)?,"runtime":DLL_HASH,"producer":sha256(&producer).map_err(core)?,"consumer":sha256(&consumer).map_err(core)?});
+    let worker: Arc<[u8]> = read_bounded(&spec.worker, 256 * 1024 * 1024)?.into();
+    let producer_sha256 = sha256(&producer).map_err(core)?;
+    let hashes = json!({"worker":sha256(&worker).map_err(core)?,"runtime":DLL_HASH,"producer":producer_sha256,"consumer":sha256(&consumer).map_err(core)?});
+    let producer = WasmArtifact::capture_assets(
+        &spec.workspace,
+        || Ok(worker.clone()),
+        || Ok(dll.clone()),
+        producer,
+        WorkerPolicy {
+            fuel_per_call: Some(producer_fuel),
+            termination_grace: Duration::ZERO,
+            ..WorkerPolicy::bounded_probe()
+        },
+    )
+    .map_err(core)?;
     let mut profile = Profile::new()?;
     let job = Job::with_memory_limit(Some(512 * 1024 * 1024))?;
     let cache = Cache::new(&spec.workspace, &profile)?;
     let program = cache.write("worker.exe", &worker)?;
     let runtime = cache.write("wasmtime.dll", &dll)?;
-    let producer_path = cache.write("producer.wasm", &producer)?;
     let consumer_path = cache.write("consumer.wasm", &consumer)?;
     cache.allow_read_execute(&profile)?;
     let result = (|| {
@@ -149,7 +160,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
         )
         .map_err(core)?;
         let identity = PreparationIdentity {
-            producer_sha256: sha256(&producer).map_err(core)?,
+            producer_sha256,
             definition_sha256: sha256(&serde_json::to_vec(&spec.node).unwrap()).map_err(core)?,
             config_sha256: sha256(&serde_json::to_vec(&spec.config).unwrap()).map_err(core)?,
         };
@@ -167,42 +178,27 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
                 )])),
             },
         })?;
-        let outcome = execute_preparation(
-            &profile,
-            &job,
-            &cache,
-            &program,
-            &args(&runtime, &producer_path, producer.len(), true),
-            PreparationWorkerRequest {
-                input,
-                sources,
-                identity,
-                limits: PreparationLimits {
-                    max_artifact_bytes: ARTIFACT_LIMIT,
-                    max_chunks: 4096,
-                    max_resident_bytes: 2 * ARTIFACT_LIMIT + 65536,
+        let exited = producer
+            .prepare_artifact(
+                PreparationWorkerRequest {
+                    input,
+                    sources,
+                    identity,
+                    limits: PreparationLimits {
+                        max_artifact_bytes: ARTIFACT_LIMIT,
+                        max_chunks: 4096,
+                        max_resident_bytes: 2 * ARTIFACT_LIMIT + 65536,
+                    },
                 },
-            },
-            &control,
-        )?;
-        let mut outcome = outcome;
-        let exited = loop {
-            match outcome {
-                PreparationOutcome::Exited(value) => break value,
-                PreparationOutcome::Unconfirmed(owner) => {
-                    outcome = owner.retry(Duration::from_secs(1))
-                }
-                PreparationOutcome::CancelledBeforeStart => {
-                    return Err("producer cancelled before start".into());
-                }
-            }
-        };
+                control.cancel,
+            )
+            .map_err(core)?;
         let prepare_receipt = receipt(exited.receipt());
         let artifact = match exited.into_artifact() {
             Ok(value) => value,
             Err(error) => {
                 return Ok(
-                    json!({"syntheticScope":true,"hashes":hashes,"preparation":prepare_receipt,"preparationError":error.code,"cases":[]}),
+                    json!({"syntheticScope":true,"hashes":hashes,"producerFuel":producer_fuel,"preparation":prepare_receipt,"preparationError":error.code,"cases":[]}),
                 );
             }
         };
@@ -245,7 +241,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
                 &job,
                 &cache,
                 &program,
-                &args(&runtime, &consumer_path, consumer.len(), false),
+                &args(&runtime, &consumer_path, consumer.len()),
                 ResourceWorkerRequest { input, resources },
                 &control,
             );
@@ -289,7 +285,7 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
             results.push(value);
         }
         Ok(
-            json!({"syntheticScope":true,"hashes":hashes,"preparation":prepare_receipt,"artifact":{"bytes":artifact.bytes().len(),"sha256":artifact.artifact_sha256(),"format":artifact.format(),"version":artifact.format_version()},"cases":results}),
+            json!({"syntheticScope":true,"hashes":hashes,"producerFuel":producer_fuel,"preparation":prepare_receipt,"artifact":{"bytes":artifact.bytes().len(),"sha256":artifact.artifact_sha256(),"format":artifact.format(),"version":artifact.format_version()},"cases":results}),
         )
     })();
     // Every live outcome was consumed, or dropped (blocking actual stop/join),
@@ -301,6 +297,10 @@ pub fn run(spec: ProbeSpec) -> Result<Value, String> {
     if cache.path().parent() != Some(parent.as_path()) {
         return Err("unexpected probe cache location".into());
     }
-    fs::remove_dir_all(cache.path()).map_err(|_| "probe staging cleanup failed")?;
+    for name in ["worker.exe", "wasmtime.dll", "consumer.wasm"] {
+        remove_asset(&cache.path().join(name)).map_err(core)?;
+    }
+    fs::remove_dir(cache.path())
+        .map_err(|error| format!("probe staging cleanup failed: {error}"))?;
     result
 }

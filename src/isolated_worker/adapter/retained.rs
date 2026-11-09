@@ -201,19 +201,13 @@ impl Owner {
         // Unsupported policies keep the legacy path; never add fuel/memory caps.
         if host.policy().max_physical_jobs < 2
             || host.policy().max_queued_jobs < 1
-            || policy
-                .fuel_per_call
-                .is_none_or(|v| v == 0 || v > 5_000_000_000)
-            || policy
-                .wasm_memory_bytes
-                .is_none_or(|v| v == 0 || v > 128 * 1024 * 1024)
-            || policy
-                .walltime
-                .is_none_or(|v| v.is_zero() || v > Duration::from_secs(30))
-            || policy.termination_grace > Duration::from_secs(5)
-            || nodes
-                .iter()
-                .any(|n| n.network.is_some() || n.artifact.0.module != nodes[0].artifact.0.module)
+            || !policy.supports_range_pipeline()
+            || nodes.iter().any(|node| {
+                let image = &retained_artifact(node).0;
+                node.network.is_some()
+                    || image.policy != *policy
+                    || !Arc::ptr_eq(&image.runtime_files, &nodes[0].artifact.0.runtime_files)
+            })
         {
             return Ok(None);
         }
@@ -362,6 +356,9 @@ fn scope(
     cancel: CancellationToken,
     budget: Duration,
 ) -> Result<ResourceRangeSession, CoreError> {
+    if let Some(prepared) = node.prepared_dictionary.get() {
+        return prepared.scope(node, id, key, cancel, budget);
+    }
     let resources = node
         .dictionary
         .as_ref()
@@ -387,6 +384,13 @@ fn scope(
         limits,
     )
 }
+
+fn retained_artifact(node: &WasmNode) -> &WasmArtifact {
+    node.prepared_dictionary
+        .get()
+        .map_or(&node.artifact, |prepared| &prepared.consumer)
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -411,13 +415,23 @@ impl Native {
         if shared.stop.is_cancelled() {
             cancel.cancel();
         }
+        let mut modules: Vec<WasmArtifact> = Vec::new();
         let bindings = nodes
             .iter()
             .zip(ids)
             .zip(configs)
             .map(|((node, id), config)| {
+                let artifact = retained_artifact(node);
+                let slot = modules
+                    .iter()
+                    .position(|module| module.0.module == artifact.0.module)
+                    .unwrap_or_else(|| {
+                        let slot = modules.len();
+                        modules.push(artifact.clone());
+                        slot
+                    });
                 Ok(RetainedBinding {
-                    module_slot: 0,
+                    module_slot: slot as u32,
                     scope: scope(
                         node,
                         id,
@@ -455,7 +469,9 @@ impl Native {
         };
         let thread = std::thread::Builder::new()
             .name("diyime-retained-native-owner".into())
-            .spawn(move || artifact.retained_lifetime(request, &control, cleanup_pin, process_id))
+            .spawn(move || {
+                artifact.retained_lifetime(&modules, request, &control, cleanup_pin, process_id)
+            })
             .map_err(|_| fail("worker-thread", "retained native owner unavailable"))?;
         shared.physical.fetch_add(1, Ordering::AcqRel);
         shared.generation.fetch_add(1, Ordering::AcqRel);
@@ -484,6 +500,7 @@ impl Drop for Native {
 impl WasmArtifact {
     fn retained_lifetime(
         &self,
+        modules: &[WasmArtifact],
         request: RetainedWorkerRequest,
         control: &RunControl,
         _cleanup_pin: RetainedReservation,
@@ -491,78 +508,54 @@ impl WasmArtifact {
     ) -> Result<Option<ExitReceipt>, CoreError> {
         let mut profile =
             Profile::new().map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?;
-        let runtime = {
-            let mut files = self
-                .0
-                .runtime_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if files.is_none() {
-                *files = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[
-                        ("worker.exe", &self.0.worker),
-                        ("wasmtime.dll", &self.0.dll),
-                    ],
-                    &self.0.code_budget,
-                )?));
-            }
-            files.as_ref().unwrap().clone()
-        };
-        let module = {
-            let mut files = self
-                .0
-                .module_files
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if files.is_none() {
-                *files = Some(Arc::new(CodeFiles::new(
-                    &self.0.workspace,
-                    &[("node.wasm", &self.0.module)],
-                    &self.0.code_budget,
-                )?));
-            }
-            files.as_ref().unwrap().clone()
-        };
+        let runtime = self.runtime_code_files()?;
+        let module_files = modules
+            .iter()
+            .map(WasmArtifact::module_code_files)
+            .collect::<Result<Vec<_>, CoreError>>()?;
         let mut runtime_lease = runtime.lease(&profile)?;
-        let mut module_lease = module.lease(&profile)?;
-        let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
-            .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
-        let args: Vec<OsString> = vec![
-            "--retained-resources-v1".into(),
-            runtime.cache.path().join("wasmtime.dll").into_os_string(),
-            "4096".into(),
-            self.0.policy.fuel_per_call.unwrap().to_string().into(),
-            self.0.policy.wasm_memory_bytes.unwrap().to_string().into(),
-            module.cache.path().join("node.wasm").into_os_string(),
-            self.0.module.len().to_string().into(),
-        ];
-        let outcome = crate::isolated_worker::pipe::execute_retained_observed(
-            &profile,
-            &job,
-            &runtime.cache,
-            &runtime.cache.path().join("worker.exe"),
-            &args,
-            request,
-            control,
-            Some(crate::isolated_worker::pipe::RetainedObservation {
-                activity: self.0.activity.clone(),
-                process_id,
-            }),
-        );
-        let receipt = outcome
+        let mut module_leases = Vec::new();
+        let receipt = (|| {
+            let mut args: Vec<OsString> = vec![
+                "--retained-resources-v1".into(),
+                runtime.cache.path().join("wasmtime.dll").into_os_string(),
+                "4096".into(),
+                self.0.policy.fuel_per_call.unwrap().to_string().into(),
+                self.0.policy.wasm_memory_bytes.unwrap().to_string().into(),
+            ];
+            for (artifact, files) in modules.iter().zip(&module_files) {
+                module_leases.push(files.lease(&profile)?);
+                args.push(files.cache.path().join("node.wasm").into_os_string());
+                args.push(artifact.0.module.len().to_string().into());
+            }
+            let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
+                .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
+            crate::isolated_worker::pipe::execute_retained_observed(
+                &profile,
+                &job,
+                &runtime.cache,
+                &runtime.cache.path().join("worker.exe"),
+                &args,
+                request,
+                control,
+                Some(crate::isolated_worker::pipe::RetainedObservation {
+                    activity: self.0.activity.clone(),
+                    process_id,
+                }),
+            )
             .map(settle)
-            .map_err(|_| fail("worker-start", "retained Worker could not start"));
-        drop(job);
+            .map_err(|_| fail("worker-start", "retained Worker could not start"))
+        })();
         // Keep the original pin on this same thread until actual exit/IO and ACL
         // cleanup. A cleanup retry cannot mint a successor or refund ownership.
-        while module_lease.release().is_err() {
-            std::thread::sleep(Duration::from_millis(100));
+        for mut lease in module_leases {
+            while lease.release().is_err() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
         while runtime_lease.release().is_err() {
             std::thread::sleep(Duration::from_millis(100));
         }
-        drop(module_lease);
         drop(runtime_lease);
         while profile.delete().is_err() {
             std::thread::sleep(Duration::from_millis(100));
@@ -708,13 +701,6 @@ fn coordinate(
                         ));
                     }
                     command.node.validate_config(command.invocation.config())?;
-                    let mut request = wire::execution(invocation, &command.node.definition)?;
-                    if let Some(plans) = &command.node.dictionary {
-                        request["operation"]["resources"] =
-                            plans.payload(command.invocation.config())?;
-                    }
-                    let bytes = serde_json::to_vec(&request)
-                        .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     let mut scope = scope(
                         &command.node,
                         &ids[completed],
@@ -724,6 +710,18 @@ fn coordinate(
                         command.node.artifact.0.policy.walltime.unwrap(),
                     )?;
                     scope.follow_cancellation(command.cancel.clone())?;
+                    let request = if let Some(prepared) = command.node.prepared_dictionary.get() {
+                        prepared.request(invocation, &command.node.definition, &mut scope)?
+                    } else {
+                        let mut request = wire::execution(invocation, &command.node.definition)?;
+                        if let Some(plans) = &command.node.dictionary {
+                            request["operation"]["resources"] =
+                                plans.payload(command.invocation.config())?;
+                        }
+                        request
+                    };
+                    let bytes = serde_json::to_vec(&request)
+                        .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     drop(request_phase);
                     let data = input.as_mut().unwrap().call(bytes, scope)?;
                     shared.replies.fetch_add(1, Ordering::AcqRel);
@@ -857,14 +855,14 @@ mod tests {
         let mut policy = WorkerPolicy::bounded_probe();
         std::fs::create_dir(&workspace).unwrap();
         policy.termination_grace = Duration::from_millis(5);
-        let artifact = WasmArtifact::capture(
-            &workspace,
-            &worker,
-            &dll,
-            std::fs::read(wasm).unwrap(),
-            policy,
-        )
-        .unwrap();
+        let module = std::fs::read(wasm).unwrap();
+        let artifact =
+            WasmArtifact::capture(&workspace, &worker, &dll, module.clone(), policy.clone())
+                .unwrap();
+        // A valid custom section gives the second stage a separate code identity.
+        let mut alternate_module = module;
+        alternate_module.extend_from_slice(&[0, 2, 1, b'x']);
+        let alternate_artifact = artifact.with_module(alternate_module, policy).unwrap();
         let gate = ExecutionGate::default();
         let node = artifact
             .prepare(
@@ -875,16 +873,38 @@ mod tests {
                 CancellationToken::default(),
             )
             .unwrap();
+        let alternate_node = artifact
+            .prepare(
+                "fixture.wasm.chain-alt",
+                1,
+                vec![json!({"mode":"preparedNoOutput"})],
+                gate.clone(),
+                CancellationToken::default(),
+            )
+            .unwrap();
+        assert!(
+            alternate_node
+                .prepared_dictionary
+                .set(super::prepared::PreparedDictionary {
+                    consumer: alternate_artifact.clone(),
+                    index: PreparedArtifact::retained_fixture(),
+                })
+                .is_ok()
+        );
         let mut registry = Registry::new();
         register_system_nodes(&mut registry).unwrap();
         registry.register_deferred(node.clone()).unwrap();
+        registry.register_deferred(alternate_node.clone()).unwrap();
         let ids: Vec<_> = (0..4).map(|n| format!("stage{n}")).collect();
+        let nodes = [&node, &alternate_node, &node, &node];
         let configs: Vec<_> = (0..4)
-            .map(|n| json!({"mode":if n==1{"noOutput"}else{"echo"}}))
+            .map(|n| json!({"mode":if n==1{"preparedNoOutput"}else{"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
-        graph_nodes.extend(ids.iter().zip(&configs).map(
-            |(id, config)| json!({"id":id,"kind":"fixture.wasm.chain","version":1,"config":config}),
+        graph_nodes.extend(ids.iter().zip(&configs).zip(nodes).map(
+            |((id, config), node)| {
+                json!({"id":id,"kind":node.definition.kind,"version":1,"config":config})
+            },
         ));
         let mut edges =
             vec![json!({"from":{"node":"input","port":"out"},"to":{"node":ids[0],"port":"in"}})];
@@ -915,7 +935,10 @@ mod tests {
             .unwrap();
         let targets: Vec<_> = ids
             .iter()
-            .map(|id| node.grant_target(raw.session_epoch(), DecimalId::new(1).unwrap(), id))
+            .zip(nodes)
+            .map(|(id, node)| {
+                node.grant_target(raw.session_epoch(), DecimalId::new(1).unwrap(), id)
+            })
             .collect();
         for target in &targets {
             gate.approve(target.clone());
@@ -924,7 +947,8 @@ mod tests {
         let stages = ids
             .iter()
             .zip(&configs)
-            .map(|(id, config)| (id.clone(), node.clone(), config.clone()))
+            .zip(nodes)
+            .map(|((id, config), node)| (id.clone(), node.clone(), config.clone()))
             .collect();
         let owner = Owner::install(host.clone(), controller.clone(), stages)
             .unwrap()
@@ -987,7 +1011,9 @@ mod tests {
         drop(service);
         drop(registry);
         drop(node);
+        drop(alternate_node);
         drop(artifact);
+        drop(alternate_artifact);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let usage = host.usage();
