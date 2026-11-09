@@ -64,6 +64,16 @@ paced の入力間隔指定なしの正答 P50 / P95 は1段84.3 / 88.1→63.0 /
 
 小標本・単一マシンの順次試験で、mixed P95 は最大値。権限付き経路の比較、CPU/RAM、キャッシュ寿命や安全性の検証は引き続き必要。生 JSON とログを Windows pilot に収録した。
 
+## 原本 JIT 事前準備の入力置換比較に残る実装
+
+#86 の原本 JIT 補充検査（2枠、32入力×2試行）は全入力を待つ検査であり、latest-input-wins の件数ではない。20 ms では予定時刻までの準備成功が4/64、100 ms では64/64。制御したコンパイル直前取消から実終了と回収を待って代替を起動する単発・1枠試験は、到着から代替終了の P50 / P95 が94.59 / 103.70 ms（16件）、取消から回収が14.26 / 24.98 ms。これは自然な到着分布でも2枠でもなく、20/100 ms 連続入力の fallback 率や正答率を表さない。#86 のログ `issue86-generic-raw-refill.log` と `issue86-generic-raw-precompile-fallback.log` に条件と生測定がある。
+
+2枠の latest-input-wins 対照を安全に作るには、#86 の `src/isolated_worker/runtime/compiled_module_probe/generic_fixture.rs` の固定 `index` / `step_by(lanes)` と、各 lane が予定入力を必ず待って送るループを置き換える必要がある。入力到着時計と一つの現在 revision を持つ試験スケジューラが、準備中・ready・実行中・取消中・終了確認済みの各 Worker の所有者と取消 token を追跡し、未準備または旧 revision を取り消す。終了未確認の Job は枠を占有し続け、`src/isolated_worker/pipe.rs` の `Outcome::Exited` と回収後にだけ同じ枠へ fallback または補充を許す。2枠合計の live 数を常時記録し、上限違反で失敗させる。
+
+通常実装への接続を検討する場合、`crates/runtime/src/execution_control/ledger.rs` の `invalidate_input_collected` と `dispatch.rs` の物理枠予約、`worker.rs` の CompletionPermit、`src/isolated_worker/adapter/gate.rs` の `begin` / `publish`、`adapter/mod.rs` の `start_legacy` / `call_traced`、`pipe.rs` の `Running` / 終了確認にまたがる。事前準備は現在の入力呼出しより前に存在するため、予約と所有権の受渡し、revision・権限・保護変更時の拒否、取消中に slot を再利用しない処理が必要である。既存の raw JIT 補充 harness はこれらを提供せず、準備用 worker を別枠で足すだけでは2枠上限を守れない。
+
+測定ドライバーは `scripts/host-input-scenarios.mjs` のように20/100 msの予定時刻、実発行遅延、各 revision の正答・current・superseded・失敗と物理終了を別々に記録し、最後の current 入力まで drain する。試験の待機・置換・破棄規則と readiness race を明示し、旧結果の非公開と全終了を確認する。現時点では原本 JIT 事前準備と入力時 JIT の latest-input-wins 比較は未実施であり、上記の補充・単発値をその効果として扱わない。
+
 ## 暫定判定
 
 - **事前準備のみ**。現時点では汎用の事前起動プールを保留する。20 ms・2枠の補充不足が実測で確認された。コンパイル成果の再利用は入力単位の物理終了を維持できる候補として切り離す。通常 Host の結果と初回・メモリ・キャッシュ寿命まで確認して採否を決める。
