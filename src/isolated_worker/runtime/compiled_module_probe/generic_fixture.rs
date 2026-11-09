@@ -213,6 +213,16 @@ fn compare_generic_artifact() {
 #[test]
 #[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
 fn compare_generic_one_shot_refill() {
+    refill(false);
+}
+
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_generic_raw_one_shot_refill() {
+    refill(true);
+}
+
+fn refill(raw: bool) {
     use std::{
         sync::{Mutex, atomic::AtomicU64},
         thread,
@@ -235,15 +245,11 @@ fn compare_generic_one_shot_refill() {
             digest(&fs::read(&fixture).unwrap()).as_bytes(),
         )
         .unwrap();
-    let (_, _, artifact) =
-        invoke(&cache, &exe, "generic-compile", Vec::new(), None, false).unwrap();
-    let prepared = cache.write("prepared.cwasm", &artifact).unwrap();
-    let hash_file = cache
-        .write("artifact.sha256", digest(&artifact).as_bytes())
-        .unwrap();
-    let mode = cache
-        .write("mode.txt", b"ready-generic-module-guest")
-        .unwrap();
+    let artifacts = if raw { None } else {
+        let (_, _, artifact) = invoke(&cache, &exe, "generic-compile", Vec::new(), None, false).unwrap();
+        Some((cache.write("prepared.cwasm", &artifact).unwrap(), cache.write("artifact.sha256", digest(&artifact).as_bytes()).unwrap()))
+    };
+    let mode = cache.write("mode.txt", if raw { b"ready-generic-jit" } else { b"ready-generic-module-guest" }).unwrap();
     let acl = Mutex::new(());
     let count = 32;
     for interval_ms in [20, 100] {
@@ -314,7 +320,7 @@ fn compare_generic_one_shot_refill() {
                                 }
                                 let recovered = Instant::now();
                                 println!(
-                                    "generic-refill interval_ms={interval_ms} lanes={lanes} prewarm={prewarm} input={index} hit={} ready_us={} queue_us={} confirmed_us={} recovered_us={} cpu_100ns={cpu} peak_job_bytes={peak}",
+                                    "generic-refill raw={raw} interval_ms={interval_ms} lanes={lanes} prewarm={prewarm} input={index} hit={} ready_us={} queue_us={} confirmed_us={} recovered_us={} cpu_100ns={cpu} peak_job_bytes={peak}",
                                     ready <= scheduled, (ready - started).as_micros(),
                                     sent.saturating_duration_since(scheduled).as_micros(),
                                     confirmed.saturating_duration_since(scheduled).as_micros(),
@@ -327,15 +333,11 @@ fn compare_generic_one_shot_refill() {
             }
         }
     }
-    for path in [
-        mode,
-        hash_file,
-        prepared,
-        module_hash_file,
-        module,
-        dll,
-        exe,
-    ] {
+    if let Some((prepared, hash_file)) = artifacts {
+        fs::remove_file(prepared).unwrap();
+        fs::remove_file(hash_file).unwrap();
+    }
+    for path in [mode, module_hash_file, module, dll, exe] {
         fs::remove_file(path).unwrap();
     }
     fs::remove_dir(cache.path()).unwrap();
