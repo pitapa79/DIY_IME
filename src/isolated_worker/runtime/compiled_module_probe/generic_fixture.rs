@@ -863,3 +863,183 @@ fn compare_raw_latest_wins() {
     fs::remove_dir(cache.path()).unwrap();
     naming.delete().unwrap();
 }
+
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_raw_serial_matrix() {
+    use std::{
+        sync::{Mutex, atomic::AtomicU64, mpsc},
+        thread,
+    };
+    enum Event {
+        Ready(usize),
+        End(usize, Vec<u8>, u128, i64, usize),
+    }
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let fixture = fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let module = cache.copy(&fixture, "generic.wasm").unwrap();
+    let hash = cache
+        .write(
+            "generic.sha256",
+            digest(&fs::read(&fixture).unwrap()).as_bytes(),
+        )
+        .unwrap();
+    let mode = cache.write("mode.txt", b"ready-generic-jit").unwrap();
+    let acl = Mutex::new(());
+    for count in [1, 2, 4, 8, 16] {
+        for pair in 0..5 {
+            for warm in if pair % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let started = Instant::now();
+                let (events, receive) = mpsc::channel();
+                let mut senders = Vec::new();
+                let mut prepared_us = 0;
+                let mut execution_us = 0;
+                let mut recovered_us = 0;
+                let mut cpu_100ns = 0_i64;
+                let mut peak_job_bytes = 0_usize;
+                let text = format!("serial-matrix-{count}-{pair}");
+                thread::scope(|scope| {
+                    let spawn = |id: usize| {
+                        let (send, requests) = mpsc::sync_channel::<Vec<u8>>(1);
+                        let events = events.clone();
+                        let cache = &cache;
+                        let exe = &exe;
+                        let acl = &acl;
+                        scope.spawn(move || {
+                            let mut profile = Profile::new().unwrap();
+                            {
+                                let _guard = acl.lock().unwrap();
+                                cache.allow_read_execute(&profile).unwrap();
+                            }
+                            let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+                            let control = RunControl {
+                                walltime: Some(Duration::from_secs(30)),
+                                ..RunControl::default()
+                            };
+                            let ready = events.clone();
+                            let worker = WorkerScope::observed(
+                                &profile,
+                                &job,
+                                cache,
+                                AtomicU64::new(0).into(),
+                            )
+                            .with_test_exchange(Box::new(
+                                move |output, mut input| {
+                                    let mut output = std::io::BufReader::new(output);
+                                    speculative::read_marker(&mut output, PROBE_READY)
+                                        .map_err(|e| e.to_string())?;
+                                    ready.send(Event::Ready(id)).map_err(|e| e.to_string())?;
+                                    let bytes = requests.recv().map_err(|e| e.to_string())?;
+                                    input.write_all(&bytes).map_err(|e| e.to_string())?;
+                                    drop(input);
+                                    let mut result = Vec::new();
+                                    output
+                                        .take((CAP + 1) as u64)
+                                        .read_to_end(&mut result)
+                                        .map_err(|e| e.to_string())?;
+                                    Ok(result)
+                                },
+                            ));
+                            let args =
+                                ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+                            let Outcome::Exited(receipt) =
+                                execute_observed(worker, exe, &args, Vec::new(), &control).unwrap()
+                            else {
+                                panic!("unconfirmed physical exit")
+                            };
+                            assert_eq!(receipt.reason(), EndReason::Exited);
+                            assert_eq!(receipt.exit_code(), Some(0));
+                            let exit_us = receipt.signalled_at.duration_since(started).as_micros();
+                            let (_, result) = probe_frame(receipt.output().unwrap());
+                            let result = result.to_vec();
+                            let (cpu, peak) = job_usage(&job);
+                            drop(job);
+                            {
+                                let _guard = acl.lock().unwrap();
+                                cache.revoke_read_execute(&profile).unwrap();
+                                profile.delete().unwrap();
+                            }
+                            events
+                                .send(Event::End(id, result, exit_us, cpu, peak))
+                                .unwrap();
+                        });
+                        send
+                    };
+                    let initial = if warm { count.min(2) } else { 0 };
+                    for id in 0..initial {
+                        senders.push(spawn(id));
+                    }
+                    let mut ready = vec![false; count];
+                    for _ in 0..initial {
+                        match receive.recv_timeout(Duration::from_secs(30)).unwrap() {
+                            Event::Ready(id) => ready[id] = true,
+                            _ => panic!("unexpected end"),
+                        }
+                    }
+                    let input_at = Instant::now();
+                    prepared_us = input_at.duration_since(started).as_micros();
+                    let mut launched = initial;
+                    for stage in 0..count {
+                        if stage >= launched {
+                            senders.push(spawn(stage));
+                            launched += 1;
+                        }
+                        while !ready[stage] {
+                            match receive.recv_timeout(Duration::from_secs(30)).unwrap() {
+                                Event::Ready(id) => ready[id] = true,
+                                _ => panic!("unexpected end"),
+                            }
+                        }
+                        senders[stage].send(request(&text)).unwrap();
+                        loop {
+                            match receive.recv_timeout(Duration::from_secs(30)).unwrap() {
+                                Event::Ready(id) => ready[id] = true,
+                                Event::End(id, bytes, exit_us, cpu, peak) => {
+                                    assert_eq!(id, stage);
+                                    let value: serde_json::Value =
+                                        serde_json::from_slice(&bytes).unwrap();
+                                    assert_eq!(value["ok"], true);
+                                    assert_eq!(
+                                        value["data"]["out"]["packet"]["root"]["text"],
+                                        text
+                                    );
+                                    cpu_100ns += cpu;
+                                    peak_job_bytes = peak_job_bytes.max(peak);
+                                    execution_us = exit_us.saturating_sub(
+                                        input_at.duration_since(started).as_micros(),
+                                    );
+                                    recovered_us = input_at.elapsed().as_micros();
+                                    if warm && launched < count {
+                                        senders.push(spawn(launched));
+                                        launched += 1;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+                println!(
+                    "raw-serial-matrix count={count} pair={pair} prepared={warm} prepare_us={prepared_us} input_to_exit_us={execution_us} input_to_recovered_us={recovered_us} cpu_100ns={cpu_100ns} max_single_job_bytes={peak_job_bytes}"
+                );
+            }
+        }
+    }
+    for path in [mode, hash, module, dll, exe] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
+}
