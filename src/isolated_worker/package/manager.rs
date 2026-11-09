@@ -59,7 +59,10 @@ impl ManagerConfig {
             .clone()
             .map(|root| (root, self.limits.clone()))
     }
-    pub(super) fn prepare_assets(&self) -> Result<(Catalog, PackageVerifier), CoreError> {
+    pub(super) fn prepare_assets(
+        &self,
+        prepare_profiles: bool,
+    ) -> Result<(Catalog, PackageVerifier), CoreError> {
         for path in [&self.data_root, &self.workspace] {
             fs::create_dir_all(path)
                 .map_err(|_| error("manager-config", "Host storage unavailable"))?;
@@ -78,6 +81,11 @@ impl ManagerConfig {
             b"\0asm\x01\0\0\0".to_vec(),
             policy.clone(),
         )?;
+        let runtime = if prepare_profiles {
+            runtime.enable_profile_preparation()
+        } else {
+            runtime
+        };
         let runtime = if self.official_root.is_some() {
             runtime.enable_official_compilation()
         } else {
@@ -362,7 +370,7 @@ pub(super) fn nonce() -> Result<String, CoreError> {
 /// Blocks on this Host process only. EOF/close cooperatively cancels the real
 /// Worker and waits for its actual process/IO termination before returning.
 pub fn run(config: ManagerConfig) -> Result<(), CoreError> {
-    let (catalog, verifier) = config.prepare_assets()?;
+    let (catalog, verifier) = config.prepare_assets(false)?;
     let output = Arc::new(Mutex::new(io::stdout()));
     let activity = Arc::new(Mutex::new(Activity::default()));
     let (sender, receiver) = mpsc::sync_channel(1);

@@ -1040,7 +1040,7 @@ impl Runner {
 }
 pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
     let official_assets = config.package_manager.official_review_assets();
-    let (catalog, mut verifier) = config.package_manager.prepare_assets()?;
+    let (catalog, mut verifier) = config.package_manager.prepare_assets(true)?;
     if let Some(network) = config.network {
         verifier = verifier.with_network_provider(
             crate::isolated_worker::adapter::NetworkProvider::open(network)?,
