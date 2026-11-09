@@ -52,6 +52,10 @@ fn child() {
         panic!("blocked probe must be stopped before reading input");
     }
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
+    if mode == "generic-persistent" {
+        generic_fixture::persistent_child(&Api::load(&dll).unwrap());
+        return;
+    }
     if matches!(mode.as_str(), "persistent-ipc" | "persistent-graph") {
         ipc_child(&Api::load(&dll).unwrap(), mode == "persistent-graph");
         return;
@@ -81,7 +85,7 @@ fn child() {
         .then(|| fs::read("prepared.cwasm").unwrap());
     let ready_module = matches!(
         mode.as_str(),
-        "ready-module-guest" | "ready-speculative-guest"
+        "ready-module-guest" | "ready-speculative-guest" | "ready-generic-module-guest"
     )
     .then(|| {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
