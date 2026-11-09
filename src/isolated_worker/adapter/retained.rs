@@ -885,7 +885,15 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some(split));
+            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_isolation_groups_at_default_capacity() {
+        for (retained, split) in [(false, false), (true, false), (true, true)] {
+            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)));
         }
     }
 
@@ -900,7 +908,7 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 24, 20, Some(split));
+            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)));
         }
     }
 
@@ -909,7 +917,7 @@ mod tests {
         stage_count: usize,
         count: u64,
         interval_ms: u64,
-        isolation_comparison: Option<bool>,
+        isolation_comparison: Option<(bool, u64)>,
     ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
@@ -1014,8 +1022,8 @@ mod tests {
         // Use the bounded fixture without host-lifetime run history so the
         // teardown can require every resource counter to return to zero.
         let mut policy = resource_policy["resourceProfiles"]["noTombstones"].clone();
-        if isolation_comparison.is_some() {
-            policy["maxPhysicalJobs"] = json!(4);
+        if let Some((_, capacity)) = isolation_comparison {
+            policy["maxPhysicalJobs"] = json!(capacity);
         }
         let host = ExecutionHost::new(
             "actual-core-skipped-suffix",
@@ -1047,8 +1055,8 @@ mod tests {
             .map(|((id, config), node)| (id.clone(), node.clone(), config.clone()))
             .collect();
         let ready_started = std::time::Instant::now();
-        let split = isolation_comparison == Some(true);
-        let owners = if retained != Some(false) {
+        let split = isolation_comparison.is_some_and(|(split, _)| split);
+        let mut owners = if retained != Some(false) {
             let install = if stage_count == 4 {
                 Owner::install
             } else {
@@ -1107,10 +1115,42 @@ mod tests {
                 owners.len()
             );
         }
+        let mut first_revision = 1;
+        if isolation_comparison == Some((true, 2)) {
+            let request: StartRequest = serde_json::from_value(json!({
+                "startKey":"1", "expectedPlanVersion":"1",
+                "targets":[{"node":ids[stage_count - 1],"port":"out"}],
+                "input":{"revision":1,"text":"capacity probe","mode":"compose"}
+            }))
+            .unwrap();
+            let receipt = controller.start_run(request).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                let snapshot = controller.wait_run(&receipt.key).unwrap();
+                assert_ne!(snapshot.state, RunPhase::Terminal);
+                assert_eq!(snapshot.physical.running, 0);
+                if snapshot.physical.queued == 1 {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+            }
+            assert_eq!(host.usage().physical_jobs, 2);
+            assert!(owners.iter().all(|owner| owner.decoded_replies() == 0));
+            controller.cancel_run(&receipt.key).unwrap();
+            let snapshot = controller.wait_run(&receipt.key).unwrap();
+            assert_eq!(snapshot.state, RunPhase::Terminal);
+            assert_eq!(snapshot.physical.queued, 0);
+            assert_eq!(snapshot.physical.running, 0);
+            assert_eq!(host.usage().physical_jobs, 2);
+            owners.clear();
+            assert_eq!(host.usage().physical_jobs, 0);
+            println!("capacity probe: both slots held, queued input cancelled, owners released");
+            first_revision = 2;
+        }
         let mut last_key = None;
         let sample_marker = |marker: &str| {
             if interval_ms > 0
-                && let Some(split) = isolation_comparison
+                && let Some((split, _)) = isolation_comparison
             {
                 let epoch_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1124,7 +1164,7 @@ mod tests {
         };
         sample_marker("begin");
         let origin = std::time::Instant::now();
-        for revision in 1..=count {
+        for revision in first_revision..first_revision + count {
             let scheduled = origin + Duration::from_millis((revision - 1) * interval_ms);
             if interval_ms > 0 {
                 let remaining = scheduled.saturating_duration_since(std::time::Instant::now());

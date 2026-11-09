@@ -74,3 +74,15 @@ cargo test --locked --lib compare_core_isolation_groups -- --ignored --nocapture
 ```powershell
 cargo test --locked --lib profile_core_isolation_groups -- --ignored --nocapture
 ```
+
+### 既定の物理上限2での枯渇と復帰
+
+同じ2段で物理上限を2にすると、使い捨てと同居保持は各8/8正答。分離保持は準備できたが、二つの寿命予約で上限に達した。Core のコールバックは別の実行枠を必要とするため、入力は待ち行列に留まり、Worker への送信は発生しなかった。最初の試行では20秒の試験期限に達した。
+
+回復試験では待ち行列に1件、実行中0件、保持枠2を確認した。入力を取り消すと実行枠の使用なしで終端に達し、二つの所有者を閉じると保持枠は0に戻った。その後、新規入力を通常経路で8/8正しく処理し、終了時の資源回収も確認した。この回復操作は試験ドライバーが明示的に行った。
+
+採用を検討する際は、上限2では分離保持を開始せず通常経路へ送る案を優先する。上限が大きい構成でも、入力実行枠を残せることを競合のある状態で確認する必要がある。通常 Host の経路切替や枠の会計は変更していない。
+
+```powershell
+cargo test --locked --lib compare_core_isolation_groups_at_default_capacity -- --ignored --nocapture
+```
