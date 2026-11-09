@@ -228,6 +228,204 @@ mod tests {
         )
     }
     #[test]
+    #[ignore = "requires real Windows AppContainer, pinned DLL and test Wasm"]
+    fn revoke_ready_raw_worker_before_delivery() {
+        ready_worker_authority_case("revoke");
+    }
+    #[test]
+    #[ignore = "requires real Windows AppContainer, pinned DLL and test Wasm"]
+    fn protect_ready_raw_worker_before_delivery() {
+        ready_worker_authority_case("protect");
+    }
+    #[test]
+    #[ignore = "requires real Windows AppContainer, pinned DLL and test Wasm"]
+    fn changed_key_ready_raw_worker_before_delivery() {
+        ready_worker_authority_case("changed-key");
+    }
+    #[test]
+    #[ignore = "requires real Windows AppContainer, pinned DLL and test Wasm"]
+    fn kill_ready_raw_worker_before_delivery() {
+        ready_worker_authority_case("kill");
+    }
+    fn ready_worker_authority_case(case: &'static str) {
+        use crate::isolated_worker::pipe::{PROBE_READY, WorkerScope, execute_observed};
+        use crate::isolated_worker::{Cache, EndReason, Job, Outcome, Profile, RunControl};
+        use std::{
+            ffi::OsString,
+            io::{Read, Write},
+            path::Path,
+            sync::{
+                Arc,
+                atomic::{AtomicU64, Ordering},
+            },
+        };
+        let bundle =
+            std::fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+        let fixture =
+            std::fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+        let gate = ExecutionGate::default();
+        let (target, key) = values();
+        gate.approve(target.clone());
+        let cancel = CancellationToken::default();
+        let lease = gate.begin(target.clone(), &key, cancel.clone()).unwrap();
+        let mut profile = Profile::new().unwrap();
+        let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile).unwrap();
+        let exe = cache
+            .copy(&std::env::current_exe().unwrap(), "probe.exe")
+            .unwrap();
+        let dll = cache
+            .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+            .unwrap();
+        let module = cache.copy(&fixture, "generic.wasm").unwrap();
+        let digest = super::super::sha256(&std::fs::read(&fixture).unwrap()).unwrap();
+        let hash = cache.write("generic.sha256", digest.as_bytes()).unwrap();
+        let mode = cache
+            .write(
+                "mode.txt",
+                if case == "kill" {
+                    b"ready-generic-jit-fault"
+                } else {
+                    b"ready-generic-jit"
+                },
+            )
+            .unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+        let control = RunControl {
+            cancel: cancel.clone(),
+            walltime: Some(std::time::Duration::from_secs(30)),
+            ..RunControl::default()
+        };
+        let activity = Arc::new(AtomicU64::new(0));
+        let wrote = Arc::new(AtomicU64::new(0));
+        let delivered = wrote.clone();
+        let worker = WorkerScope::observed(&profile, &job, &cache, activity.clone())
+            .with_test_exchange(Box::new(move |output, mut input| {
+                let mut output = std::io::BufReader::new(output);
+                let mut prefix = Vec::new();
+                while prefix.len() < 4096 && !prefix.ends_with(PROBE_READY) {
+                    let mut byte = [0];
+                    output.read_exact(&mut byte).map_err(|e| e.to_string())?;
+                    prefix.push(byte[0]);
+                }
+                if !prefix.ends_with(PROBE_READY) {
+                    return Err("ready marker missing".into());
+                }
+                if case == "kill" {
+                    let mut pid_text = Vec::new();
+                    loop {
+                        let mut b = [0];
+                        output.read_exact(&mut b).map_err(|e| e.to_string())?;
+                        if b[0] == b'\n' {
+                            break;
+                        }
+                        pid_text.push(b[0]);
+                        if pid_text.len() > 10 {
+                            return Err("invalid child PID".into());
+                        }
+                    }
+                    let pid: u32 = std::str::from_utf8(&pid_text)
+                        .map_err(|e| e.to_string())?
+                        .parse::<u32>()
+                        .map_err(|e| e.to_string())?;
+                    use windows_sys::Win32::{
+                        Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                        System::Threading::{
+                            OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+                        },
+                    };
+                    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | 0x0010_0000, 0, pid) };
+                    if handle.is_null() {
+                        return Err("process handle unavailable".into());
+                    }
+                    assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+                    assert_ne!(unsafe { TerminateProcess(handle, 77) }, 0);
+                    assert_eq!(
+                        unsafe { WaitForSingleObject(handle, 10_000) },
+                        WAIT_OBJECT_0
+                    );
+                    unsafe {
+                        CloseHandle(handle);
+                    }
+                    println!("ready-authority case=kill pid={pid} signalled=true input_bytes=0");
+                } else {
+                    let mut checked_key = key.clone();
+                    match case {
+                        "revoke" => gate.revoke(&target),
+                        "protect" => gate.set_protection(true, false),
+                        "changed-key" => {
+                            checked_key.delivery_generation = DecimalId::new(2).unwrap()
+                        }
+                        _ => unreachable!(),
+                    }
+                    if case != "changed-key" && !cancel.is_cancelled() {
+                        return Err("authority transition did not cancel lease".into());
+                    }
+                    if gate
+                        .publish(&lease, &checked_key, || {
+                            input.write_all(b"private-input").unwrap();
+                            delivered.fetch_add(1, Ordering::SeqCst);
+                        })
+                        .is_ok()
+                    {
+                        return Err("invalid delivery accepted".into());
+                    }
+                    if case == "revoke" {
+                        gate.approve(target);
+                    }
+                    if case == "protect" {
+                        gate.set_protection(false, false);
+                    }
+                    if case != "changed-key"
+                        && gate
+                            .publish(&lease, &key, || {
+                                input.write_all(b"private-input").unwrap();
+                                delivered.fetch_add(1, Ordering::SeqCst);
+                            })
+                            .is_ok()
+                    {
+                        return Err("old lease revived".into());
+                    }
+                    if case == "changed-key" {
+                        cancel.cancel();
+                    }
+                    println!("ready-authority case={case} denied=true input_bytes=0");
+                }
+                let mut tail = Vec::new();
+                let _ = output.read_to_end(&mut tail);
+                Ok(tail)
+            }));
+        let args = [
+            "--exact",
+            "isolated_worker::runtime::compiled_module_probe::child",
+            "--ignored",
+            "--nocapture",
+        ]
+        .map(OsString::from);
+        let Outcome::Exited(receipt) =
+            execute_observed(worker, &exe, &args, Vec::new(), &control).unwrap()
+        else {
+            panic!("exit not confirmed")
+        };
+        if case == "kill" {
+            assert_eq!(receipt.reason(), EndReason::Exited);
+            assert_eq!(receipt.exit_code(), Some(77));
+        } else {
+            assert_eq!(receipt.reason(), EndReason::Cancelled);
+        }
+        assert_eq!(wrote.load(Ordering::SeqCst), 0);
+        assert_eq!(activity.load(Ordering::Acquire), 0);
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+        for path in [mode, hash, module, dll, exe] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(cache.path()).unwrap();
+        println!("ready-authority case={case} physical_exit=true activity=0 cleanup=true");
+    }
+
+    #[test]
     fn grants_are_bound_to_artifact_session_plan_node_and_actual_run() {
         let gate = ExecutionGate::default();
         let (target, key) = values();
