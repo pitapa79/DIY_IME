@@ -845,14 +845,14 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None, 4, 3);
+        run_core_fixture(None, 4, 3, 0);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 4, 24);
+            run_core_fixture(Some(retained), 4, 24, 0);
         }
     }
 
@@ -861,12 +861,20 @@ mod tests {
     fn compare_core_chain_lengths() {
         for stages in [1, 2, 8, 16] {
             for retained in [false, true] {
-                run_core_fixture(Some(retained), stages, 8);
+                run_core_fixture(Some(retained), stages, 8, 0);
             }
         }
     }
 
-    fn run_core_fixture(retained: Option<bool>, stage_count: usize, count: u64) {
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_chain_cadences() {
+        for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
+            run_core_fixture(Some(retained), 4, 16, interval_ms);
+        }
+    }
+
+    fn run_core_fixture(retained: Option<bool>, stage_count: usize, count: u64, interval_ms: u64) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
         };
@@ -1032,7 +1040,15 @@ mod tests {
         }
         let pid = owner.as_ref().and_then(Owner::process_id);
         let mut last_key = None;
+        let origin = std::time::Instant::now();
         for revision in 1..=count {
+            let scheduled = origin + Duration::from_millis((revision - 1) * interval_ms);
+            if interval_ms > 0 {
+                let remaining = scheduled.saturating_duration_since(std::time::Instant::now());
+                if !remaining.is_zero() {
+                    std::thread::sleep(remaining);
+                }
+            }
             let start = std::time::Instant::now();
             if revision > 1 {
                 if let Some(owner) = &owner {
@@ -1084,6 +1100,13 @@ mod tests {
                 println!(
                     "mixed-core retained={mode} stages={stage_count} revision={revision} elapsed_us={elapsed}"
                 );
+                if interval_ms > 0 {
+                    let late = start.saturating_duration_since(scheduled).as_micros();
+                    println!(
+                        "mixed-cadence retained={mode} interval_ms={interval_ms} revision={revision} service_us={elapsed} schedule_delay_us={late} response_from_schedule_us={}",
+                        late + elapsed
+                    );
+                }
             } else {
                 assert_eq!(result.delivery, RunDelivery::NoOutput);
                 for id in &ids[2..] {

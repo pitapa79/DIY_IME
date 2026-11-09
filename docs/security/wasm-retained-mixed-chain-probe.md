@@ -29,6 +29,18 @@
 ```powershell
 cargo test --locked --lib compare_core_mixed_chain -- --ignored --nocapture
 cargo test --locked --lib compare_core_chain_lengths -- --ignored --nocapture
+cargo test --locked --lib compare_core_chain_cadences -- --ignored --nocapture
 ```
 
-試験は直接 Core の検査用構成に保持所有者を接続する。通常 Host の適格性判定は試験対象外。相互に異なる Wasm が同一 AppContainer を共有する場合、OS 分離の単位と結果の採用時点が従来と異なる。これらの仕様判断は #88 で扱う。分岐、権限付き資源、20/100 ms、CPU/RAM、実行中の取消・異常終了は次の比較に残る。
+4段に対して20 ms・100 ms間隔で各16件を予定し、前の入力の実行が終わってから次を受け付けた。全条件で16/16正答し、旧入力の失効、保護後の照会拒否と回収を確認した。
+
+| 間隔・方式 | 受付から応答 P50 | 予定から受付 P50 | 予定から応答の最大 |
+| --- | ---: | ---: | ---: |
+| 20 ms・使い捨て | 343.98 ms | 2362.25 ms | 5297.75 ms |
+| 20 ms・保持 | 3.28 ms | 0.25 ms | 4.05 ms |
+| 100 ms・使い捨て | 339.88 ms | 1677.06 ms | 3963.03 ms |
+| 100 ms・保持 | 3.20 ms | 0.16 ms | 4.10 ms |
+
+これは処理が詰まったときの待ちを見えるようにする試験。通常 Host のように処理中の入力を即座に置換する負荷は別の測定となる。
+
+試験は直接 Core の検査用構成に保持所有者を接続する。通常 Host の適格性判定は試験対象外。相互に異なる Wasm が同一 AppContainer を共有する場合、OS 分離の単位と結果の採用時点が従来と異なる。これらの仕様判断は #88 で扱う。分岐、権限付き資源、CPU/RAM、実行中の取消・異常終了は次の比較に残る。
