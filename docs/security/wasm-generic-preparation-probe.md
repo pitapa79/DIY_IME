@@ -160,3 +160,12 @@ cargo test --locked --lib compare_raw_serial_matrix -- --ignored --nocapture
 ```powershell
 cargo test --locked --lib revoke_ready_raw_worker_before_delivery -- --ignored --nocapture
 ```
+### 保護・異なる run key・prepared 子の異常終了
+
+同じ native harness を拡張し、ready の実 raw-JIT Worker へ入力を書こうとする直前に次の対照を行った。実 `ExecutionGate` による保護の有効化は既存 lease を取消し、stdin 配送クロージャを拒否し、保護解除後も旧 lease を拒否した。また lease の `deliveryGeneration` と異なる run key を渡すと gate が配送クロージャを拒否した。いずれも stdin の書込み0回、OS 終了確認、活動数ゼロと Job / ACL / profile / 一時資産の回収を確認した。異なる key の試験は key の不一致検査であり、実際の文書変更・session 失効を発生させた試験ではない。
+
+別対照では、ready 後の試験専用子が報告した自身の PID の process handle を開き、生存を確認して `TerminateProcess` し、signal と exit code 77 を確認した。入力は送らず、活動数ゼロと同じ回収を確認した。revoke を含め4件すべて native Windows で成功し、`cargo fmt --all -- --check` が成功した。実 gate は用いるが入力への gate 接続と PID 報告は検査用で、通常 Host の事前配送 race、実際の文書変更、複数段・権限資源付き Worker を証明しない。生ログは `issue86-raw-ready-authority-cases.log`。
+
+```powershell
+cargo test --locked --lib ready_raw_worker_before_delivery -- --ignored --nocapture
+```

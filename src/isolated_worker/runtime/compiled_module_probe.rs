@@ -97,7 +97,10 @@ fn child() {
         )
         .unwrap()
     });
-    let ready_module = if mode == "ready-generic-jit" {
+    let ready_module = if matches!(
+        mode.as_str(),
+        "ready-generic-jit" | "ready-generic-jit-fault"
+    ) {
         let bytes = fs::read("generic.wasm").unwrap();
         assert_eq!(
             digest(&bytes),
@@ -127,6 +130,9 @@ fn child() {
     if mode.starts_with("ready-") {
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(PROBE_READY).unwrap();
+        if mode == "ready-generic-jit-fault" {
+            writeln!(stdout, "{}", std::process::id()).unwrap();
+        }
         stdout.flush().unwrap();
     }
     let input_started = Instant::now();
