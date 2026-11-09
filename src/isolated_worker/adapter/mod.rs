@@ -4,6 +4,7 @@ mod gate;
 #[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
 pub mod integration_probe;
 mod network;
+mod profile_pool;
 mod retained;
 pub(in crate::isolated_worker) use retained::Owner as RetainedOwner;
 mod prepared;
@@ -108,6 +109,7 @@ fn elapsed_micros(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 struct Image {
+    profile_pool: Option<Arc<profile_pool::ProfilePool>>,
     workspace: PathBuf,
     worker: Arc<[u8]>,
     dll: Arc<[u8]>,
@@ -506,6 +508,7 @@ impl WasmArtifact {
         }
         let identity = format!("{}:{}:{}", sha256(&worker)?, dll_hash, sha256(&module)?);
         Ok(Self(Arc::new(Image {
+            profile_pool: None,
             workspace,
             worker,
             dll,
@@ -520,6 +523,12 @@ impl WasmArtifact {
             module_files: std::sync::Mutex::new(None),
             compiled: None,
         })))
+    }
+    pub(super) fn enable_profile_preparation(mut self) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("new Host runtime")
+            .profile_pool = profile_pool::ProfilePool::start().map(Arc::new);
+        self
     }
     pub(super) fn enable_official_compilation(mut self) -> Self {
         if !cfg!(feature = "compiled-module-jit-baseline") {
@@ -550,6 +559,7 @@ impl WasmArtifact {
             .expect("captured identity");
         let identity = format!("{worker_hash}:{DLL_HASH}:{}", sha256(&module)?);
         Ok(Self(Arc::new(Image {
+            profile_pool: self.0.profile_pool.clone(),
             workspace: self.0.workspace.clone(),
             worker: self.0.worker.clone(),
             dll: self.0.dll.clone(),
@@ -708,12 +718,19 @@ impl WasmArtifact {
         }
         let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let started = std::time::Instant::now();
-        let mut profile = Profile::new().map_err(|_| {
-            fail(
-                "worker-isolation",
-                "AppContainer unavailable; refusing execution",
-            )
-        })?;
+        let mut profile = self
+            .0
+            .profile_pool
+            .as_ref()
+            .and_then(|pool| pool.take())
+            .map(Ok)
+            .unwrap_or_else(Profile::new)
+            .map_err(|_| {
+                fail(
+                    "worker-isolation",
+                    "AppContainer unavailable; refusing execution",
+                )
+            })?;
         let runtime_files = self.runtime_code_files()?;
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
