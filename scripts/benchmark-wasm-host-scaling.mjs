@@ -8,13 +8,14 @@ import { createInterface } from 'node:readline';
 import { PhaseProfiler } from './trace-phase-profile.mjs';
 import { measureHostInput } from './host-input-scenarios.mjs';
 
-const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario = 'all'] = process.argv.slice(2);
+const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario = 'all', alternateWasm] = process.argv.slice(2);
 const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
   Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
-  ['all', 'parallel', 'official', 'join', 'paced', 'dictionary'].includes(scenario),
-  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|parallel|official|join|paced|dictionary]');
+  ['all', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
+  (scenario !== 'mixed' || alternateWasm),
+  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const tempParent = realpathSync(tmpdir());
@@ -23,7 +24,9 @@ const dataRoot = join(root, 'data'), configPath = join(root, 'host.json');
 const dictionaryBytes = Buffer.from('reading\tsurface\tweight\nこうすい\t降水\t90\n');
 const usesOfficial = scenario === 'official' || scenario === 'dictionary';
 const first = readFileSync(wasm);
-const modules = [first, Buffer.concat([first, Buffer.from([0, 2, 1, 120])]), first];
+const second = alternateWasm ? readFileSync(alternateWasm) : Buffer.concat([first, Buffer.from([0, 2, 1, 120])]);
+assert(!first.equals(second), 'alternate fixture must have a distinct module digest');
+const modules = [first, second, first];
 const kinds = ['fixture.wasm.chain', 'fixture.wasm.chain-alt', 'fixture.wasm.join'];
 const port = { id: 'in', dataType: { id: 'text-packet', version: 1 }, language: 'ja-Latn', root: 'text' };
 function command(args) {
@@ -257,6 +260,11 @@ try {
     { count: 4, shape: 'skip' },
   ];
   const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+    : scenario === 'mixed' ? [
+        { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
+        { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
+        { count: 4, shape: 'parallel', mixed: true }, { count: 2, shape: 'join', mixed: true },
+      ]
     : scenario === 'paced' ? [1, 4].map(count => ({ count, shape: 'serial' })) : scenario === 'official'
     ? [...[1, 4].flatMap(count => [{ count, shape: 'serial' }, { count, shape: 'serial', official: true }]),
         { count: 4, shape: 'parallel', mixedOrigin: true }]
@@ -268,6 +276,7 @@ try {
   }
   console.log(JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
     physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
+    alternateFixtureSupplied: Boolean(alternateWasm),
     ...(usesOfficial ? { officialModuleSha256: sha(readFileSync(join(officialRoot, 'official.wasm'))) } : {}),
     ...(scenario === 'dictionary' ? { dictionarySha256: sha(dictionaryBytes) } : {}),
     workerSha256: sha(readFileSync(worker)), runtimeSha256: sha(readFileSync(dll)), scenarios }));

@@ -57,4 +57,26 @@ $env:DIY_NETWORK_BENCHMARK_SAMPLES='20'
 node scripts/check-wasm-network.mjs HOST PACKAGE_TOOL WORKER DLL WASM tests/contracts/execution_control.json
 ```
 
+## 実行コードが異なる Wasm を組み合わせた既定2枠の基準
+
+#87 の保持試験で使用した二つの検査用 Wasm を、通常 Host で同じ権限なし・物理上限2に揃えて比較した。両者は同一ソースを異なる最適化設定でビルドした。Code セクションの SHA-256 は A が `38d18efd2c06ae1c5a3af7437f95357a5e640a6c3bf37c914a87d98620a245d2`、B が `68a31bea9bc3ef7b3c98d85022200f7c6b2c19a72032201ce87e3dbef1f6e3f9`。実行コードまで異なる点で、先のカスタムセクションだけを変えた比較と区別する。
+
+| 構成 | P50 / P95 / P99 | 観測 CPU 秒 / 20入力 | 最大 WS / private MiB |
+| --- | ---: | ---: | ---: |
+| 直列2段 Aのみ | 169.10 / 173.24 / 173.32 ms | 8.89 | 85.6 / 73.7 |
+| 直列2段 A+B | 171.50 / 178.30 / 180.25 ms | 9.78 | 91.1 / 81.6 |
+| 直列4段 Aのみ | 340.30 / 353.67 / 394.22 ms | 17.48 | 89.2 / 78.4 |
+| 直列4段 A+B | 344.94 / 353.52 / 367.69 ms | 18.92 | 92.6 / 83.8 |
+| 並列4段 A+B | 212.75 / 225.22 / 226.05 ms | 17.78 | 134.9 / 124.5 |
+| 2枝 A+B → 合流1段 | 189.95 / 199.09 / 206.34 ms | 13.36 | 130.1 / 118.7 |
+
+各行ウォーム20件すべて正答、入力ごとに終端・物理枠ゼロを確認した。各区間の Worker PID 観測数は順に40、40、80、80、80、60。CPU とメモリは前節と同じ Host と Worker のサンプリングによる。少数試行の P99 は最大値に相当する。直列では実行コードを組み合わせてもノードごとの固定費が支配的だった。ここでは二つのコードの差を含むため、CPU 差を作者属性による差として扱わない。
+
+```powershell
+$env:DIY_WASM_SCALING_SAMPLE_MARKERS='1'
+node scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM_A 20 2 mixed WASM_B
+```
+
+引数 `WASM_B` には同じ検査用ゲストを別の Cargo release 最適化設定でビルドしたファイルを指定する。二つの完全な Wasm ハッシュは出力 JSON に記録される。通常 Host でのこの基準と、#86 の低水準 AppContainer および #87 の直接 Core の測定は境界が異なる。
+
 事前コンパイルの適用範囲、Worker の事前準備、保持 Worker の一般化は別々に検証する。全方式の同条件 CPU/RAM と試行増加は比較側の残作業。製品経路・許可・公開契約・安全保証は変更していない。
