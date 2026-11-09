@@ -37,6 +37,30 @@ try{
  const second=await prepare();assert.deepEqual(second.missing.map(r=>r.kind).sort(),['networkUse','secretUse']);await approve(second,true,r=>r.kind==='networkUse');assert.equal((await host.send({method:'activate',reviewId:second.reviewId})).error.code,'permission-required');assert.equal(records.length,0);
  const approved=await activate();assert.deepEqual(approved.missing.map(r=>r.kind),['secretUse']);
  const normal=await run();assert.equal(value(normal).status,'data',JSON.stringify(normal));const resumed=JSON.parse(value(normal).packet.root.text);assert.equal(resumed.operation.method,'resume');assert.equal(Buffer.from(resumed.operation.response.body).toString(),replyBody);assert.equal(resumed.operation.continuation.text,text);for(const field of ['inputs','mode','resources','runKey','input','secret','headers'])assert.equal(resumed.operation[field],undefined);assert(!JSON.stringify(resumed).includes(secret));assert.equal(records[0].url,'/fixed?selected=1');assert.equal(records[0].method,'POST');assert.equal(records[0].body.toString(),text);assert.equal(records[0].headers.authorization,'Bearer '+secret);console.log('Network normal/partial consent/projection passed');
+ const benchmarkCount = Number(process.env.DIY_NETWORK_BENCHMARK_SAMPLES ?? 0);
+ assert(Number.isInteger(benchmarkCount) && benchmarkCount >= 0 && benchmarkCount <= 1000);
+ if (benchmarkCount > 0) {
+  const elapsedMs = [];
+  for (let index = 0; index < benchmarkCount; index++) {
+   const requestCount = records.length;
+   const started = performance.now();
+   await host.call({ method: 'invalidateInput', expectedPlanVersion: '1', revision: ++revision });
+   const snapshot = await run();
+   elapsedMs.push(performance.now() - started);
+   assert.equal(snapshot.current, true);
+   assert.equal(snapshot.result.delivery, 'complete');
+   assert.deepEqual(value(snapshot), value(normal));
+   assert.equal(records.length, requestCount + 1);
+   assert.equal(records.at(-1).body.toString(), text);
+   const status = await host.call({ method: 'status' });
+   assert.equal(status.workerProcesses, 0);
+   assert.equal(status.physical.physicalJobs, 0);
+  }
+  const sorted = [...elapsedMs].sort((left, right) => left - right);
+  const rank = fraction => sorted[Math.ceil(sorted.length * fraction) - 1];
+  console.log(JSON.stringify({ kind: 'normal-host-network-control', correct: elapsedMs.length,
+   p50Ms: rank(0.50), p95Ms: rank(0.95), p99Ms: rank(0.99), elapsedMs }));
+ }
  await activate('networkTwice');await host.call({method:'traceStartDetailed'});const before=records.length;assert.equal(value(await run()).status,'data');assert.equal(records.length,before+2);assert.equal(records.at(-1).body.toString(),replyBody);
  const detail=decodeTracePage((await host.call({method:'traceRead',after:'0',limit:256})).trace);
  for(const [phase,count] of [['broker-exchange',2],['worker-process',3]]){
