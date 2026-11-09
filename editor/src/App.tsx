@@ -46,7 +46,8 @@ function restore(): EditorDocument | null {
 }
 
 export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION === '1' }: { externalOnly?: boolean } = {}) {
-  const [history, setHistory] = useState<History<EditorDocument>>({ past: [], present: initialDocument(EMPTY), future: [] });
+  const documentSequence = useRef(0);
+  const [history, setHistory] = useState<History<EditorDocument & { scope: number }>>({ past: [], present: { ...initialDocument(EMPTY), scope: 0 }, future: [] });
   const doc = history.present, graph = doc.graph, key = graphKey(graph);
   const [definitions, setDefinitions] = useState<Definition[]>([]);
   const [catalogReady, setCatalogReady] = useState(false), [loadingCatalog, setLoadingCatalog] = useState(true);
@@ -101,9 +102,13 @@ export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION =
   };
   useEffect(() => { if (nodesInitialized) fit(); }, [nodesInitialized, nodeIds, fit]);
   useEffect(() => { window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit); }, [fit]);
-  const loadDocument = useCallback((next: EditorDocument, reset = false) => {
+  const loadDocument = useCallback((next: EditorDocument, { reset = false, editing = false } = {}) => {
+    const scope = editing ? null : ++documentSequence.current;
     setInputComposing(false);
-    setHistory(current => reset ? { past: [], present: next, future: [] } : commit(current, next));
+    setHistory(current => {
+      const present = { ...next, scope: scope ?? current.present.scope };
+      return reset ? { past: [], present, future: [] } : commit(current, present);
+    });
     setSelectedNode(next.graph.nodes[0]?.id ?? null); setSelectedEdge(null); setDrafts({}); setIssue(null);
     setTab('results'); setRaw(''); setRawBase(''); setNotice(null); setResult(null); setValidation(null); setLibraryOpen(false); setInspectorOpen(false); fit();
   }, [fit]);
@@ -111,12 +116,12 @@ export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION =
   useEffect(() => {
     let cancelled = false;
     if (externalOnly) {
-      void api.sample('official-dictionary').then(sample => { if (!cancelled) loadDocument(restore() ?? initialDocument(sample, 'official-dictionary.json'), true); }).catch(error => { if (!cancelled) setIssue(String(error)); });
+      void api.sample('official-dictionary').then(sample => { if (!cancelled) loadDocument(restore() ?? initialDocument(sample, 'official-dictionary.json'), { reset: true }); }).catch(error => { if (!cancelled) setIssue(String(error)); });
       return () => { cancelled = true; };
     }
     Promise.all([api.definitions(), api.sample('weather')]).then(([nodes, sample]) => {
       if (cancelled || modeRef.current) return;
-      setDefinitions(nodes); setCatalogReady(true); loadDocument(restore() ?? initialDocument(sample, 'weather.json'), true);
+      setDefinitions(nodes); setCatalogReady(true); loadDocument(restore() ?? initialDocument(sample, 'weather.json'), { reset: true });
     }).catch(error => { if (!cancelled) setIssue(error instanceof Error ? error.message : String(error)); })
       .finally(() => { if (!cancelled && !modeRef.current) setLoadingCatalog(false); });
     return () => { cancelled = true; };
@@ -128,7 +133,7 @@ export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION =
   }, [key]);
   useEffect(() => {
     if (!catalogReady) return;
-    try { localStorage.setItem(STORAGE, JSON.stringify(doc)); setStorageOk(true); } catch { setStorageOk(false); }
+    try { localStorage.setItem(STORAGE, JSON.stringify({ graph: doc.graph, positions: doc.positions, name: doc.name })); setStorageOk(true); } catch { setStorageOk(false); }
   }, [doc, catalogReady]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(null), 4500); return () => clearTimeout(timer); }, [notice]);
 
@@ -277,7 +282,7 @@ export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION =
   const applyRaw = () => {
     try {
       const next = parseGraph(raw); const positions = { ...layout(next), ...doc.positions };
-      loadDocument({ graph: next, positions, name: doc.name });
+      loadDocument({ graph: next, positions, name: doc.name }, { editing: true });
       setRaw(pretty(next)); setRawBase(pretty(next)); setTab('json'); setNotice('グラフ JSON を適用しました。');
     } catch (error) { setIssue(error instanceof Error ? error.message : String(error)); }
   };
@@ -339,7 +344,7 @@ export default function App({ externalOnly = import.meta.env.VITE_DISTRIBUTION =
         </section>
         <section className={`result-panel ${executionMode ? 'v3-results-panel' : ''} ${selectedConnection ? 'is-inspecting' : ''}`}><div className="result-tabs"><button className={tab === 'results' ? 'active' : ''} onClick={() => selectTab('results')}><Play size={13} />実行結果{currentResult && result?.report.succeeded && <i className="success-dot" />}</button><button className={tab === 'json' ? 'active' : ''} onClick={() => selectTab('json')}><Braces size={14} />グラフ JSON</button>{runMode==='external' && <button className={tab==='timeline'?'active':''} onClick={()=>selectTab('timeline')}>実行タイムライン</button>}<span className="result-engine">{busy ? <><Loader2 size={12} className="spin" />処理中</> : validated ? <><CheckCircle2 size={12} />検査済み</> : 'Rust execution engine'}</span></div>
           {runMode === 'async' && <div hidden={tab !== 'results'} className="v3-panel-container"><ExecutionPanel graph={graph} input={runtime.input} inputError={runtime.error} composing={inputComposing} hasDrafts={hasDrafts} connection={selectedConnection} onClearConnection={() => setSelectedEdge(null)} onDefinitions={executionDefinitions} onCatalogError={executionCatalogError} onStatuses={setExecutionStatuses} onRestartInput={runtime.restartRevision} /></div>}
-          {runMode === 'external' && <div hidden={tab !== 'results' && tab !== 'timeline'} className="v3-panel-container"><ExternalExecutionPanel timelineVisible={tab==='timeline'} graph={graph} input={runtime.input} inputError={runtime.error} composing={inputComposing} hasDrafts={hasDrafts} connection={selectedConnection} onClearConnection={() => setSelectedEdge(null)} onDefinitions={executionDefinitions} onCatalogError={executionCatalogError} onStatuses={setExecutionStatuses} /></div>}
+          {runMode === 'external' && <div hidden={tab !== 'results' && tab !== 'timeline'} className="v3-panel-container"><ExternalExecutionPanel documentScope={doc.scope} timelineVisible={tab==='timeline'} graph={graph} input={runtime.input} inputError={runtime.error} composing={inputComposing} hasDrafts={hasDrafts} connection={selectedConnection} onClearConnection={() => setSelectedEdge(null)} onDefinitions={executionDefinitions} onCatalogError={executionCatalogError} onStatuses={setExecutionStatuses} /></div>}
           {tab === 'results' ? executionMode ? null : <Results result={result?.report ?? null} graph={result?.graph ?? graph} connection={selectedConnection} onClearConnection={() => setSelectedEdge(null)} stale={!currentResult} inputStale={inputStale} order={validated ? validation!.order : null} duration={result?.duration} onSelectNode={id => { setSelectedNode(id); setSelectedEdge(null); setInspectorOpen(true); }} /> : tab==='json' ? <div className="graph-json-editor"><textarea aria-label="グラフ JSON" spellCheck={false} value={raw} onChange={event => setRaw(event.target.value)} /><div><small>保存ファイルは Rust CLI と共通の形式です。</small><button className="button small" onClick={() => { setRaw(pretty(graph)); setRawBase(pretty(graph)); }} disabled={!rawDirty}>変更を破棄</button><button className="button primary small" onClick={applyRaw} disabled={!rawDirty}>JSON を適用</button></div></div> : null}
         </section>
       </main>

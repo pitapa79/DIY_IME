@@ -119,7 +119,7 @@ jobs:
           $report = $result | ConvertFrom-Json
           if ($report.provenance.syntheticDictionary.rows -ne 1000 -or -not $report.checks.trueClose) { throw 'Synthetic dictionary run incomplete' }
           @{dictionary=$report.provenance.syntheticDictionary;prepareMs=$report.lifecycle.prepareMs;activateMs=$report.lifecycle.activateMs;latency=$report.summary;phases=$report.diagnostics.phaseSummary;dropped=$report.diagnostics.dropped} | ConvertTo-Json -Depth 8
-      - name: Sequential input and supersession smoke
+      - name: Sequential and paced input smoke
         run: |
           $result = node scripts/benchmark-windows-application.mjs target/windows-app --host-input-rounds 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -128,7 +128,7 @@ jobs:
           foreach ($scenario in $report.scenarios) {
             if ($scenario.attempts -ne 7 -or $scenario.failed -or $scenario.timedOut -or $scenario.cancelled -or $scenario.correct + $scenario.superseded -ne 7 -or $scenario.byCase.'dictionary-hit'.correct -ne 1) { throw 'Unexpected Host input outcome' }
           }
-          if ($report.scenarios[2].superseded -eq 0) { throw 'Burst did not exercise supersession' }
+          # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

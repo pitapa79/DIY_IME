@@ -247,11 +247,13 @@ struct Work {
     generation: Arc<()>,
     request: Request,
     cancel: CancellationToken,
+    waited: bool,
 }
 struct Controls {
     generation: Mutex<Arc<()>>,
     book: PermissionBook,
     activity: Mutex<Activity>,
+    result_read: Mutex<Option<(String, CancellationToken)>>,
     closing: AtomicBool,
     manual: AtomicBool,
     preserve_active: AtomicBool,
@@ -333,6 +335,15 @@ fn reader(
         };
         let fast = match &request.operation {
             Operation::Cancel { request_id } => {
+                if let Some((id, token)) = controls
+                    .result_read
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    && id == request_id
+                {
+                    token.cancel();
+                }
                 let state = controls.activity.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(preparing) = state.request_cancel(request_id)
                     && preparing
@@ -372,6 +383,50 @@ fn reader(
             reply(&output, &request.id, result, response_limit);
             continue;
         }
+        if matches!(request.operation, Operation::GetRun { .. }) {
+            let mut read = controls
+                .result_read
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if read.is_some() {
+                drop(read);
+                reply(
+                    &output,
+                    &request.id,
+                    Err(error("external-busy", "another result read is pending")),
+                    response_limit,
+                );
+                continue;
+            }
+            let token = CancellationToken::default();
+            let generation = controls
+                .generation
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            *read = Some((request.id.clone(), token.clone()));
+            let work = Work {
+                generation,
+                request,
+                cancel: token,
+                waited: false,
+            };
+            match sender.try_send(work) {
+                Ok(()) => (),
+                Err(mpsc::TrySendError::Full(work)) => {
+                    *read = None;
+                    drop(read);
+                    reply(
+                        &output,
+                        &work.request.id,
+                        Err(error("external-busy", "Host request queue is busy")),
+                        response_limit,
+                    );
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+            }
+            continue;
+        }
         let mut state = controls.activity.lock().unwrap_or_else(|p| p.into_inner());
         if state.active.is_some() {
             drop(state);
@@ -403,6 +458,7 @@ fn reader(
                 generation,
                 request,
                 cancel: token,
+                waited: false,
             })
             .is_err()
         {
@@ -428,6 +484,7 @@ fn reader(
             operation: Operation::Close {},
         },
         cancel: CancellationToken::default(),
+        waited: false,
     });
 }
 struct PlanEvidence {
@@ -1007,12 +1064,34 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         generation: Mutex::new(Arc::new(())),
         book: book.clone(),
         activity: Mutex::new(Activity::default()),
+        result_read: Mutex::new(None),
         closing: AtomicBool::new(false),
         manual: AtomicBool::new(false),
         preserve_active: AtomicBool::new(false),
     });
     let output = Arc::new(Mutex::new(io::stdout()));
     let (sender, receiver) = mpsc::sync_channel(1);
+    let (result_sender, result_receiver) =
+        mpsc::sync_channel::<(super::super::adapter::GuardedController, Work)>(1);
+    let result_waiter = {
+        let sender = sender.clone();
+        std::thread::Builder::new()
+            .name("diyime-host-result-wait".into())
+            .spawn(move || {
+                while let Ok((controller, work)) = result_receiver.recv() {
+                    if let Operation::GetRun { key } = &work.request.operation
+                        && !work.cancel.is_cancelled()
+                    {
+                        let _ = controller.wait_run(key);
+                    }
+                    // The Host owner rereads the snapshot and checks current context.
+                    if sender.send(work).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|_| error("external-worker", "result waiter unavailable"))?
+    };
     let input = {
         let c = controls.clone();
         let o = output.clone();
@@ -1034,10 +1113,22 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         official_assets,
         retired: Vec::new(),
     };
-    while let Ok(work) = receiver.recv() {
+    while let Ok(mut work) = receiver.recv() {
         if matches!(work.request.operation, Operation::Close {}) {
             runner.stop();
             break;
+        }
+        let result_read = matches!(work.request.operation, Operation::GetRun { .. });
+        if result_read
+            && !work.waited
+            && !work.cancel.is_cancelled()
+            && let Ok(controller) = runner.controller()
+        {
+            work.waited = true;
+            match result_sender.send((controller.clone(), work)) {
+                Ok(()) => continue,
+                Err(error) => work = error.0.1,
+            }
         }
         let publication = match &work.request.operation {
             Operation::GetRun { key } | Operation::CancelRun { key }
@@ -1087,6 +1178,12 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
                     Some("complete" | "recovered")
                 )
         });
+        let mut result_slot = result_read.then(|| {
+            controls
+                .result_read
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+        });
         let sent = publish(
             &output,
             &work.request.id,
@@ -1094,6 +1191,10 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
             config.response_bytes,
             Some((&controls, &work.generation, &work.cancel)),
         );
+        if let Some(slot) = result_slot.as_mut() {
+            slot.take();
+        }
+        drop(result_slot);
         if sent
             && public_result
             && let Some(key) = publication
@@ -1103,7 +1204,9 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         }
     }
     runner.stop();
+    drop(result_sender);
     drop(receiver);
+    let _ = result_waiter.join();
     let _ = input.join();
     Ok(())
 }

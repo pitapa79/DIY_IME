@@ -397,6 +397,40 @@ fn worker_completion_is_adopted_without_any_status_polling() {
     assert_eq!(result.delivery, RunDelivery::Complete);
     assert_eq!(result.ports[0].value["packet"]["root"]["text"], "value😀");
 }
+
+#[test]
+fn result_wait_leaves_the_actor_free_to_process_completion_and_cancel() {
+    let mut h = Harness::new(false, 1, 0, None, false);
+    let controller = h.controller();
+    let mut request = Harness::request("source");
+    let key = controller.start_run(request.clone()).unwrap().key;
+    let start = h.enter();
+    assert_ne!(
+        controller.wait_run(&key, Duration::ZERO).unwrap().state,
+        RunPhase::Terminal
+    );
+    std::thread::scope(|threads| {
+        let waiting = threads.spawn(|| controller.wait_run(&key, ms(100)).unwrap());
+        assert!(start.permit.complete(Ok(data())));
+        assert_eq!(
+            waiting.join().unwrap().result.unwrap().delivery,
+            RunDelivery::Complete
+        );
+    });
+    request.start_key = id(2);
+    let key = controller.start_run(request).unwrap().key;
+    let start = h.enter();
+    std::thread::scope(|threads| {
+        let waiting = threads.spawn(|| controller.wait_run(&key, ms(100)).unwrap());
+        controller.cancel_run(&key).unwrap();
+        assert_eq!(
+            waiting.join().unwrap().result.unwrap().reason,
+            TerminalReason::Cancelled
+        );
+    });
+    assert!(start.cancel.is_cancelled());
+    start.permit.finish_cancelled();
+}
 #[test]
 fn retained_results_expire_without_status_polling() {
     let mut h = Harness::new(false, 1, 0, None, false);

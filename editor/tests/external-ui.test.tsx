@@ -51,6 +51,23 @@ it('reuses saved subjects without another approval and hides delivered data imme
   expect(screen.queryByText('private-result')).toBeNull();await waitFor(() => expect(client.invalidate).toHaveBeenCalled());expect(client.prepare).toHaveBeenCalledTimes(1);
   view.rerender(<ExternalExecutionPanel {...props} graph={{ ...graph, nodes: [...graph.nodes, { id: 'extra', kind: 'input.text', version: 1 }] }} />);expect(screen.queryByText('private-result')).toBeNull();
 });
+it('withdraws a result and awaits old Host exit when opening a document with the same graph and input', async () => {
+  const { client, props } = fixture(true);
+  let finishClose!: () => void;
+  client.close.mockImplementationOnce(() => new Promise<void>(resolve => { finishClose = resolve; }));
+  const view = render(<ExternalExecutionPanel {...props} documentScope={1} />);
+  await activate(true);
+  click('承認済みグラフを実行');
+  await screen.findByText('private-result');
+
+  view.rerender(<ExternalExecutionPanel {...props} documentScope={2} />);
+  expect(screen.queryByText('private-result')).toBeNull();
+  expect(screen.getByRole('status').textContent).toBe('終了確認中');
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: '実行Hostに接続' }).disabled).toBe(true);
+  expect(client.close).toHaveBeenCalledWith(id);
+  await act(async () => finishClose());
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: '実行Hostに接続' }).disabled).toBe(false);
+});
 it('queries a lost start response across an input edit without resending', async () => {
   const { client, props } = fixture(true);client.start.mockRejectedValueOnce(new ExternalApiError('external-connection', 'lost'));
   const view = render(<ExternalExecutionPanel {...props} />);await activate(true);click('承認済みグラフを実行');await screen.findByRole('button', { name: '開始結果を照会' });

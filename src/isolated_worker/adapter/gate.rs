@@ -483,6 +483,12 @@ impl GuardedController {
     pub fn get_run(&self, key: &RunKey) -> Result<RunSnapshot, CoreError> {
         self.call(|c| c.get_run(key))
     }
+    pub(in crate::isolated_worker) fn wait_run(
+        &self,
+        key: &RunKey,
+    ) -> Result<RunSnapshot, CoreError> {
+        self.call(|c| c.wait_run(key, std::time::Duration::from_millis(40)))
+    }
     pub fn cancel_run(&self, key: &RunKey) -> Result<RunSnapshot, CoreError> {
         self.call(|c| c.cancel_run(key))
     }

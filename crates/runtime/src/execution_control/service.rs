@@ -2,7 +2,7 @@
 //! operations; Node work remains on WorkerDispatcher's bounded workers.
 use super::{
     CompletionWake, CompletionWakeStatus, DecimalId, ExecutionClock, ExecutionHost, ExecutionPump,
-    ResourcePolicy, RunKey, RunSnapshot, SessionControlState, SessionEpoch, StartReceipt,
+    ResourcePolicy, RunKey, RunPhase, RunSnapshot, SessionControlState, SessionEpoch, StartReceipt,
     StartRequest,
 };
 use crate::{graph::ExecutionPlan, node::CoreError};
@@ -15,12 +15,13 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub const MAX_SERVICE_SESSIONS: usize = 4;
 pub const MAX_PENDING_SERVICE_REQUESTS: usize = 16;
 const MAX_WAIT: Duration = Duration::from_secs(60);
+const MAX_RESULT_WAIT: Duration = Duration::from_millis(100);
 struct Lifecycle {
     owners: usize,
     closing: bool,
@@ -59,11 +60,22 @@ pub(crate) struct Shared {
     state_changed: Condvar,
     fault: Mutex<Option<CoreError>>,
     requests: Arc<AtomicUsize>,
+    result_waiters: Arc<AtomicUsize>,
+    result_revision: Mutex<u64>,
+    result_changed: Condvar,
     stopped: AtomicBool,
     domain: String,
     policy: ResourcePolicy,
 }
 impl Shared {
+    fn notify_results(&self) {
+        let mut revision = self
+            .result_revision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *revision = revision.wrapping_add(1);
+        self.result_changed.notify_all();
+    }
     fn unavailable(&self) -> CoreError {
         self.fault
             .lock()
@@ -226,6 +238,9 @@ impl ExecutionService {
                 closing: false,
             }),
             state_changed: Condvar::new(),
+            result_waiters: Arc::new(AtomicUsize::new(0)),
+            result_revision: Mutex::new(0),
+            result_changed: Condvar::new(),
             fault: Mutex::new(None),
             requests: Arc::new(AtomicUsize::new(0)),
             stopped: AtomicBool::new(false),
@@ -399,7 +414,9 @@ impl ExecutionController {
         let epoch = self.token.epoch.clone();
         self.call(move |actor| {
             actor.require_ready(&epoch)?;
-            actor.pump.start(&epoch, request)
+            let result = actor.pump.start(&epoch, request);
+            actor.shared.notify_results();
+            result
         })
     }
     pub fn get_run(&self, key: &RunKey) -> Result<RunSnapshot, CoreError> {
@@ -411,6 +428,50 @@ impl ExecutionController {
             }
             actor.pump.get_run_at(&key, actor.shared.clock.now()?)
         })
+    }
+    /// Wait outside the Actor for a terminal or no-longer-current snapshot.
+    /// On timeout return the latest snapshot, even if it is still running.
+    pub fn wait_run(&self, key: &RunKey, timeout: Duration) -> Result<RunSnapshot, CoreError> {
+        self.check_key(key)?;
+        self.shared
+            .result_waiters
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_PENDING_SERVICE_REQUESTS).then_some(count + 1)
+            })
+            .map_err(|_| CoreError::new("busy", "execution service has too many result waiters"))?;
+        let _permit = RequestPermit(self.shared.result_waiters.clone());
+        let start = Instant::now();
+        let timeout = timeout.min(MAX_RESULT_WAIT);
+        loop {
+            let observed = *self
+                .shared
+                .result_revision
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let snapshot = self.get_run(key)?;
+            if !snapshot.current || snapshot.state == RunPhase::Terminal {
+                return Ok(snapshot);
+            }
+            let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
+                return Ok(snapshot);
+            };
+            let revision = self
+                .shared
+                .result_revision
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // The revision was sampled before reading. A completion between
+            // the read and this lock must cause another read, not a missed wake.
+            let (revision, timed) = self
+                .shared
+                .result_changed
+                .wait_timeout_while(revision, remaining, |revision| *revision == observed)
+                .unwrap_or_else(|p| p.into_inner());
+            drop(revision);
+            if timed.timed_out() {
+                return self.get_run(key);
+            }
+        }
     }
     pub fn get_start(&self, start: DecimalId) -> Result<RunKey, CoreError> {
         let epoch = self.token.epoch.clone();
@@ -431,14 +492,18 @@ impl ExecutionController {
             if actor.unready.contains_key(&key.session_epoch) {
                 return Err(CoreError::new("run-unknown", "session has no accepted run"));
             }
-            actor.pump.cancel(&key)
+            let result = actor.pump.cancel(&key);
+            actor.shared.notify_results();
+            result
         })
     }
     pub fn invalidate_input(&self, expected: DecimalId, revision: u64) -> Result<(), CoreError> {
         let epoch = self.token.epoch.clone();
         self.call(move |actor| {
             actor.require_ready(&epoch)?;
-            actor.pump.invalidate_input(&epoch, expected, revision)
+            let result = actor.pump.invalidate_input(&epoch, expected, revision);
+            actor.shared.notify_results();
+            result
         })
     }
     pub fn prepare(&self, plan: ExecutionPlan) -> Result<(), CoreError> {
@@ -472,7 +537,9 @@ impl ExecutionController {
                 actor.unready.remove(&epoch);
                 Ok(true)
             } else {
-                actor.pump.activate(&epoch)
+                let result = actor.pump.activate(&epoch);
+                actor.shared.notify_results();
+                result
             }
         })
     }
@@ -482,7 +549,9 @@ impl ExecutionController {
             if actor.unready.contains_key(&epoch) {
                 Ok(false)
             } else {
-                actor.pump.rollback(&epoch)
+                let result = actor.pump.rollback(&epoch);
+                actor.shared.notify_results();
+                result
             }
         })
     }
@@ -566,6 +635,7 @@ impl Actor {
                 .is_some_and(|deadline| deadline <= now)
         {
             self.pump.tick()?;
+            self.shared.notify_results();
             self.clock_revision = self.shared.clock.revision();
         }
         Ok(())
@@ -671,6 +741,7 @@ fn run_actor(mut actor: Actor) {
     drop(actor);
     shared.stopped.store(true, Ordering::Release);
     shared.state_changed.notify_all();
+    shared.notify_results();
 }
 fn wait_timeout(
     clock: &ExecutionClock,

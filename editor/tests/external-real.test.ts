@@ -65,7 +65,9 @@ it('executes a consented installed package through real HTTP/client/Host/AppCont
     await until(async()=>{const s=await api.status(id!);return s.workerProcesses>0?s:null;});
     await new Promise(resolve=>setTimeout(resolve,300));
     console.info('external-real: cancel-request');
+    const waiting = api.getRun(id, cancelled.key);
     await api.cancelRun(id,cancelled.key);
+    expect(JSON.stringify((await waiting).snapshot.result) ?? '').not.toContain('private-http-input');
     console.info('external-real: cancel-drain');
     await until(async()=>{const s=await api.status(id!);return s.workerProcesses===0&&s.physical.physicalJobs===0?s:null;});
     const partial=await api.traceRead(id,'0',256),partialIntervals=partial.events.flatMap(e=>e.worker?[e.worker]:[]);
