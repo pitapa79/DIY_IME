@@ -209,3 +209,135 @@ fn compare_generic_artifact() {
     fs::remove_dir(cache.path()).unwrap();
     profile.delete().unwrap();
 }
+
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_generic_one_shot_refill() {
+    use std::{
+        sync::{Mutex, atomic::AtomicU64},
+        thread,
+    };
+
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let fixture = fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache
+        .copy(&std::env::current_exe().unwrap(), "probe.exe")
+        .unwrap();
+    let dll = cache
+        .copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll")
+        .unwrap();
+    let module = cache.copy(&fixture, "generic.wasm").unwrap();
+    let module_hash_file = cache
+        .write(
+            "generic.sha256",
+            digest(&fs::read(&fixture).unwrap()).as_bytes(),
+        )
+        .unwrap();
+    let (_, _, artifact) =
+        invoke(&cache, &exe, "generic-compile", Vec::new(), None, false).unwrap();
+    let prepared = cache.write("prepared.cwasm", &artifact).unwrap();
+    let hash_file = cache
+        .write("artifact.sha256", digest(&artifact).as_bytes())
+        .unwrap();
+    let mode = cache
+        .write("mode.txt", b"ready-generic-module-guest")
+        .unwrap();
+    let acl = Mutex::new(());
+    let count = 32;
+    for interval_ms in [20, 100] {
+        for lanes in [1, 2] {
+            for prewarm in [false, true, true, false] {
+                let epoch = Instant::now() + Duration::from_millis(180);
+                thread::scope(|scope| {
+                    for lane in 0..lanes {
+                        let (cache, exe, acl) = (&cache, &exe, &acl);
+                        scope.spawn(move || {
+                            for index in (lane..count).step_by(lanes) {
+                                let scheduled = epoch + Duration::from_millis(index as u64 * interval_ms);
+                                if !prewarm {
+                                    thread::sleep(scheduled.saturating_duration_since(Instant::now()));
+                                }
+                                let started = Instant::now();
+                                let mut profile = Profile::new().unwrap();
+                                {
+                                    let _guard = acl.lock().unwrap();
+                                    cache.allow_read_execute(&profile).unwrap();
+                                }
+                                let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+                                let control = RunControl {
+                                    walltime: Some(Duration::from_secs(10)),
+                                    ..RunControl::default()
+                                };
+                                let text = format!("入力-{index}");
+                                let bytes = request(&text);
+                                let (ready_send, ready_receive) = std::sync::mpsc::sync_channel(1);
+                                let worker = WorkerScope::observed(&profile, &job, cache, AtomicU64::new(0).into())
+                                    .with_test_exchange(Box::new(move |output, mut input| {
+                                        let exchange = || -> std::io::Result<_> {
+                                            let mut output = std::io::BufReader::new(output);
+                                            speculative::read_marker(&mut output, PROBE_READY)?;
+                                            let ready = Instant::now();
+                                            thread::sleep(scheduled.saturating_duration_since(ready));
+                                            let sent = Instant::now();
+                                            ready_send.send((ready, sent)).map_err(std::io::Error::other)?;
+                                            input.write_all(&bytes)?;
+                                            drop(input);
+                                            let mut result = Vec::new();
+                                            output.take((CAP + 1) as u64).read_to_end(&mut result)?;
+                                            assert!(result.len() <= CAP);
+                                            Ok(result)
+                                        };
+                                        exchange().map_err(|error| error.to_string())
+                                    }));
+                                let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+                                let Outcome::Exited(receipt) =
+                                    execute_observed(worker, exe, &args, Vec::new(), &control).unwrap()
+                                else {
+                                    panic!("refill probe did not verify physical exit");
+                                };
+                                let confirmed = Instant::now();
+                                assert_eq!(receipt.reason(), EndReason::Exited);
+                                assert_eq!(receipt.exit_code(), Some(0));
+                                let (_, bytes) = probe_frame(receipt.output().unwrap());
+                                let result: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                                assert_eq!(result["ok"], true);
+                                assert_eq!(result["data"]["out"]["packet"]["root"]["text"], text);
+                                let (ready, sent) = ready_receive.recv().unwrap();
+                                let (cpu, peak) = job_usage(&job);
+                                drop(job);
+                                {
+                                    let _guard = acl.lock().unwrap();
+                                    cache.revoke_read_execute(&profile).unwrap();
+                                    profile.delete().unwrap();
+                                }
+                                let recovered = Instant::now();
+                                println!(
+                                    "generic-refill interval_ms={interval_ms} lanes={lanes} prewarm={prewarm} input={index} hit={} ready_us={} queue_us={} confirmed_us={} recovered_us={} cpu_100ns={cpu} peak_job_bytes={peak}",
+                                    ready <= scheduled, (ready - started).as_micros(),
+                                    sent.saturating_duration_since(scheduled).as_micros(),
+                                    confirmed.saturating_duration_since(scheduled).as_micros(),
+                                    recovered.saturating_duration_since(scheduled).as_micros(),
+                                );
+                            }
+                        });
+                    }
+                });
+            }
+        }
+    }
+    for path in [
+        mode,
+        hash_file,
+        prepared,
+        module_hash_file,
+        module,
+        dll,
+        exe,
+    ] {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir(cache.path()).unwrap();
+    naming.delete().unwrap();
+}
