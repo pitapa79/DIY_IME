@@ -1,6 +1,6 @@
 import {setTimeout as delay} from 'node:timers/promises';
 
-const steps = [
+const defaultSteps = [
   {id: 'pending', text: 'k', expected: ''},
   {id: 'kana', text: 'ka', expected: 'か'},
   {id: 'extend', text: 'kan', expected: 'か'},
@@ -10,7 +10,7 @@ const steps = [
   {id: 'dictionary-hit', text: 'kousui', expected: '降水'},
 ];
 
-export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds}) {
+export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps}) {
   const scenarios = [];
   for (const intervalMs of [null, 100, 20]) {
     const records = [];
