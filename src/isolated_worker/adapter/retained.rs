@@ -186,6 +186,17 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
+        if stages.len() != 4 {
+            return Err(fail("retained-plan", "four prepared stages required"));
+        }
+        Self::install_stages(host, controller, stages)
+    }
+
+    fn install_stages(
+        host: ExecutionHost,
+        controller: GuardedController,
+        stages: Vec<(String, WasmNode, Value)>,
+    ) -> Result<Option<Self>, CoreError> {
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
         let mut configs = Vec::new();
@@ -193,9 +204,6 @@ impl Owner {
             ids.push(id);
             nodes.push(node);
             configs.push(config);
-        }
-        if nodes.len() != 4 {
-            return Err(fail("retained-plan", "four prepared stages required"));
         }
         let policy = &nodes[0].artifact.0.policy;
         // Unsupported policies keep the legacy path; never add fuel/memory caps.
@@ -448,7 +456,7 @@ impl Native {
         let (client, request) = RetainedClient::channel(
             host.clone(),
             pin.clone(),
-            vec![0, 1, 2, 3],
+            (0..nodes.len()).collect(),
             DriverPolicy {
                 idle_timeout: Duration::from_secs(60),
                 input_timeout: Duration::from_secs(120),
@@ -750,7 +758,7 @@ fn coordinate(
                 completed += 1;
                 let _ = command.done.send(());
             }
-            if completed == 4 {
+            if completed == nodes.len() {
                 finished = input.take().unwrap().finish(|| Ok(())).is_ok();
                 break;
             }
@@ -759,7 +767,7 @@ fn coordinate(
             }
             let snapshot = controller.get_run(&key);
             if shared.completed(&key) || snapshot.as_ref().is_ok_and(successful) {
-                let suffix: Vec<_> = (completed..4).collect();
+                let suffix: Vec<_> = (completed..nodes.len()).collect();
                 finished = input
                     .take()
                     .unwrap()
@@ -785,7 +793,7 @@ fn coordinate(
                     } else {
                         pending = Some(command);
                         if shared.completed(&key) {
-                            let suffix: Vec<_> = (completed..4).collect();
+                            let suffix: Vec<_> = (completed..nodes.len()).collect();
                             finished = input
                                 .take()
                                 .unwrap()
@@ -837,6 +845,149 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
+        run_core_fixture(None, 4, 3, 0, None, false, false, false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_mixed_chain() {
+        for retained in [false, true, true, false] {
+            run_core_fixture(Some(retained), 4, 24, 0, None, false, false, false);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_chain_lengths() {
+        for stages in [1, 2, 8, 16] {
+            for retained in [false, true] {
+                run_core_fixture(Some(retained), stages, 8, 0, None, false, false, false);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_chain_cadences() {
+        for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
+            run_core_fixture(
+                Some(retained),
+                4,
+                16,
+                interval_ms,
+                None,
+                false,
+                false,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_isolation_groups() {
+        for (retained, split) in [
+            (false, false),
+            (true, false),
+            (true, true),
+            (true, true),
+            (true, false),
+            (false, false),
+        ] {
+            run_core_fixture(
+                Some(retained),
+                2,
+                16,
+                0,
+                Some((split, 4)),
+                false,
+                false,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_isolation_groups_at_default_capacity() {
+        for (retained, split) in [(false, false), (true, false), (true, true)] {
+            run_core_fixture(
+                Some(retained),
+                2,
+                8,
+                0,
+                Some((split, 2)),
+                false,
+                false,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn profile_core_isolation_groups() {
+        for (retained, split) in [
+            (false, false),
+            (true, false),
+            (true, true),
+            (true, true),
+            (true, false),
+            (false, false),
+        ] {
+            run_core_fixture(
+                Some(retained),
+                2,
+                24,
+                20,
+                Some((split, 4)),
+                false,
+                false,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_parallel_independent_outputs() {
+        for retained in [false, true, true, false] {
+            run_core_fixture(
+                Some(retained),
+                2,
+                16,
+                0,
+                Some((true, 4)),
+                true,
+                false,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires real Windows Worker/runtime and two chain fixture builds"]
+    fn split_owner_termination_during_input() {
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, true, false);
+    }
+
+    #[test]
+    #[ignore = "requires real Windows Worker/runtime and two chain fixture builds"]
+    fn split_owner_protection_during_input_and_fresh_session() {
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, false, true);
+        run_core_fixture(Some(true), 2, 1, 0, Some((true, 4)), true, false, false);
+    }
+
+    fn run_core_fixture(
+        retained: Option<bool>,
+        stage_count: usize,
+        count: u64,
+        interval_ms: u64,
+        isolation_comparison: Option<(bool, u64)>,
+        parallel: bool,
+        kill_owner: bool,
+        protect_owner: bool,
+    ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
         };
@@ -860,57 +1011,82 @@ mod tests {
             WasmArtifact::capture(&workspace, &worker, &dll, module.clone(), policy.clone())
                 .unwrap();
         // A valid custom section gives the second stage a separate code identity.
-        let mut alternate_module = module;
-        alternate_module.extend_from_slice(&[0, 2, 1, b'x']);
+        let mut alternate_module = module.clone();
+        if retained.is_some() {
+            alternate_module = std::fs::read(required("DIY_RETAINED_ALT_FIXTURE_WASM")).unwrap();
+            assert_ne!(module, alternate_module);
+        } else {
+            alternate_module.extend_from_slice(&[0, 2, 1, b'x']);
+        }
         let alternate_artifact = artifact.with_module(alternate_module, policy).unwrap();
         let gate = ExecutionGate::default();
         let node = artifact
             .prepare(
                 "fixture.wasm.chain",
                 1,
-                vec![json!({"mode":"noOutput"})],
+                vec![json!({"mode":if retained.is_some() { "forward" } else { "noOutput" }})],
                 gate.clone(),
                 CancellationToken::default(),
             )
             .unwrap();
-        let alternate_node = artifact
-            .prepare(
-                "fixture.wasm.chain-alt",
-                1,
-                vec![json!({"mode":"preparedNoOutput"})],
-                gate.clone(),
-                CancellationToken::default(),
-            )
-            .unwrap();
-        assert!(
-            alternate_node
-                .prepared_dictionary
-                .set(super::prepared::PreparedDictionary {
-                    consumer: alternate_artifact.clone(),
-                    index: PreparedArtifact::retained_fixture(),
-                })
-                .is_ok()
-        );
+        let alternate_node = if retained.is_some() {
+            &alternate_artifact
+        } else {
+            &artifact
+        }
+        .prepare(
+            "fixture.wasm.chain-alt",
+            1,
+            vec![json!({"mode":if kill_owner || protect_owner { "executeHold" } else if retained.is_some() { "forward" } else { "preparedNoOutput" }})],
+            gate.clone(),
+            CancellationToken::default(),
+        )
+        .unwrap();
+        if retained.is_none() {
+            assert!(
+                alternate_node
+                    .prepared_dictionary
+                    .set(super::prepared::PreparedDictionary {
+                        consumer: alternate_artifact.clone(),
+                        index: PreparedArtifact::retained_fixture(),
+                    })
+                    .is_ok()
+            );
+        }
         let mut registry = Registry::new();
         register_system_nodes(&mut registry).unwrap();
         registry.register_deferred(node.clone()).unwrap();
         registry.register_deferred(alternate_node.clone()).unwrap();
-        let ids: Vec<_> = (0..4).map(|n| format!("stage{n}")).collect();
-        let nodes = [&node, &alternate_node, &node, &node];
-        let configs: Vec<_> = (0..4)
-            .map(|n| json!({"mode":if n==1{"preparedNoOutput"}else{"echo"}}))
+        let ids: Vec<_> = (0..stage_count).map(|n| format!("stage{n}")).collect();
+        let nodes: Vec<_> = (0..stage_count)
+            .map(|index| {
+                if index == 1 || (retained.is_some() && index % 2 == 1) {
+                    &alternate_node
+                } else {
+                    &node
+                }
+            })
+            .collect();
+        let configs: Vec<_> = (0..stage_count)
+            .map(|n| json!({"mode":if (kill_owner || protect_owner) && n==1 { "executeHold" } else if retained.is_some() { "forward" } else if n==1 {"preparedNoOutput"} else {"echo"}}))
             .collect();
         let mut graph_nodes = vec![json!({"id":"input","kind":"input.text","version":1})];
-        graph_nodes.extend(ids.iter().zip(&configs).zip(nodes).map(
+        graph_nodes.extend(ids.iter().zip(&configs).zip(nodes.iter().copied()).map(
             |((id, config), node)| {
                 json!({"id":id,"kind":node.definition.kind,"version":1,"config":config})
             },
         ));
         let mut edges =
             vec![json!({"from":{"node":"input","port":"out"},"to":{"node":ids[0],"port":"in"}})];
-        edges.extend((0..3).map(
-            |i| json!({"from":{"node":ids[i],"port":"out"},"to":{"node":ids[i+1],"port":"in"}}),
-        ));
+        if parallel {
+            edges.push(
+                json!({"from":{"node":"input","port":"out"},"to":{"node":ids[1],"port":"in"}}),
+            );
+        } else {
+            edges.extend((0..stage_count - 1).map(
+                |i| json!({"from":{"node":ids[i],"port":"out"},"to":{"node":ids[i+1],"port":"in"}}),
+            ));
+        }
         let graph =
             Graph::from_json(&json!({"version":1,"nodes":graph_nodes,"edges":edges}).to_string())
                 .unwrap();
@@ -920,10 +1096,13 @@ mod tests {
         .unwrap();
         // Use the bounded fixture without host-lifetime run history so the
         // teardown can require every resource counter to return to zero.
+        let mut policy = resource_policy["resourceProfiles"]["noTombstones"].clone();
+        if let Some((_, capacity)) = isolation_comparison {
+            policy["maxPhysicalJobs"] = json!(capacity);
+        }
         let host = ExecutionHost::new(
             "actual-core-skipped-suffix",
-            ResourcePolicy::from_value(resource_policy["resourceProfiles"]["noTombstones"].clone())
-                .unwrap(),
+            ResourcePolicy::from_value(policy).unwrap(),
         )
         .unwrap();
         let service = ExecutionService::new(host.clone()).unwrap();
@@ -935,7 +1114,7 @@ mod tests {
             .unwrap();
         let targets: Vec<_> = ids
             .iter()
-            .zip(nodes)
+            .zip(nodes.iter().copied())
             .map(|(id, node)| {
                 node.grant_target(raw.session_epoch(), DecimalId::new(1).unwrap(), id)
             })
@@ -944,38 +1123,236 @@ mod tests {
             gate.approve(target.clone());
         }
         let controller = gate.seal(raw, targets).unwrap();
-        let stages = ids
+        let stages: Vec<_> = ids
             .iter()
             .zip(&configs)
             .zip(nodes)
             .map(|((id, config), node)| (id.clone(), node.clone(), config.clone()))
             .collect();
-        let owner = Owner::install(host.clone(), controller.clone(), stages)
-            .unwrap()
-            .unwrap();
-        owner.start();
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while !owner.ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "remaining ownership: {:?}",
-                host.usage()
+        let ready_started = std::time::Instant::now();
+        let split = isolation_comparison.is_some_and(|(split, _)| split);
+        let mut owners = if retained != Some(false) {
+            let install = if stage_count == 4 {
+                Owner::install
+            } else {
+                Owner::install_stages
+            };
+            let groups = if split {
+                stages.into_iter().map(|stage| vec![stage]).collect()
+            } else {
+                vec![stages]
+            };
+            let owners: Vec<_> = groups
+                .into_iter()
+                .map(|group| {
+                    install(host.clone(), controller.clone(), group)
+                        .unwrap()
+                        .unwrap()
+                })
+                .collect();
+            for owner in &owners {
+                owner.start();
+            }
+            let deadline = ready_started + Duration::from_secs(20);
+            while !owners.iter().all(Owner::ready) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "remaining ownership: {:?}",
+                    host.usage()
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            owners
+        } else {
+            drop(stages);
+            Vec::new()
+        };
+        if let Some(mode) = retained {
+            println!(
+                "mixed-core retained={mode} stages={stage_count} ready_us={}",
+                ready_started.elapsed().as_micros()
             );
-            std::thread::sleep(Duration::from_millis(2));
         }
-        let pid = owner.process_id().unwrap();
-        for revision in 1..=3 {
+        let pids: Vec<_> = owners
+            .iter()
+            .map(|owner| owner.process_id().unwrap())
+            .collect();
+        if split && retained == Some(true) {
+            assert_eq!(pids.len(), 2);
+            assert_ne!(pids[0], pids[1]);
+        }
+        if isolation_comparison.is_some() {
+            assert_eq!(host.usage().physical_jobs, owners.len() as u64);
+            println!(
+                "isolation-core retained={} split={split} ready_us={} owner_jobs={}",
+                retained.unwrap(),
+                ready_started.elapsed().as_micros(),
+                owners.len()
+            );
+        }
+        let mut first_revision = 1;
+        if isolation_comparison == Some((true, 2)) {
+            let request: StartRequest = serde_json::from_value(json!({
+                "startKey":"1", "expectedPlanVersion":"1",
+                "targets":[{"node":ids[stage_count - 1],"port":"out"}],
+                "input":{"revision":1,"text":"capacity probe","mode":"compose"}
+            }))
+            .unwrap();
+            let receipt = controller.start_run(request).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                let snapshot = controller.wait_run(&receipt.key).unwrap();
+                assert_ne!(snapshot.state, RunPhase::Terminal);
+                assert_eq!(snapshot.physical.running, 0);
+                if snapshot.physical.queued == 1 {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+            }
+            assert_eq!(host.usage().physical_jobs, 2);
+            assert!(owners.iter().all(|owner| owner.decoded_replies() == 0));
+            controller.cancel_run(&receipt.key).unwrap();
+            let snapshot = controller.wait_run(&receipt.key).unwrap();
+            assert_eq!(snapshot.state, RunPhase::Terminal);
+            assert_eq!(snapshot.physical.queued, 0);
+            assert_eq!(snapshot.physical.running, 0);
+            assert_eq!(host.usage().physical_jobs, 2);
+            owners.clear();
+            assert_eq!(host.usage().physical_jobs, 0);
+            println!("capacity probe: both slots held, queued input cancelled, owners released");
+            first_revision = 2;
+        }
+        let mut protected_handles = Vec::new();
+        if protect_owner {
+            use windows_sys::Win32::{
+                Foundation::WAIT_TIMEOUT,
+                System::Threading::{OpenProcess, WaitForSingleObject},
+            };
+            for (owner, pid) in owners.iter().zip(&pids) {
+                assert_eq!(owner.process_id(), Some(*pid));
+                let handle = unsafe { OpenProcess(0x0010_0000, 0, u32::try_from(*pid).unwrap()) };
+                assert!(!handle.is_null());
+                assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+                protected_handles.push(handle);
+            }
+        }
+        let mut last_key = None;
+        let sample_marker = |marker: &str| {
+            if interval_ms > 0
+                && let Some((split, _)) = isolation_comparison
+            {
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                println!(
+                    "isolation-sample {marker} retained={} split={split} epoch_ms={epoch_ms}",
+                    retained.unwrap()
+                );
+            }
+        };
+        sample_marker("begin");
+        let origin = std::time::Instant::now();
+        for revision in first_revision..first_revision + count {
+            let scheduled = origin + Duration::from_millis((revision - 1) * interval_ms);
+            if interval_ms > 0 {
+                let remaining = scheduled.saturating_duration_since(std::time::Instant::now());
+                if !remaining.is_zero() {
+                    std::thread::sleep(remaining);
+                }
+            }
+            let start = std::time::Instant::now();
             if revision > 1 {
-                owner.witness_terminal(&controller);
+                for owner in &owners {
+                    owner.witness_terminal(&controller);
+                }
                 controller
                     .invalidate_input(DecimalId::new(1).unwrap(), revision)
                     .unwrap();
+                if let Some(previous) = &last_key {
+                    let stale = controller.get_run(previous).unwrap();
+                    // Direct Core snapshots retain history. The External Host
+                    // filters the payload before responding to its client.
+                    assert!(!stale.current);
+                }
             }
-            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[3],"port":"out"}],"input":{"revision":revision,"text":"sample","mode":"compose"}})).unwrap();
+            let input = format!("sample-{revision}");
+            let target_ids: Vec<_> = if parallel {
+                ids.iter().collect()
+            } else {
+                vec![&ids[stage_count - 1]]
+            };
+            let output_targets: Vec<_> = target_ids
+                .iter()
+                .map(|id| json!({"node":id,"port":"out"}))
+                .collect();
+            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":output_targets,"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
+            if protect_owner {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !owners[1].active_input() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "second owner never accepted input"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                gate.set_protection(true, false);
+                assert!(
+                    controller.get_run(&receipt.key).is_err(),
+                    "protected result readable"
+                );
+                gate.set_protection(false, false);
+                assert!(
+                    controller.get_run(&receipt.key).is_err(),
+                    "old result revived"
+                );
+                println!("split-protection old_result_denied=true after_clear_denied=true");
+                break;
+            }
+            if kill_owner {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !owners[1].active_input() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "second owner never accepted input"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                use windows_sys::Win32::{
+                    Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                    System::Threading::{
+                        OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+                    },
+                };
+                let other_pid = u32::try_from(pids[0]).unwrap();
+                let other = unsafe { OpenProcess(0x0010_0000, 0, other_pid) };
+                assert!(!other.is_null());
+                assert_eq!(owners[0].process_id(), Some(u64::from(other_pid)));
+                assert_eq!(unsafe { WaitForSingleObject(other, 0) }, WAIT_TIMEOUT);
+                let pid = u32::try_from(pids[1]).unwrap();
+                let handle = unsafe { OpenProcess(PROCESS_TERMINATE | 0x0010_0000, 0, pid) };
+                assert!(!handle.is_null());
+                assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+                assert_eq!(owners[1].process_id(), Some(u64::from(pid)));
+                assert_ne!(unsafe { TerminateProcess(handle, 77) }, 0);
+                assert_eq!(
+                    unsafe { WaitForSingleObject(handle, 10_000) },
+                    WAIT_OBJECT_0
+                );
+                assert_eq!(unsafe { WaitForSingleObject(other, 0) }, WAIT_TIMEOUT);
+                unsafe {
+                    CloseHandle(handle);
+                    CloseHandle(other);
+                }
+                println!("split-fault killed_owner=1 pid={pid} signalled=true");
+            }
+            if retained.is_some() {
+                last_key = Some(receipt.key.clone());
+            }
             let deadline = std::time::Instant::now() + Duration::from_secs(20);
             let snapshot = loop {
-                let snapshot = controller.get_run(&receipt.key).unwrap();
+                let snapshot = controller.wait_run(&receipt.key).unwrap();
                 if snapshot.state == RunPhase::Terminal
                     && snapshot.physical.running == 0
                     && snapshot.physical.cancel_requested == 0
@@ -987,26 +1364,105 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(2));
             };
-            assert_eq!(
-                snapshot.result.as_ref().unwrap().delivery,
-                RunDelivery::NoOutput
-            );
+            let elapsed = start.elapsed().as_micros();
             let result = snapshot.result.unwrap();
-            for id in &ids[2..] {
+            if let Some(mode) = retained {
+                if kill_owner {
+                    println!(
+                        "split-fault current={} delivery={:?} reason={:?} causes={:?} ports={}",
+                        snapshot.current,
+                        result.delivery,
+                        result.reason,
+                        result.causes,
+                        result.ports.len()
+                    );
+                    assert!(snapshot.current);
+                    assert_eq!(result.delivery, RunDelivery::Failed);
+                    assert!(
+                        result
+                            .causes
+                            .iter()
+                            .any(|cause| cause["id"]["nodeId"] == "stage1")
+                    );
+                } else {
+                    assert_eq!(result.delivery, RunDelivery::Complete);
+                    assert!(result.causes.is_empty());
+                }
+                for id in if kill_owner { &ids[..0] } else { &ids[..] } {
+                    let port = result
+                        .ports
+                        .iter()
+                        .find(|port| port.endpoint.node == *id)
+                        .unwrap();
+                    assert_eq!(port.value["packet"]["root"]["text"], input);
+                }
+                println!(
+                    "mixed-core retained={mode} stages={stage_count} revision={revision} elapsed_us={elapsed}"
+                );
+                if isolation_comparison.is_some() {
+                    println!(
+                        "isolation-core retained={mode} split={split} parallel={parallel} revision={revision} elapsed_us={elapsed}"
+                    );
+                }
+                if interval_ms > 0 {
+                    let late = start.saturating_duration_since(scheduled).as_micros();
+                    println!(
+                        "mixed-cadence retained={mode} interval_ms={interval_ms} revision={revision} service_us={elapsed} schedule_delay_us={late} response_from_schedule_us={}",
+                        late + elapsed
+                    );
+                }
+            } else {
+                assert_eq!(result.delivery, RunDelivery::NoOutput);
+                for id in &ids[2..] {
+                    assert_eq!(
+                        result.nodes.iter().find(|n| n["nodeId"] == *id).unwrap()["status"],
+                        "skipped"
+                    );
+                }
+            }
+            for (owner, pid) in owners.iter().zip(&pids).filter(|_| !kill_owner) {
+                assert_eq!(owner.process_id(), Some(*pid));
                 assert_eq!(
-                    result.nodes.iter().find(|n| n["nodeId"] == *id).unwrap()["status"],
-                    "skipped"
+                    owner.shared.replies.load(Ordering::Acquire),
+                    revision
+                        * if split {
+                            1
+                        } else if retained.is_some() {
+                            stage_count as u64
+                        } else {
+                            2
+                        },
+                    "every executed stage must return exactly one reply"
                 );
             }
-            assert_eq!(owner.process_id(), Some(pid));
-            assert_eq!(
-                owner.shared.replies.load(Ordering::Acquire),
-                revision * 2,
-                "Core Skipped suffix must not cause invented native calls"
-            );
         }
+        sample_marker("end");
+        if let Some(key) = last_key {
+            gate.set_protection(true, false);
+            assert!(controller.get_run(&key).is_err());
+            gate.set_protection(false, false);
+            assert!(controller.get_run(&key).is_err());
+        }
+        let cleanup_started = std::time::Instant::now();
         controller.close();
-        drop(owner);
+        drop(owners);
+        for handle in protected_handles {
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, WAIT_OBJECT_0},
+                System::Threading::WaitForSingleObject,
+            };
+            assert_eq!(
+                unsafe { WaitForSingleObject(handle, 10_000) },
+                WAIT_OBJECT_0,
+                "original owner not reaped"
+            );
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+        if protect_owner {
+            println!("split-protection original_owner_handles_signalled=2");
+        }
         drop(controller);
         drop(service);
         drop(registry);
@@ -1049,5 +1505,11 @@ mod tests {
         }
         std::fs::remove_dir(workspace.join("target")).unwrap();
         std::fs::remove_dir(workspace).unwrap();
+        if let Some(mode) = retained {
+            println!(
+                "mixed-core retained={mode} session_cleanup_us={}",
+                cleanup_started.elapsed().as_micros()
+            );
+        }
     }
 }
