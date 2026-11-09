@@ -8,7 +8,7 @@ const fixtureA = '1301ed6b7c9693bffe328cf8ae56a99c1db68a13f30abfe2604997a346dee2
 const fixtureB = '49f60add1f5a97d0774c5d0cadedcf1844b6236ef7e1fc6b97064ddc09685bf4';
 const knownFixtures = report.moduleSha256?.join(',') === [fixtureA, fixtureB, fixtureA].join(',');
 
-function analyze({ tracePages, diagnostic, revision }, fixtureBounds) {
+function analyze({ tracePages, diagnostic, revision }, fixtureBounds, single) {
   assert(tracePages?.length && diagnostic, 'missing detailed diagnostic');
   const events = tracePages.flatMap(page => {
     assert.equal(Number(page.dropped), 0, 'trace dropped events');
@@ -52,8 +52,19 @@ function analyze({ tracePages, diagnostic, revision }, fixtureBounds) {
   });
   const acceptedToPublishedUs = Number(BigInt(publication.atUs) - BigInt(accepted.atUs));
   assert(acceptedToPublishedUs >= 0, 'invalid publication time');
+  let acceptedToPublishedOverheadBounds;
+  if (single) {
+    assert.equal(nodes.length, 1, 'single-stage diagnostic must resolve one Wasm node');
+    assert(acceptedToPublishedUs >= nodes[0].readyToResolvedUs, 'node timing exceeds run timing');
+    if (fixtureBounds) {
+      acceptedToPublishedOverheadBounds = {
+        lowerUs: acceptedToPublishedUs - nodes[0].guestCallUs,
+        upperUs: acceptedToPublishedUs,
+      };
+    }
+  }
   return { run: publication.run, plan: publication.plan, input: publication.input,
-    acceptedToPublishedUs, clientObservedMs: diagnostic.resultMs, nodes };
+    acceptedToPublishedUs, acceptedToPublishedOverheadBounds, clientObservedMs: diagnostic.resultMs, nodes };
 }
 
 let exclusions = 0;
@@ -61,9 +72,10 @@ const scenarios = report.scenarios.map(scenario => {
   const { shape, count, mixed = false } = scenario;
   const fixtureBounds = knownFixtures && !scenario.official && !scenario.mixedOrigin
     && ['serial', 'parallel', 'join'].includes(shape);
+  const single = shape === 'serial' && count === 1 && !scenario.official && !scenario.mixedOrigin;
   const diagnostics = (scenario.diagnostics ?? [scenario]).map(input => {
     try {
-      return { revision: input.revision, ...analyze(input, fixtureBounds) };
+      return { revision: input.revision, ...analyze(input, fixtureBounds, single) };
     } catch (error) {
       exclusions++;
       return { revision: input.revision, excluded: error.message };

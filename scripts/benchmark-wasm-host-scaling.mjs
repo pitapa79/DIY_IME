@@ -13,7 +13,7 @@ const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
   Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
-  ['all', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
+  ['all', 'single', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
   (scenario !== 'mixed' || alternateWasm),
   'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
 
@@ -274,7 +274,8 @@ try {
     { count: 1, shape: 'serial', unused: 15 },
     { count: 4, shape: 'skip' },
   ];
-  const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+  const selected = scenario === 'single' ? [{ count: 1, shape: 'serial' }]
+    : scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
     : scenario === 'mixed' ? [
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
