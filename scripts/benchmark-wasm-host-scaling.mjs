@@ -13,7 +13,7 @@ const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
   Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
-  ['all', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
+  ['all', 'single', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
   (scenario !== 'mixed' || alternateWasm),
   'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
 
@@ -172,6 +172,20 @@ async function measure(client, spec) {
     return { ...spec, prepareMs, pacing };
   }
   const records = [];
+  const perInputDiagnostics = process.env.DIY_WASM_SCALING_TRACE_EACH === '1';
+  const diagnostics = [];
+  async function readTrace() {
+    const tracePages = [];
+    let cursor = '0';
+    for (;;) {
+      const page = (await client.call({ method: 'traceRead', after: cursor, limit: 256 })).trace;
+      tracePages.push(page);
+      if (page.events.length === 0) break;
+      cursor = page.events.at(-1).sequence;
+    }
+    await client.call({ method: 'traceStop' });
+    return tracePages;
+  }
   for (let revision = 1; revision <= samples + 2; revision++) {
     if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'begin', epochMs: Date.now() }));
@@ -179,7 +193,7 @@ async function measure(client, spec) {
     if (revision === samples + 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'end', epochMs: Date.now() }));
     }
-    if (revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
+    if (perInputDiagnostics || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
     const text = spec.shape === 'dictionary' ? 'kousui' : `scaling-fixture-${revision}`;
     const start = performance.now();
     const key = await submit(text, revision);
@@ -199,19 +213,20 @@ async function measure(client, spec) {
     const status = await client.call({ method: 'status' });
     assert.equal(status.workerProcesses, 0);
     assert.equal(status.physical.physicalJobs, 0);
-    records.push({ admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start });
+    const record = { admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start };
+    if (perInputDiagnostics) {
+      diagnostics.push({ revision, diagnostic: record, tracePages: await readTrace() });
+    } else {
+      records.push(record);
+    }
+  }
+  if (perInputDiagnostics) {
+    await client.call({ method: 'closeSession' });
+    return { ...spec, prepareMs, diagnostics };
   }
   const profiler = new PhaseProfiler('host-detailed');
-  const tracePages = [];
-  let cursor = '0';
-  for (;;) {
-    const raw = (await client.call({ method: 'traceRead', after: cursor, limit: 256 })).trace;
-    const page = profiler.observe(raw);
-    tracePages.push(raw);
-    if (page.events.length === 0) break;
-    cursor = page.events.at(-1).sequence;
-  }
-  await client.call({ method: 'traceStop' });
+  const tracePages = await readTrace();
+  for (const page of tracePages) profiler.observe(page);
   await client.call({ method: 'closeSession' });
   const diagnostic = records.pop();
   return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
@@ -259,7 +274,8 @@ try {
     { count: 1, shape: 'serial', unused: 15 },
     { count: 4, shape: 'skip' },
   ];
-  const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+  const selected = scenario === 'single' ? [{ count: 1, shape: 'serial' }]
+    : scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
     : scenario === 'mixed' ? [
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
@@ -272,7 +288,7 @@ try {
   for (const spec of selected) {
     const result = await measure(client, spec);
     scenarios.push(result);
-    console.error(JSON.stringify({ ...spec, summaryMs: result.summaryMs }));
+    console.error(JSON.stringify({ ...spec, summaryMs: result.summaryMs, diagnosticCount: result.diagnostics?.length }));
   }
   console.log(JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
     physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
