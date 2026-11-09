@@ -116,3 +116,21 @@ cargo test --locked --lib compare_raw_controlled_miss_fallback -- --ignored --no
 ```powershell
 cargo test --locked --lib compare_raw_precompile_miss_fallback -- --ignored --nocapture
 ```
+## 独立した latest-input-wins の2枠シミュレーション
+
+試験専用スケジューラを追加し、1入力実行と最大1個の予備を同時に扱う。16入力を20 / 100 ms間隔で各方式2試行、対照→事前→事前→対照の順に送る。新入力は未配送の pending を置き換え、実行中の旧 revision を取り消す。完了イベントを処理した時点で最新 revision に一致するものだけを正答として採用し、旧 revision は superseded とする。入力の新着処理と完了イベントの順序はこの試験スレッドで決まり、予定時刻ではなく実際の新着処理時点で current を更新する。各 current の文字列を完全照合する。
+
+| 間隔 | 方式 | 正答 / 全入力 | superseded | 事前 Worker へ配送 |
+| --- | --- | ---: | ---: | ---: |
+| 20 ms | 入力時起動 | 4 / 32 | 28 | — |
+| 20 ms | 事前準備 | 6 / 32 | 26 | 10 / 32 |
+| 100 ms | 入力時起動 | 31 / 32 | 1 | — |
+| 100 ms | 事前準備 | 32 / 32 | 0 | 32 / 32 |
+
+事前 Worker への配送数には、その後に置換された入力も含む。試験では枠数を2以下とし、キャンセルされた Worker は OS 終了の receipt と Job / ACL / profile 回収後の完了通知まで枠を保持する。全 Worker を終了・回収してから試行を終えた。予備の初回は最初の入力より180 ms前に開始する。入力時起動も、起動中に新着があった場合はその同じ未入力 Worker を待って最新入力を送り、ready を待てないからと別 Worker を追加起動しない。事前準備側も未準備の Worker を待ち、今回の条件では別の fallback 起動は0回だった。
+
+これは通常 Host ではなく、試験用の単純な単段スケジューラである。新着と完了の観測順、入力取消、予約、権限・保護を本番と同一とはみなせず、予定時刻に対する遅延も含まない。標本は各条件32入力、20 ms の正答数は少ない。生ログ `issue86-generic-raw-latest.log` の応答時間は正答に限り、終了確認時刻から実際の新着処理時刻までである。
+
+```powershell
+cargo test --locked --lib compare_raw_latest_wins -- --ignored --nocapture
+```

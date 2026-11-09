@@ -503,3 +503,110 @@ fn controlled_raw_fallback(precompile: bool) {
     fs::remove_dir(cache.path()).unwrap();
     naming.delete().unwrap();
 }
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_raw_latest_wins() {
+    use crate::execution_control::CancellationToken;
+    use std::{sync::{atomic::AtomicU64, mpsc, Mutex}, thread};
+    enum Event { Ready(u64), Done(u64, Option<String>, Instant) }
+    struct Slot { id: u64, cancel: CancellationToken, send: Option<mpsc::SyncSender<Vec<u8>>>, revision: Option<usize>, ready: bool, cancelling: bool }
+    let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
+    let fixture = fs::canonicalize(std::env::var_os("DIY_GENERIC_PROBE_WASM").unwrap()).unwrap();
+    let mut naming = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming).unwrap();
+    let exe = cache.copy(&std::env::current_exe().unwrap(), "probe.exe").unwrap();
+    let dll = cache.copy(&bundle.join("runtime/wasmtime.dll"), "wasmtime.dll").unwrap();
+    let module = cache.copy(&fixture, "generic.wasm").unwrap();
+    let hash = cache.write("generic.sha256", digest(&fs::read(&fixture).unwrap()).as_bytes()).unwrap();
+    let mode = cache.write("mode.txt", b"ready-generic-jit").unwrap();
+    let acl = Mutex::new(());
+    for interval in [20_u64, 100] {
+      for warm in [false, true, true, false] {
+        let (events, receive) = mpsc::channel();
+        let mut slots: Vec<Slot> = Vec::new();
+        let mut next_id = 0_u64;
+        let mut pending = None;
+        let mut issued = 0_usize;
+        let mut current = None;
+        let mut correct = 0;
+        let mut superseded = 0;
+        let mut response = Vec::new();
+        let mut arrivals = Vec::new();
+        let mut hits = 0;
+        let mut fallbacks = 0;
+        let origin = Instant::now() + Duration::from_millis(180);
+        thread::scope(|scope| {
+          let mut spawn_worker = |slots: &mut Vec<Slot>| {
+            assert!(slots.len() < 2);
+            let id = next_id; next_id += 1;
+            let cancel = CancellationToken::default();
+            let token = cancel.clone();
+            let (send, recv) = mpsc::sync_channel::<Vec<u8>>(1);
+            let events = events.clone(); let cache = &cache; let exe = &exe; let acl = &acl;
+            scope.spawn(move || {
+              let mut profile = Profile::new().unwrap();
+              { let _g = acl.lock().unwrap(); cache.allow_read_execute(&profile).unwrap(); }
+              let job = Job::with_memory_limit(Some(512 * 1024 * 1024)).unwrap();
+              let control = RunControl { cancel: token, walltime: Some(Duration::from_secs(10)), ..RunControl::default() };
+              let event_ready = events.clone();
+              let worker = WorkerScope::observed(&profile, &job, cache, AtomicU64::new(0).into()).with_test_exchange(Box::new(move |output, mut input| {
+                let mut output = std::io::BufReader::new(output);
+                speculative::read_marker(&mut output, PROBE_READY).map_err(|e| e.to_string())?;
+                event_ready.send(Event::Ready(id)).map_err(|e| e.to_string())?;
+                let bytes = recv.recv().map_err(|e| e.to_string())?;
+                input.write_all(&bytes).map_err(|e| e.to_string())?; drop(input);
+                let mut result = Vec::new(); output.take((CAP + 1) as u64).read_to_end(&mut result).map_err(|e| e.to_string())?; Ok(result)
+              }));
+              let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
+              let Outcome::Exited(receipt) = execute_observed(worker, exe, &args, Vec::new(), &control).unwrap() else { panic!("unconfirmed worker exit") };
+              let stamp = receipt.signalled_at;
+              let output = if receipt.reason() == EndReason::Exited && receipt.exit_code() == Some(0) {
+                let (_, bytes) = probe_frame(receipt.output().unwrap());
+                let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                if value["ok"] == true { value["data"]["out"]["packet"]["root"]["text"].as_str().map(str::to_owned) } else { None }
+              } else { None };
+              drop(job); { let _g = acl.lock().unwrap(); cache.revoke_read_execute(&profile).unwrap(); profile.delete().unwrap(); }
+              events.send(Event::Done(id, output, stamp)).unwrap();
+            });
+            slots.push(Slot { id, cancel, send: Some(send), revision: None, ready: false, cancelling: false });
+          };
+          if warm { spawn_worker(&mut slots); }
+          let deadline = origin + Duration::from_secs(30);
+          while issued < 16 || pending.is_some() || slots.iter().any(|s| s.revision.is_some()) {
+            assert!(Instant::now() < deadline, "latest-wins deadline");
+            while let Ok(event) = receive.try_recv() {
+              match event {
+                Event::Ready(id) => if let Some(s) = slots.iter_mut().find(|s| s.id == id) { s.ready = true; },
+                Event::Done(id, output, stamp) => {
+                  let position = slots.iter().position(|s| s.id == id).unwrap(); let slot = slots.remove(position);
+                  if let Some(rev) = slot.revision { if current == Some(rev) { assert_eq!(output.as_deref(), Some(format!("latest-{rev}").as_str()), "current input failed"); correct += 1; response.push(stamp.duration_since(arrivals[rev]).as_micros()); } else { superseded += 1; } }
+                }
+              }
+            }
+            let now = Instant::now();
+            if issued < 16 && now >= origin + Duration::from_millis(issued as u64 * interval) {
+              if pending.take().is_some() { superseded += 1; }
+              current = Some(issued); arrivals.push(now); pending = Some(issued); issued += 1;
+              for slot in &mut slots { if slot.revision.is_some() && !slot.cancelling { slot.cancel.cancel(); slot.send.take(); slot.cancelling = true; } }
+            }
+            if let Some(rev) = pending {
+              if let Some(slot) = slots.iter_mut().find(|s| s.revision.is_none() && s.ready && !s.cancelling) {
+                if warm { hits += 1; }
+                slot.send.take().unwrap().send(request(&format!("latest-{rev}"))).unwrap(); slot.revision = Some(rev); pending = None;
+              } else if !slots.iter().any(|s| s.revision.is_none() && !s.cancelling) && slots.len() < 2 {
+                if warm { fallbacks += 1; } spawn_worker(&mut slots);
+              }
+            } else if warm && issued < 16 && slots.len() < 2 && !slots.iter().any(|s| s.revision.is_none() && !s.cancelling) { spawn_worker(&mut slots); }
+            thread::sleep(Duration::from_millis(1));
+          }
+          for slot in &mut slots { if !slot.cancelling { slot.cancel.cancel(); slot.send.take(); slot.cancelling = true; } }
+          while !slots.is_empty() { match receive.recv_timeout(Duration::from_secs(10)).unwrap() { Event::Ready(_) => (), Event::Done(id, _, _) => { let i = slots.iter().position(|s| s.id == id).unwrap(); slots.remove(i); } } }
+        });
+        assert_eq!(correct + superseded, 16);
+        response.sort();
+        println!("raw-latest interval_ms={interval} prewarm={warm} correct={correct} superseded={superseded} hits={hits} fallback_starts={fallbacks} response_us={response:?}");
+      }
+    }
+    for path in [mode, hash, module, dll, exe] { fs::remove_file(path).unwrap(); }
+    fs::remove_dir(cache.path()).unwrap(); naming.delete().unwrap();
+}
