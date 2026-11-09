@@ -16,6 +16,8 @@ mod preparation;
 #[cfg(target_arch = "x86_64")]
 mod retained;
 #[cfg(target_arch = "x86_64")]
+pub(in crate::isolated_worker) use retained::execute_retained_observed;
+#[cfg(target_arch = "x86_64")]
 pub use retained::{
     DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedInput, RetainedReservation,
     RetainedWorkerRequest, execute_retained,
@@ -24,7 +26,13 @@ pub use retained::{
 type ResourcePin = Box<dyn ResourceOwner>;
 #[cfg(target_arch = "x86_64")]
 trait ResourceOwner: Send + Sync {
+    fn observe_start(&self, _process_id: u32) {}
     fn observe_exit(&self) {}
+}
+#[cfg(target_arch = "x86_64")]
+pub(in crate::isolated_worker) struct RetainedObservation {
+    pub activity: Arc<AtomicU64>,
+    pub process_id: Arc<AtomicU64>,
 }
 #[cfg(target_arch = "x86_64")]
 impl ResourceOwner for Arc<std::sync::Mutex<adapter::ResourceRangeSession>> {}
@@ -686,6 +694,10 @@ pub(super) fn execute_with_diagnostics<'a>(
     // Success guarantees both handles; from here the owner cannot return an untyped error.
     let process_handle = OwnedHandle(process.hProcess);
     let thread_handle = OwnedHandle(process.hThread);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(owner) = &resource_owner {
+        owner.observe_start(process.dwProcessId);
+    }
     drop(write);
     drop(input);
     let diagnostics_read = diagnostics.map(|(read, write)| {

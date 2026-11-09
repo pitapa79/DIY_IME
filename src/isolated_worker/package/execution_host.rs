@@ -1,6 +1,7 @@
 //! Production pure-Wasm execution. Assets, roots and authority come from the Host.
 use super::{
-    Catalog, Package, PackageVerifier, VerifiedPackage,
+    Catalog, CatalogSnapshot, OfficialGraphReview, Package, PackageLimits, PackageVerifier,
+    StaticOfficialPipeline, VerifiedPackage,
     manager::{ManagerConfig, nonce},
     permissions::{
         PendingPermissionSession, PermissionBook, PermissionLifetime, PermissionPlan,
@@ -10,8 +11,8 @@ use super::{
 };
 use crate::{
     execution_control::{
-        CancellationToken, DecimalId, ExecutionHost, ExecutionService, ResourcePolicy, RunKey,
-        StartRequest,
+        CancellationToken, DecimalId, ExecutionHost, ExecutionService, ResourcePolicy,
+        ResourceUsage, RunKey, StartRequest,
     },
     graph::Graph,
     isolated_worker::adapter::ExecutionGate,
@@ -198,6 +199,44 @@ fn publish(
 #[derive(Default)]
 struct Activity {
     active: Option<(String, CancellationToken, bool)>,
+    committed: bool,
+}
+impl Activity {
+    fn begin(&mut self, id: String, token: CancellationToken, preparing: bool) {
+        debug_assert!(self.active.is_none());
+        self.active = Some((id, token, preparing));
+        self.committed = false;
+    }
+    fn request_cancel(&self, request_id: &str) -> Option<bool> {
+        let (id, token, preparing) = self.active.as_ref()?;
+        if self.committed || id != request_id {
+            return None;
+        }
+        token.cancel();
+        Some(*preparing)
+    }
+    fn mark_committed(&mut self, token: &CancellationToken) -> Result<(), CoreError> {
+        if token.is_cancelled()
+            || self
+                .active
+                .as_ref()
+                .is_none_or(|(_, active, _)| !active.same_source(token))
+        {
+            return Err(error("external-cancelled", "preparation cancelled"));
+        }
+        self.committed = true;
+        Ok(())
+    }
+    fn finish(&mut self, token: &CancellationToken) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|(_, active, _)| active.same_source(token))
+        {
+            self.active = None;
+            self.committed = false;
+        }
+    }
 }
 fn cancel(activity: &Mutex<Activity>) {
     if let Some((_, token, _)) = &activity.lock().unwrap_or_else(|p| p.into_inner()).active {
@@ -215,6 +254,7 @@ struct Controls {
     activity: Mutex<Activity>,
     closing: AtomicBool,
     manual: AtomicBool,
+    preserve_active: AtomicBool,
 }
 fn reader(
     controls: Arc<Controls>,
@@ -294,20 +334,19 @@ fn reader(
         let fast = match &request.operation {
             Operation::Cancel { request_id } => {
                 let state = controls.activity.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some((id, token, preparing)) = &state.active
-                    && id == request_id
+                if let Some(preparing) = state.request_cancel(request_id)
+                    && preparing
+                    && !controls.preserve_active.load(Ordering::Acquire)
                 {
-                    token.cancel();
-                    if *preparing {
-                        *controls
-                            .generation
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner()) = Arc::new(());
-                    }
+                    *controls
+                        .generation
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Arc::new(());
                 }
                 Some(Ok(json!({"cancelRequested":true})))
             }
             Operation::Protection { enabled } => {
+                controls.preserve_active.store(false, Ordering::Release);
                 *controls
                     .generation
                     .lock()
@@ -318,6 +357,7 @@ fn reader(
                 Some(Ok(json!({"protected":enabled})))
             }
             Operation::Revoke { id } => {
+                controls.preserve_active.store(false, Ordering::Release);
                 *controls
                     .generation
                     .lock()
@@ -344,14 +384,14 @@ fn reader(
             continue;
         }
         let token = CancellationToken::default();
-        state.active = Some((
+        state.begin(
             request.id.clone(),
             token.clone(),
             matches!(
                 request.operation,
                 Operation::Prepare { .. } | Operation::Activate { .. }
             ),
-        ));
+        );
         drop(state);
         let generation = controls
             .generation
@@ -390,6 +430,32 @@ fn reader(
         cancel: CancellationToken::default(),
     });
 }
+struct PlanEvidence {
+    used: BTreeMap<String, String>,
+    context: Arc<()>,
+    activities: Vec<super::super::adapter::WasmNode>,
+    official: Option<StaticOfficialPipeline>,
+}
+impl PlanEvidence {
+    fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.context, generation)
+            && self.used.iter().all(|(id, hash)| {
+                catalog.entries.iter().any(|entry| {
+                    &entry.manifest.package_id == id && &entry.authorization_sha256 == hash
+                })
+            })
+    }
+}
+struct PendingPlan {
+    review_id: String,
+    session: PendingPermissionSession,
+    evidence: PlanEvidence,
+}
+struct ActivePlan {
+    session: PermissionSession,
+    evidence: PlanEvidence,
+    retained: Option<super::super::adapter::RetainedOwner>,
+}
 struct Runner {
     catalog: Catalog,
     verifier: PackageVerifier,
@@ -399,80 +465,100 @@ struct Runner {
     host: ExecutionHost,
     service: ExecutionService,
     gate: ExecutionGate,
-    pending: Option<(String, PendingPermissionSession)>,
-    session: Option<PermissionSession>,
-    used: BTreeMap<String, String>,
-    context: Option<Arc<()>>,
-    activities: Vec<super::super::adapter::WasmNode>,
+    pending: Option<PendingPlan>,
+    session: Option<ActivePlan>,
+    official_assets: Option<(PathBuf, PackageLimits)>,
+    retired: Vec<super::super::adapter::ProcessActivity>,
 }
 impl Runner {
-    fn reconcile(&mut self) -> Result<(), CoreError> {
-        if self.context.as_ref().is_some_and(|g| {
-            !Arc::ptr_eq(
-                g,
-                &self
-                    .controls
-                    .generation
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()),
-            )
-        }) {
-            self.pending.take();
-            self.session.take();
-            self.used.clear();
-            self.context = None;
+    fn retire(&mut self, active: ActivePlan) {
+        self.retired.extend(
+            active
+                .evidence
+                .activities
+                .iter()
+                .map(|node| node.process_activity()),
+        );
+        drop(active);
+    }
+    fn retire_active(&mut self) {
+        self.controls
+            .preserve_active
+            .store(false, Ordering::Release);
+        if let Some(active) = self.session.take() {
+            self.retire(active);
         }
+    }
+    fn reconcile(&mut self) -> Result<(), CoreError> {
+        let generation = self
+            .controls
+            .generation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let snapshot = match self.catalog.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.pending.take();
-                self.session.take();
-                self.used.clear();
+                self.retire_active();
                 return Err(error);
             }
         };
-        if self.used.iter().any(|(id, hash)| {
-            !snapshot
-                .entries
-                .iter()
-                .any(|e| &e.manifest.package_id == id && &e.authorization_sha256 == hash)
-        }) {
-            self.pending.take();
-            self.session.take();
-            self.used.clear();
-        }
-        if self.pending.as_ref().is_some_and(|(_, p)| !p.is_current()) {
-            self.pending.take();
-        }
         if self
-            .session
+            .pending
             .as_ref()
-            .is_some_and(|s| s.controller().control_state().is_err())
+            .is_some_and(|p| !p.evidence.current(&snapshot, &generation) || !p.session.is_current())
         {
-            self.session.take();
+            self.pending.take();
         }
+        if self.session.as_ref().is_some_and(|s| {
+            !s.evidence.current(&snapshot, &generation)
+                || s.session.controller().control_state().is_err()
+        }) {
+            self.retire_active();
+        }
+        self.retired.retain(|activity| activity.is_live());
         Ok(())
     }
     fn stop(&mut self) {
         self.pending.take();
-        self.session.take();
-        self.used.clear();
+        self.retire_active();
         while {
             let u = self.host.usage();
             u.physical_jobs != 0 || u.queued_jobs != 0 || u.active_runs != 0
         } {
             std::thread::sleep(Duration::from_millis(5));
         }
-        self.activities.clear();
-        self.context = None;
+        self.retired.clear();
     }
     fn status(&self) -> Result<Value, CoreError> {
         let protected = self.controls.manual.load(Ordering::Acquire);
+        let worker_processes = self
+            .session
+            .iter()
+            .map(|s| &s.evidence)
+            .chain(self.pending.iter().map(|p| &p.evidence))
+            .flat_map(|e| &e.activities)
+            .map(|n| n.active_processes())
+            .sum::<u64>()
+            + self
+                .retired
+                .iter()
+                .map(|activity| activity.count())
+                .sum::<u64>();
+        let usage = self.host.usage();
+        let retained = self.session.as_ref().and_then(|s| s.retained.as_ref());
+        let retained_physical = retained
+            .map_or(0, |owner| owner.physical_jobs())
+            .min(usage.physical_jobs);
         Ok(
             json!({"phase":if protected{"protected"}else if self.session.is_some(){"ready"}else if self.pending.is_some(){"review"}else{"empty"},"protected":protected,
-   "sessionEpoch":self.session.as_ref().map(|s|s.session_epoch()).or_else(||self.pending.as_ref().map(|(_,p)|p.session_epoch())),
-   "state":self.session.as_ref().map(|s|s.controller().control_state().and_then(|state|crate::execution_control::protocol::WireState::from_control(state,None))).transpose()?,
-   "reviewId":self.pending.as_ref().map(|(id,_)|id),"physical":self.host.usage(),"workerProcesses":self.activities.iter().map(|n|n.active_processes()).sum::<u64>()}),
+   "sessionEpoch":self.session.as_ref().map(|s|s.session.session_epoch()).or_else(||self.pending.as_ref().map(|p|p.session.session_epoch())),
+   "state":self.session.as_ref().map(|s|s.session.controller().control_state().and_then(|state|crate::execution_control::protocol::WireState::from_control(state,None))).transpose()?,
+   "reviewId":self.pending.as_ref().map(|p|&p.review_id),"physical":usage,"workerProcesses":worker_processes,
+   "retainedWorker":{"physicalJobs":retained_physical,"ready":retained.is_some_and(|owner|owner.ready()),
+   "processId":retained.and_then(|owner|owner.process_id()),"generation":retained.map_or(0,|owner|owner.generation()),
+   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies())}}),
         )
     }
     fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
@@ -482,31 +568,26 @@ impl Runner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        self.stop();
+        // Preserve the active fixed official plan while reviewing its successor.
+        // Other configurations keep their existing stop-before-prepare contract.
+        self.reconcile()?;
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.evidence.official.is_some())
+        {
+            self.pending.take();
+        } else {
+            self.stop();
+        }
         if cancel.is_cancelled() {
             return Err(error("external-cancelled", "preparation cancelled"));
-        }
-        if self.context.as_ref().is_some_and(|g| {
-            !Arc::ptr_eq(
-                g,
-                &self
-                    .controls
-                    .generation
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()),
-            )
-        }) {
-            self.pending.take();
-            self.session.take();
-            self.used.clear();
-            self.context = None;
         }
         let snapshot = match self.catalog.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.pending.take();
-                self.session.take();
-                self.used.clear();
+                self.retire_active();
                 return Err(error);
             }
         };
@@ -549,6 +630,14 @@ impl Runner {
                     .unwrap_or_else(|| package.manifest().node.default_config.clone()),
             );
         }
+        let preparation_slot = if grouped.is_empty() {
+            None
+        } else {
+            Some(self.host.try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..ResourceUsage::default()
+            })?)
+        };
         let mut verified = BTreeMap::<String, VerifiedPackage>::new();
         for (kind, (package, configs)) in grouped {
             let proof = self.verifier.verify_configs_with_vault(
@@ -560,12 +649,22 @@ impl Runner {
             )?;
             verified.insert(kind, proof);
         }
+        // Every isolated validation call returns after its actual exit/cleanup.
+        drop(preparation_slot);
         let external = graph
             .nodes
             .iter()
             .filter_map(|n| verified.get(&n.kind).map(|p| (n.id.clone(), p.clone())))
             .collect();
-        let plan = PermissionPlan::capture_with_cancel(&graph, &external, cancel.clone())?;
+        let (plan, official) = if let Some((root, limits)) = &self.official_assets {
+            OfficialGraphReview::capture(&graph, &external, root, limits, cancel.clone())?
+                .into_parts()
+        } else {
+            (
+                PermissionPlan::capture_with_cancel(&graph, &external, cancel.clone())?,
+                None,
+            )
+        };
         if cancel.is_cancelled() {
             return Err(error("external-cancelled", "preparation cancelled"));
         }
@@ -595,16 +694,22 @@ impl Runner {
             .open_session(&self.service, plan, DecimalId::new(1)?)?;
         let review_id = nonce()?;
         let value = json!({"reviewId":review_id,"sessionEpoch":pending.session_epoch(),"requests":pending.requests(),"missing":pending.missing()});
-        self.context = Some(generation);
-        self.activities = verified.values().map(|p| p.node()).collect();
-        self.pending = Some((review_id, pending));
-        self.used = used;
+        self.pending = Some(PendingPlan {
+            review_id,
+            session: pending,
+            evidence: PlanEvidence {
+                used,
+                context: generation,
+                activities: verified.values().map(|p| p.node()).collect(),
+                official,
+            },
+        });
         Ok(value)
     }
     fn controller(&self) -> Result<&super::super::adapter::GuardedController, CoreError> {
         self.session
             .as_ref()
-            .map(|s| s.controller())
+            .map(|s| s.session.controller())
             .ok_or_else(|| error("external-not-ready", "approved Session required"))
     }
     fn handle(
@@ -711,12 +816,12 @@ impl Runner {
                 ids,
                 save,
             } => {
-                let (_, pending) = self
+                let pending = self
                     .pending
                     .as_ref()
-                    .filter(|(id, _)| id == &review_id)
+                    .filter(|p| p.review_id == review_id)
                     .ok_or_else(|| error("external-review", "current Host review required"))?;
-                pending.approve(
+                pending.session.approve(
                     &ids,
                     if save {
                         PermissionLifetime::Saved
@@ -724,17 +829,112 @@ impl Runner {
                         PermissionLifetime::ThisSession
                     },
                 )?;
-                Ok(json!({"reviewId":review_id,"missing":pending.missing()}))
+                Ok(json!({"reviewId":review_id,"missing":pending.session.missing()}))
             }
             Operation::Activate { review_id } => {
-                if self.pending.as_ref().is_none_or(|(id, _)| id != &review_id) {
+                self.reconcile()?;
+                if self
+                    .pending
+                    .as_ref()
+                    .is_none_or(|p| p.review_id != review_id)
+                {
                     return Err(error("external-review", "current Host review required"));
                 }
-                let (_, pending) = self.pending.take().unwrap();
-                self.session = Some(pending.activate_with_cancel(cancel)?);
+                let preparation_slot = if self
+                    .pending
+                    .as_ref()
+                    .unwrap()
+                    .evidence
+                    .activities
+                    .is_empty()
+                {
+                    None
+                } else {
+                    Some(self.host.try_reserve(ResourceUsage {
+                        physical_jobs: 1,
+                        ..ResourceUsage::default()
+                    })?)
+                };
+                let pending = self.pending.take().unwrap();
+                let retained_stages = pending
+                    .evidence
+                    .official
+                    .as_ref()
+                    .map(|proof| pending.session.retained_stages(proof))
+                    .transpose()?;
+                let transactional = pending.evidence.official.is_some()
+                    || self
+                        .session
+                        .as_ref()
+                        .is_some_and(|old| old.evidence.official.is_some());
+                // Evaluate all preparation before dropping the previous owner.
+                let session = pending.session.activate_with_cancel(cancel.clone())?;
+                drop(preparation_slot);
+                let retained = retained_stages
+                    .map(|nodes| {
+                        super::super::adapter::RetainedOwner::install(
+                            self.host.clone(),
+                            session.controller().clone(),
+                            nodes,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let new = ActivePlan {
+                    session,
+                    evidence: pending.evidence,
+                    retained,
+                };
+                if transactional {
+                    // Order cancellation acceptance and the commit. Do not hold
+                    // this lock while dropping the old process/Session owner.
+                    let mut activity = self
+                        .controls
+                        .activity
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if cancel.is_cancelled()
+                        || self.controls.closing.load(Ordering::Acquire)
+                        || !Arc::ptr_eq(
+                            &new.evidence.context,
+                            &self
+                                .controls
+                                .generation
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner()),
+                        )
+                    {
+                        return Err(error("external-cancelled", "preparation cancelled"));
+                    }
+                    // Stay busy until reply; cancel cannot undo this commit.
+                    activity.mark_committed(&cancel)?;
+                    self.controls
+                        .preserve_active
+                        .store(new.evidence.official.is_some(), Ordering::Release);
+                    let old = self.session.replace(new);
+                    drop(activity);
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                } else {
+                    self.retire_active();
+                    self.session = Some(new);
+                }
+                if let Some(owner) = self
+                    .session
+                    .as_ref()
+                    .and_then(|active| active.retained.as_ref())
+                {
+                    owner.start();
+                }
                 self.status()
             }
             Operation::Run { request } => {
+                if let Some(active) = &self.session
+                    && let Some(owner) = &active.retained
+                {
+                    owner.witness_terminal(active.session.controller());
+                }
                 let receipt = self.controller()?.start_run(request)?;
                 Ok(json!({"receipt":receipt,"state":self.status()?}))
             }
@@ -761,6 +961,11 @@ impl Runner {
                 expected_plan_version,
                 revision,
             } => {
+                if let Some(active) = &self.session
+                    && let Some(owner) = &active.retained
+                {
+                    owner.witness_terminal(active.session.controller());
+                }
                 self.controller()?
                     .invalidate_input(expected_plan_version, revision)?;
                 self.status()
@@ -774,6 +979,7 @@ impl Runner {
     }
 }
 pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
+    let official_assets = config.package_manager.official_review_assets();
     let (catalog, mut verifier) = config.package_manager.prepare_assets()?;
     if let Some(network) = config.network {
         verifier = verifier.with_network_provider(
@@ -800,6 +1006,7 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         activity: Mutex::new(Activity::default()),
         closing: AtomicBool::new(false),
         manual: AtomicBool::new(false),
+        preserve_active: AtomicBool::new(false),
     });
     let output = Arc::new(Mutex::new(io::stdout()));
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -821,9 +1028,8 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         gate: ExecutionGate::default(),
         pending: None,
         session: None,
-        used: BTreeMap::new(),
-        context: None,
-        activities: Vec::new(),
+        official_assets,
+        retired: Vec::new(),
     };
     while let Ok(work) = receiver.recv() {
         if matches!(work.request.operation, Operation::Close {}) {
@@ -861,14 +1067,16 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
             runner.handle(work.request.operation, work.cancel.clone())
         };
         if preparing && work.cancel.is_cancelled() {
-            runner.stop();
+            runner.pending.take();
+            if !controls.preserve_active.load(Ordering::Acquire) {
+                runner.stop();
+            }
             result = Err(error("external-cancelled", "preparation cancelled"));
         }
-        controls
-            .activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .active = None;
+        {
+            let mut activity = controls.activity.lock().unwrap_or_else(|p| p.into_inner());
+            activity.finish(&work.cancel);
+        }
         let public_result = result.as_ref().is_ok_and(|r| {
             r["snapshot"]["current"] == true
                 && matches!(
@@ -900,6 +1108,47 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_commit_and_late_finish_follow_the_owned_operation() {
+        let first = CancellationToken::default();
+        let mut activity = Activity::default();
+        activity.begin("first".into(), first.clone(), true);
+        assert_eq!(activity.request_cancel("other"), None);
+        assert!(!first.is_cancelled());
+        assert_eq!(activity.request_cancel("first"), Some(true));
+        assert!(activity.mark_committed(&first).is_err());
+        activity.finish(&first);
+        let second = CancellationToken::default();
+        activity.begin("second".into(), second.clone(), true);
+        assert!(activity.mark_committed(&first).is_err());
+        assert!(
+            activity
+                .mark_committed(&CancellationToken::default())
+                .is_err()
+        );
+        activity.mark_committed(&second).unwrap();
+        assert!(
+            activity.active.is_some(),
+            "commit must keep subsequent requests busy until reply"
+        );
+        assert_eq!(activity.request_cancel("second"), None);
+        assert!(!second.is_cancelled());
+        activity.finish(&first);
+        assert!(
+            activity.active.is_some(),
+            "an old completion must not clear a new operation"
+        );
+        // Protection/close can still withdraw a committed context.
+        let activity = Mutex::new(activity);
+        cancel(&activity);
+        assert!(second.is_cancelled());
+        let mut activity = activity.into_inner().unwrap();
+        activity.finish(&second);
+        let third = CancellationToken::default();
+        activity.begin("third".into(), third.clone(), false);
+        assert_eq!(activity.request_cancel("third"), Some(false));
+        assert!(third.is_cancelled());
+    }
     #[test]
     fn graph_controls_cannot_claim_roots_authority_or_automatic_protection() {
         for operation in [

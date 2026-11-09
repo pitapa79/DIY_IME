@@ -66,4 +66,20 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Network broker consent/continuation/true-ending integration failed'}
  & $Node (Join-Path $root 'scripts/check-official-bootstrap.mjs') (Join-Path $target 'debug/diy-ime2-node-manager.exe') (Join-Path $target 'debug/diy-ime2-external-host.exe') $worker $dll (Join-Path $root 'distribution/official') (Join-Path $root 'tests/contracts/execution_control.json')
  if($LASTEXITCODE -ne 0){throw 'Official bootstrap/catalog/registered graph integration failed'}
+ & $Node (Join-Path $root 'scripts/check-retained-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') $worker $dll (Join-Path $root 'distribution/official')
+ if($LASTEXITCODE -ne 0){throw 'Ordinary retained Host identity/cancellation/replenishment integration failed'}
+ $taskPreviousWorker=$env:DIY_RANGE_WORKER_BINARY
+ $taskPreviousDll=$env:DIY_RANGE_RUNTIME_DLL
+ $taskPreviousFixture=$env:DIY_RETAINED_HOST_FIXTURE_WASM
+ try {
+  $env:DIY_RANGE_WORKER_BINARY=$worker
+  $env:DIY_RANGE_RUNTIME_DLL=$dll
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
+  & $Cargo test --locked --lib isolated_worker::adapter::retained::tests::real_core_skipped_suffix -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Retained coordinator actual Core Skipped suffix integration failed'}
+ } finally {
+  $env:DIY_RANGE_WORKER_BINARY=$taskPreviousWorker
+  $env:DIY_RANGE_RUNTIME_DLL=$taskPreviousDll
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$taskPreviousFixture
+ }
 } finally {Pop-Location}

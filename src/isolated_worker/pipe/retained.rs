@@ -160,8 +160,13 @@ impl RetainedReservation {
         })
     }
 }
-struct ProcessPin(RetainedReservation);
+struct ProcessPin(RetainedReservation, Option<Arc<AtomicU64>>);
 impl ResourceOwner for ProcessPin {
+    fn observe_start(&self, process_id: u32) {
+        if let Some(id) = &self.1 {
+            id.store(process_id as u64, Ordering::Release);
+        }
+    }
     fn observe_exit(&self) {
         *self.0.inner.ended.lock().unwrap_or_else(|p| p.into_inner()) = true;
     }
@@ -188,6 +193,20 @@ pub fn execute_retained<'a>(
     args: &[OsString],
     request: RetainedWorkerRequest,
     control: &RunControl,
+) -> Result<Outcome<'a>, String> {
+    execute_retained_observed(profile, job, cache, program, args, request, control, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
+    profile: &'a Profile,
+    job: &'a Job,
+    cache: &'a Cache,
+    program: &Path,
+    args: &[OsString],
+    request: RetainedWorkerRequest,
+    control: &RunControl,
+    observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
     if args
         .first()
@@ -227,15 +246,18 @@ pub fn execute_retained<'a>(
         result
     });
     let deadline = request.reservation.inner.deadline;
+    let (activity, process_id) = observation.map_or((None, None), |value| {
+        (Some(value.activity), Some(value.process_id))
+    });
     execute_observed(
         WorkerScope {
             profile,
             job,
             cache,
-            activity: None,
+            activity,
             resource_deadline: Some(deadline),
             exchange: Some(wrapped),
-            resource_owner: Some(Box::new(ProcessPin(request.reservation))),
+            resource_owner: Some(Box::new(ProcessPin(request.reservation, process_id))),
             #[cfg(test)]
             prepared: false,
         },

@@ -124,7 +124,7 @@ jobs:
           $result = node scripts/benchmark-windows-application.mjs target/windows-app --host-input-rounds 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report = $result | ConvertFrom-Json
-          if ($report.scenarios.Count -ne 3 -or $report.scenarios[0].correct -ne 7 -or -not $report.checks.trueClose -or -not $report.checks.allPhysicalEnded -or -not $report.checks.staleResultsSuppressed) { throw 'Incomplete Host input smoke' }
+          if ($report.formatVersion -ne 2 -or $report.scenarios.Count -ne 3 -or $report.scenarios[0].correct -ne 7 -or -not $report.checks.trueClose -or -not $report.checks.allCallbacksEnded -or -not $report.checks.staleResultsSuppressed) { throw 'Incomplete Host input smoke' }
           foreach ($scenario in $report.scenarios) {
             if ($scenario.attempts -ne 7 -or $scenario.failed -or $scenario.timedOut -or $scenario.cancelled -or $scenario.correct + $scenario.superseded -ne 7 -or $scenario.byCase.'dictionary-hit'.correct -ne 1) { throw 'Unexpected Host input outcome' }
           }

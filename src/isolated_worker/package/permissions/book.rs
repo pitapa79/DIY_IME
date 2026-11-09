@@ -312,6 +312,34 @@ pub struct PendingPermissionSession {
     owns_session: bool,
 }
 impl PendingPermissionSession {
+    pub(in crate::isolated_worker) fn retained_stages(
+        &self,
+        proof: &super::super::StaticOfficialPipeline,
+    ) -> Result<
+        Vec<(
+            String,
+            crate::isolated_worker::adapter::WasmNode,
+            serde_json::Value,
+        )>,
+        CoreError,
+    > {
+        let plan = self.plan.as_ref().expect("pending plan");
+        if !proof.matches_plan(plan) {
+            return Err(denied());
+        }
+        proof
+            .stages()
+            .iter()
+            .map(|stage| {
+                let node = plan
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == stage.id() && &node.config == stage.config())
+                    .ok_or_else(denied)?;
+                Ok((node.id.clone(), node.node.clone(), node.config.clone()))
+            })
+            .collect()
+    }
     pub fn is_current(&self) -> bool {
         PermissionBook::current(
             &self.book.0.lock().unwrap_or_else(|p| p.into_inner()),

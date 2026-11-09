@@ -17,6 +17,12 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
                 }
             }
             let mut definition = json!({"kind":if request["node"]["kind"]=="fixture.wasm.alt" {"fixture.wasm.alt"}else{"fixture.wasm"},"version":1,"inputs":[{"port":{"id":"in","dataType":{"id":"text-packet","version":1},"language":"ja-Latn","root":"text"},"required":true}],"outputs":[{"id":"out","dataType":{"id":"text-packet","version":1},"language":null,"root":"text"}],"configSchema":{"type":"object"},"defaultConfig":{"mode":"echo"}});
+            // Separate chain fixture: preserve the declared input language.
+            // Existing fixture.wasm/alt declarations remain unchanged.
+            if request["node"]["kind"] == "fixture.wasm.chain" {
+                definition["kind"] = json!("fixture.wasm.chain");
+                definition["outputs"][0]["language"] = json!("ja-Latn");
+            }
             if request["node"]["kind"] == "fixture.wasm.duplicate" {
                 definition["kind"] = request["node"]["kind"].clone();
                 let wire =

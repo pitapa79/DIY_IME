@@ -54,6 +54,11 @@ where
     Option::deserialize(deserializer)
 }
 impl ManagerConfig {
+    pub(super) fn official_review_assets(&self) -> Option<(PathBuf, PackageLimits)> {
+        self.official_root
+            .clone()
+            .map(|root| (root, self.limits.clone()))
+    }
     pub(super) fn prepare_assets(&self) -> Result<(Catalog, PackageVerifier), CoreError> {
         for path in [&self.data_root, &self.workspace] {
             fs::create_dir_all(path)
