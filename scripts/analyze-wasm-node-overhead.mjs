@@ -5,7 +5,7 @@ const [path] = process.argv.slice(2);
 assert(path, 'usage: node scripts/analyze-wasm-node-overhead.mjs REPORT.json');
 const report = JSON.parse(readFileSync(path, 'utf8'));
 
-function analyze({ tracePages, diagnostic }) {
+function analyze({ tracePages, diagnostic, revision }) {
   assert(tracePages?.length && diagnostic, 'missing detailed diagnostic');
   const events = tracePages.flatMap(page => {
     assert.equal(Number(page.dropped), 0, 'trace dropped events');
@@ -16,6 +16,7 @@ function analyze({ tracePages, diagnostic }) {
     assert.equal(BigInt(events[i].sequence), BigInt(events[i - 1].sequence) + 1n, 'trace gap');
   }
   const publications = events.filter(event => event.event === 'host-response-published');
+  if (revision !== undefined) assert.equal(publications.length, 1, 'expected one publication per input');
   const publication = publications.at(-1);
   assert(publication, 'missing result publication');
   const run = events.filter(event =>
@@ -45,13 +46,18 @@ function analyze({ tracePages, diagnostic }) {
     acceptedToPublishedUs, clientObservedMs: diagnostic.resultMs, nodes };
 }
 
+let exclusions = 0;
 const scenarios = report.scenarios.map(scenario => {
   const { shape, count, mixed = false } = scenario;
-  try {
-    return { shape, count, mixed, diagnostic: analyze(scenario) };
-  } catch (error) {
-    return { shape, count, mixed, excluded: error.message };
-  }
+  const diagnostics = (scenario.diagnostics ?? [scenario]).map(input => {
+    try {
+      return { revision: input.revision, ...analyze(input) };
+    } catch (error) {
+      exclusions++;
+      return { revision: input.revision, excluded: error.message };
+    }
+  });
+  return { shape, count, mixed, diagnostics };
 });
-console.log(JSON.stringify({ scenarios }, null, 2));
-if (scenarios.some(scenario => scenario.excluded)) process.exitCode = 1;
+console.log(JSON.stringify({ exclusions, scenarios }, null, 2));
+if (exclusions) process.exitCode = 1;
