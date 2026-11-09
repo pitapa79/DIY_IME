@@ -91,6 +91,12 @@ paced の間隔指定なしは1段の正答 P50 / P95 が84.0 / 87.5→70.9 / 73
 
 この scratch は profile の未使用保持とスレッド間所有権移動を試す内部実験であり、製品変更ではない。ログは `issue84-preprofile-{baseline,enabled}-{mixed,paced}.{json,log}`。一台の順次比較で mixed の P95 は最大値、資源権限・異常終了・強制 Host 終了時の profile 残存、リフィル失敗・同時 race、電力 / CPU は未検証。先に取得した正答や物理終了の安全条件を弱めず、孤児 profile と bounded な回収を検証する必要がある。
 
+### 強制終了と辞書権限の補足
+
+試験用 Host の補充スレッドで、一意な未使用 profile の作成直後・待機列への投入前に5秒停止するフックを追加した。その名前で同一プロセスから再作成を試みて `0x800700B7`（既存）を確認し、親がログを受けて Host を強制終了した。終了後、記録した同一名に対する再作成は `0x00000000` で成功し、検査で作った同名 profile の削除も成功した。記録名は `DIYIME2.Worker.55dc02d23c11ebd2eee39515196bf2d7`、生ログは `issue84-preprofile-kill-verified.log` と `issue84-preprofile-kill-verified-result.log`。この1回の条件では同名の残存登録は観測されなかった。baseline には予備 profile がなく、この試験は baseline の実行中 profile や他の名前の残存を比較していない。検査は登録の再作成可否であり、OS の全関連資源や長期間の残存、準備済み待機列・ACL 付与済み・正常動作中の強制終了を網羅しない。
+
+同じ scratch Host で公式辞書を含む通常 Host の dictionary シナリオを4件ずつ実行し、2段の辞書アクセス権限を許可して期待結果と物理終了を確認した。Host 終了時の未使用 profile の削除も成功した（`issue84-preprofile-dictionary.json` / `.log`）。辞書 producer / consumer の専用 resource Worker は既存の独立経路であり、この scratch の `call_worker` への profile 事前作成を通らない。対照との性能比較やネットワーク権限経路、権限取消・保護の競合はここでは未実施。
+
 ## 暫定判定
 
 未使用の AppContainer プロファイルだけを事前に作成する候補を、Windows の隔離プローブで比較した。プロファイル単体32回の作成中央値は10.39 ms、削除は2.72 ms。固定 DLL の全体照合と新規 SID・Job・プロセスを揃えた16組では、入力から実終了・回収までの中央値が58.08 msから45.23 msに短縮した。作成費用は入力前に移る。試験は Wasm を実行せず、準備枠の継続補充や取消も扱っていない。通常 Host での効果と未使用プロファイルの回収を次に検証する。
