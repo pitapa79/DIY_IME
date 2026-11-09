@@ -86,3 +86,18 @@ cargo test --locked --lib profile_core_isolation_groups -- --ignored --nocapture
 ```powershell
 cargo test --locked --lib compare_core_isolation_groups_at_default_capacity -- --ignored --nocapture
 ```
+
+## 異なる2モジュールの並列出力
+
+通常 Core の検査用 graph を追加し、同じ input から異なる実 Wasm A/B へそれぞれ枝を伸ばし、独立した2つの出力を同時に targets とした。容量4枠で、使い捨て対照とモジュール別の2保持 owner を対照→保持→保持→対照の順に各16入力比較。計64実行・128出力を入力文字列と照合し、各実行が terminal かつ input 用物理実行・待機ゼロになったことを確認した。保持側は2つの異なる PID と2つの予約枠、各 owner の応答数を検査した。session close 後に owner を破棄し、Host の全資源使用量がゼロになり作業領域を回収できたことを確認した。
+
+| 方式 | 各試行の初回 | 先頭除外30件 P50 / P95 / 最大 | owner の準備時間 |
+| --- | ---: | ---: | ---: |
+| 使い捨て | 109.90 / 103.95 ms | 107.71 / 158.57 / 651.13 ms | 0 owner |
+| 2分離 owner | 1.75 / 1.74 ms | 1.24 / 1.31 / 1.32 ms | 107.66 / 105.31 ms |
+
+これは単一マシンのデバッグ検査、合成 fixture と直接 Core の計測である。グラフは独立出力の並列分岐であり、合流処理を測っていない。2つの保持プロセスは各入力の正答時点では終了せず、session close での物理終了と回収を検査した。並列実行の時間的な重なり、通常 External Host、権限・保護変更中の並列動作、20 / 100 msの入力置換、同時メモリピークはこの測定では証明しない。生ログは `issue87-parallel-independent.log`。
+
+```powershell
+cargo test --locked --lib compare_core_parallel_independent_outputs -- --ignored --nocapture
+```

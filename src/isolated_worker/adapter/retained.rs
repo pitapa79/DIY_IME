@@ -845,14 +845,14 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None, 4, 3, 0, None);
+        run_core_fixture(None, 4, 3, 0, None, false);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 4, 24, 0, None);
+            run_core_fixture(Some(retained), 4, 24, 0, None, false);
         }
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn compare_core_chain_lengths() {
         for stages in [1, 2, 8, 16] {
             for retained in [false, true] {
-                run_core_fixture(Some(retained), stages, 8, 0, None);
+                run_core_fixture(Some(retained), stages, 8, 0, None, false);
             }
         }
     }
@@ -870,7 +870,7 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_chain_cadences() {
         for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
-            run_core_fixture(Some(retained), 4, 16, interval_ms, None);
+            run_core_fixture(Some(retained), 4, 16, interval_ms, None, false);
         }
     }
 
@@ -885,7 +885,7 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)));
+            run_core_fixture(Some(retained), 2, 16, 0, Some((split, 4)), false);
         }
     }
 
@@ -893,7 +893,7 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_isolation_groups_at_default_capacity() {
         for (retained, split) in [(false, false), (true, false), (true, true)] {
-            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)));
+            run_core_fixture(Some(retained), 2, 8, 0, Some((split, 2)), false);
         }
     }
 
@@ -908,7 +908,15 @@ mod tests {
             (true, false),
             (false, false),
         ] {
-            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)));
+            run_core_fixture(Some(retained), 2, 24, 20, Some((split, 4)), false);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_parallel_independent_outputs() {
+        for retained in [false, true, true, false] {
+            run_core_fixture(Some(retained), 2, 16, 0, Some((true, 4)), true);
         }
     }
 
@@ -918,6 +926,7 @@ mod tests {
         count: u64,
         interval_ms: u64,
         isolation_comparison: Option<(bool, u64)>,
+        parallel: bool,
     ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
@@ -1009,9 +1018,15 @@ mod tests {
         ));
         let mut edges =
             vec![json!({"from":{"node":"input","port":"out"},"to":{"node":ids[0],"port":"in"}})];
-        edges.extend((0..stage_count - 1).map(
-            |i| json!({"from":{"node":ids[i],"port":"out"},"to":{"node":ids[i+1],"port":"in"}}),
-        ));
+        if parallel {
+            edges.push(
+                json!({"from":{"node":"input","port":"out"},"to":{"node":ids[1],"port":"in"}}),
+            );
+        } else {
+            edges.extend((0..stage_count - 1).map(
+                |i| json!({"from":{"node":ids[i],"port":"out"},"to":{"node":ids[i+1],"port":"in"}}),
+            ));
+        }
         let graph =
             Graph::from_json(&json!({"version":1,"nodes":graph_nodes,"edges":edges}).to_string())
                 .unwrap();
@@ -1102,7 +1117,7 @@ mod tests {
             .iter()
             .map(|owner| owner.process_id().unwrap())
             .collect();
-        if split {
+        if split && retained == Some(true) {
             assert_eq!(pids.len(), 2);
             assert_ne!(pids[0], pids[1]);
         }
@@ -1188,7 +1203,16 @@ mod tests {
                 }
             }
             let input = format!("sample-{revision}");
-            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":[{"node":ids[stage_count - 1],"port":"out"}],"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
+            let target_ids: Vec<_> = if parallel {
+                ids.iter().collect()
+            } else {
+                vec![&ids[stage_count - 1]]
+            };
+            let output_targets: Vec<_> = target_ids
+                .iter()
+                .map(|id| json!({"node":id,"port":"out"}))
+                .collect();
+            let request:StartRequest=serde_json::from_value(json!({"startKey":revision.to_string(),"expectedPlanVersion":"1","targets":output_targets,"input":{"revision":revision,"text":input,"mode":"compose"}})).unwrap();
             let receipt = controller.start_run(request).unwrap();
             if retained.is_some() {
                 last_key = Some(receipt.key.clone());
@@ -1225,7 +1249,7 @@ mod tests {
                 );
                 if isolation_comparison.is_some() {
                     println!(
-                        "isolation-core retained={mode} split={split} revision={revision} elapsed_us={elapsed}"
+                        "isolation-core retained={mode} split={split} parallel={parallel} revision={revision} elapsed_us={elapsed}"
                     );
                 }
                 if interval_ms > 0 {
