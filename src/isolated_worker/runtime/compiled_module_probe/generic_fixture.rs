@@ -400,7 +400,13 @@ fn cancel_generic_raw_idle_worker() {
 }
 #[test]
 #[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
-fn compare_raw_controlled_miss_fallback() {
+fn compare_raw_controlled_miss_fallback() { controlled_raw_fallback(false); }
+
+#[test]
+#[ignore = "requires real Windows AppContainer, pinned DLL and the test-only chain guest"]
+fn compare_raw_precompile_miss_fallback() { controlled_raw_fallback(true); }
+
+fn controlled_raw_fallback(precompile: bool) {
     use crate::execution_control::CancellationToken;
     use std::{sync::{atomic::AtomicU64, mpsc}, thread};
     let bundle = fs::canonicalize(std::env::var_os("DIY_COMPILED_PROBE_BUNDLE").unwrap()).unwrap();
@@ -418,6 +424,7 @@ fn compare_raw_controlled_miss_fallback() {
             let mut arrival = None;
             let mut speculative_exit_us = 0;
             let mut speculative_recovery_us = 0;
+            let mut ready_observed = false;
             if miss {
                 let mut profile = Profile::new().unwrap();
                 cache.allow_read_execute(&profile).unwrap();
@@ -425,14 +432,19 @@ fn compare_raw_controlled_miss_fallback() {
                 let cancel = CancellationToken::default();
                 let control = RunControl { cancel: cancel.clone(), walltime: Some(Duration::from_secs(10)), ..RunControl::default() };
                 let (marker_tx, marker_rx) = mpsc::sync_channel(1);
+                let (tail_tx, tail_rx) = mpsc::sync_channel(1);
                 thread::scope(|scope| {
                     let worker = WorkerScope::observed(&profile, &job, &cache, AtomicU64::new(0).into())
                         .with_test_exchange(Box::new(move |output, _input| {
                             let mut output = std::io::BufReader::new(output);
-                            speculative::read_marker(&mut output, PROBE_READY).map_err(|e| e.to_string())?;
+                            let marker: &[u8] = if precompile { b"RAW_PRECOMPILE_V1\n" } else { PROBE_READY };
+                            speculative::read_marker(&mut output, marker).map_err(|e| e.to_string())?;
                             marker_tx.send(()).map_err(|e| e.to_string())?;
                             let mut tail = Vec::new();
-                            output.take((CAP + 1) as u64).read_to_end(&mut tail).map_err(|e| e.to_string())?;
+                            let result = output.take((CAP + 1) as u64).read_to_end(&mut tail);
+                            let observed = tail.windows(PROBE_READY.len()).any(|w| w == PROBE_READY);
+                            let _ = tail_tx.send(observed);
+                            result.map_err(|e| e.to_string())?;
                             Ok(tail)
                         }));
                     let args = ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
@@ -447,6 +459,7 @@ fn compare_raw_controlled_miss_fallback() {
                     let at = trigger.join().unwrap();
                     assert_eq!(receipt.reason(), EndReason::Cancelled);
                     speculative_exit_us = receipt.signalled_at.saturating_duration_since(at).as_micros();
+                    ready_observed = tail_rx.recv_timeout(Duration::from_secs(10)).unwrap();
                     arrival = Some(at);
                 });
                 drop(job);
@@ -483,7 +496,7 @@ fn compare_raw_controlled_miss_fallback() {
             drop(job);
             cache.revoke_read_execute(&profile).unwrap();
             profile.delete().unwrap();
-            println!("raw-controlled-fallback pair={pair} miss={miss} speculative_exit_us={speculative_exit_us} speculative_recovery_us={speculative_recovery_us} confirmed_us={confirmed_us} recovered_us={}", at.elapsed().as_micros());
+            println!("raw-controlled-fallback precompile={precompile} ready_observed={ready_observed} pair={pair} miss={miss} speculative_exit_us={speculative_exit_us} speculative_recovery_us={speculative_recovery_us} confirmed_us={confirmed_us} recovered_us={}", at.elapsed().as_micros());
         }
     }
     for path in [mode, hash, module, dll, exe] { fs::remove_file(path).unwrap(); }

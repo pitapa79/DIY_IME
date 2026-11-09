@@ -102,3 +102,17 @@ cargo test --locked --lib cancel_generic_raw_idle_worker -- --ignored --nocaptur
 ```powershell
 cargo test --locked --lib compare_raw_controlled_miss_fallback -- --ignored --nocapture
 ```
+## コンパイル直前マーカーでの取消と代替
+
+同じ1枠・同一入力の対照を拡張し、子が原本とハッシュを読んだ後、JIT の `prepare_module` を呼ぶ直前に試験用マーカーを送る。親はマーカー受信を入力到着とし、ready を待たずに取消す。投機 Worker の入力パイプにはゲスト入力を書かず、OS 終了と Job / ACL / profile 回収を確認してからのみ通常 JIT を起動した。16組交互順で、16/16 の投機取消と実終了、32/32 の通常・代替出力と正常終了を確認した。取消後に回収した出力から ready マーカーは0/16件観測された。ただし子はマーカー送信直後に進行するため、取消時にコンパイル呼出しへ入っていたか、また終了前に ready を出力したが観測されなかったかまでは証明しない。
+
+| 入力到着からの時間 | 投機なし P50 / P95 | 直前マーカー取消→代替 P50 / P95 |
+| --- | ---: | ---: |
+| 通常または代替 Worker の実終了確認 | 78.76 / 1164.01 ms | 94.59 / 103.70 ms |
+| 最終回収 | 84.71 / 1170.57 ms | 101.45 / 109.73 ms |
+
+投機 Worker の終了確認は P50 / P95 8.19 / 18.56 ms、回収は14.26 / 24.98 ms。16件の P95 は最大値で、投機なし側には約1.16秒の外れ値がある。単発・人工マーカー・1入力待機の試験であり、通常 Host のスケジューラ、連続入力、置換・破棄、実際の到着分布は含まない。生ログは `issue86-generic-raw-precompile-fallback.log`。
+
+```powershell
+cargo test --locked --lib compare_raw_precompile_miss_fallback -- --ignored --nocapture
+```
