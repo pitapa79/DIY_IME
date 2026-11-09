@@ -845,14 +845,14 @@ mod tests {
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime/fixture"]
     fn real_core_skipped_suffix() {
-        run_core_fixture(None, 4, 3, 0);
+        run_core_fixture(None, 4, 3, 0, None);
     }
 
     #[test]
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_mixed_chain() {
         for retained in [false, true, true, false] {
-            run_core_fixture(Some(retained), 4, 24, 0);
+            run_core_fixture(Some(retained), 4, 24, 0, None);
         }
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn compare_core_chain_lengths() {
         for stages in [1, 2, 8, 16] {
             for retained in [false, true] {
-                run_core_fixture(Some(retained), stages, 8, 0);
+                run_core_fixture(Some(retained), stages, 8, 0, None);
             }
         }
     }
@@ -870,11 +870,47 @@ mod tests {
     #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
     fn compare_core_chain_cadences() {
         for (interval_ms, retained) in [(20, false), (20, true), (100, true), (100, false)] {
-            run_core_fixture(Some(retained), 4, 16, interval_ms);
+            run_core_fixture(Some(retained), 4, 16, interval_ms, None);
         }
     }
 
-    fn run_core_fixture(retained: Option<bool>, stage_count: usize, count: u64, interval_ms: u64) {
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn compare_core_isolation_groups() {
+        for (retained, split) in [
+            (false, false),
+            (true, false),
+            (true, true),
+            (true, true),
+            (true, false),
+            (false, false),
+        ] {
+            run_core_fixture(Some(retained), 2, 16, 0, Some(split));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real Windows Worker/runtime and two chain fixture builds"]
+    fn profile_core_isolation_groups() {
+        for (retained, split) in [
+            (false, false),
+            (true, false),
+            (true, true),
+            (true, true),
+            (true, false),
+            (false, false),
+        ] {
+            run_core_fixture(Some(retained), 2, 24, 20, Some(split));
+        }
+    }
+
+    fn run_core_fixture(
+        retained: Option<bool>,
+        stage_count: usize,
+        count: u64,
+        interval_ms: u64,
+        isolation_comparison: Option<bool>,
+    ) {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained Core fixture asset"))
         };
@@ -977,10 +1013,13 @@ mod tests {
         .unwrap();
         // Use the bounded fixture without host-lifetime run history so the
         // teardown can require every resource counter to return to zero.
+        let mut policy = resource_policy["resourceProfiles"]["noTombstones"].clone();
+        if isolation_comparison.is_some() {
+            policy["maxPhysicalJobs"] = json!(4);
+        }
         let host = ExecutionHost::new(
             "actual-core-skipped-suffix",
-            ResourcePolicy::from_value(resource_policy["resourceProfiles"]["noTombstones"].clone())
-                .unwrap(),
+            ResourcePolicy::from_value(policy).unwrap(),
         )
         .unwrap();
         let service = ExecutionService::new(host.clone()).unwrap();
@@ -1001,25 +1040,38 @@ mod tests {
             gate.approve(target.clone());
         }
         let controller = gate.seal(raw, targets).unwrap();
-        let stages = ids
+        let stages: Vec<_> = ids
             .iter()
             .zip(&configs)
             .zip(nodes)
             .map(|((id, config), node)| (id.clone(), node.clone(), config.clone()))
             .collect();
         let ready_started = std::time::Instant::now();
-        let owner = if retained != Some(false) {
+        let split = isolation_comparison == Some(true);
+        let owners = if retained != Some(false) {
             let install = if stage_count == 4 {
                 Owner::install
             } else {
                 Owner::install_stages
             };
-            let owner = install(host.clone(), controller.clone(), stages)
-                .unwrap()
-                .unwrap();
-            owner.start();
+            let groups = if split {
+                stages.into_iter().map(|stage| vec![stage]).collect()
+            } else {
+                vec![stages]
+            };
+            let owners: Vec<_> = groups
+                .into_iter()
+                .map(|group| {
+                    install(host.clone(), controller.clone(), group)
+                        .unwrap()
+                        .unwrap()
+                })
+                .collect();
+            for owner in &owners {
+                owner.start();
+            }
             let deadline = ready_started + Duration::from_secs(20);
-            while !owner.ready() {
+            while !owners.iter().all(Owner::ready) {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "remaining ownership: {:?}",
@@ -1027,10 +1079,10 @@ mod tests {
                 );
                 std::thread::sleep(Duration::from_millis(2));
             }
-            Some(owner)
+            owners
         } else {
             drop(stages);
-            None
+            Vec::new()
         };
         if let Some(mode) = retained {
             println!(
@@ -1038,8 +1090,39 @@ mod tests {
                 ready_started.elapsed().as_micros()
             );
         }
-        let pid = owner.as_ref().and_then(Owner::process_id);
+        let pids: Vec<_> = owners
+            .iter()
+            .map(|owner| owner.process_id().unwrap())
+            .collect();
+        if split {
+            assert_eq!(pids.len(), 2);
+            assert_ne!(pids[0], pids[1]);
+        }
+        if isolation_comparison.is_some() {
+            assert_eq!(host.usage().physical_jobs, owners.len() as u64);
+            println!(
+                "isolation-core retained={} split={split} ready_us={} owner_jobs={}",
+                retained.unwrap(),
+                ready_started.elapsed().as_micros(),
+                owners.len()
+            );
+        }
         let mut last_key = None;
+        let sample_marker = |marker: &str| {
+            if interval_ms > 0
+                && let Some(split) = isolation_comparison
+            {
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                println!(
+                    "isolation-sample {marker} retained={} split={split} epoch_ms={epoch_ms}",
+                    retained.unwrap()
+                );
+            }
+        };
+        sample_marker("begin");
         let origin = std::time::Instant::now();
         for revision in 1..=count {
             let scheduled = origin + Duration::from_millis((revision - 1) * interval_ms);
@@ -1051,7 +1134,7 @@ mod tests {
             }
             let start = std::time::Instant::now();
             if revision > 1 {
-                if let Some(owner) = &owner {
+                for owner in &owners {
                     owner.witness_terminal(&controller);
                 }
                 controller
@@ -1100,6 +1183,11 @@ mod tests {
                 println!(
                     "mixed-core retained={mode} stages={stage_count} revision={revision} elapsed_us={elapsed}"
                 );
+                if isolation_comparison.is_some() {
+                    println!(
+                        "isolation-core retained={mode} split={split} revision={revision} elapsed_us={elapsed}"
+                    );
+                }
                 if interval_ms > 0 {
                     let late = start.saturating_duration_since(scheduled).as_micros();
                     println!(
@@ -1116,12 +1204,14 @@ mod tests {
                     );
                 }
             }
-            if let Some(owner) = &owner {
-                assert_eq!(owner.process_id(), pid);
+            for (owner, pid) in owners.iter().zip(&pids) {
+                assert_eq!(owner.process_id(), Some(*pid));
                 assert_eq!(
                     owner.shared.replies.load(Ordering::Acquire),
                     revision
-                        * if retained.is_some() {
+                        * if split {
+                            1
+                        } else if retained.is_some() {
                             stage_count as u64
                         } else {
                             2
@@ -1130,6 +1220,7 @@ mod tests {
                 );
             }
         }
+        sample_marker("end");
         if let Some(key) = last_key {
             gate.set_protection(true, false);
             assert!(controller.get_run(&key).is_err());
@@ -1138,7 +1229,7 @@ mod tests {
         }
         let cleanup_started = std::time::Instant::now();
         controller.close();
-        drop(owner);
+        drop(owners);
         drop(controller);
         drop(service);
         drop(registry);
