@@ -148,6 +148,12 @@ async function measure(client, spec) {
   }
   const records = [];
   for (let revision = 1; revision <= samples + 2; revision++) {
+    if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
+      console.error(JSON.stringify({ marker: 'begin', epochMs: Date.now() }));
+    }
+    if (revision === samples + 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
+      console.error(JSON.stringify({ marker: 'end', epochMs: Date.now() }));
+    }
     if (revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
     const text = `scaling-fixture-${revision}`;
     const start = performance.now();
