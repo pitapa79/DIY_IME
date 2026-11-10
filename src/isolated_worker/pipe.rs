@@ -936,8 +936,17 @@ pub(super) fn execute_with_diagnostics<'a>(
         running.observed = true;
     }
     let started = Instant::now();
+    // Measure whether earlier cancellation frees capacity before the next
+    // input. Process signalling and cleanup still govern physical ending.
+    let cancel_poll_ms = if jit_run_cancel.is_some()
+        && std::env::var_os("DIY_EXPERIMENT_JIT_FAST_CANCEL").as_deref() == Some(OsStr::new("1"))
+    {
+        2
+    } else {
+        10
+    };
     loop {
-        let wait = unsafe { WaitForSingleObject(running.process.0, 10) };
+        let wait = unsafe { WaitForSingleObject(running.process.0, cancel_poll_ms) };
         if wait == WAIT_OBJECT_0 {
             return Ok(Outcome::Exited(running.finish()));
         }
