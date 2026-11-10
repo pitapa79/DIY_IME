@@ -1260,6 +1260,7 @@ impl WasmNode {
         std::thread::Builder::new()
             .name("diyime2-wasm-invocation".into())
             .spawn(move || {
+                let mut deferred_refill = None;
                 let run = || -> Result<(), CoreError> {
                     let request_phase = invocation.trace_host_phase(HostTracePhase::Request);
                     node.validate_config(invocation.config())?;
@@ -1341,7 +1342,13 @@ impl WasmNode {
                             && let Some(slot) = node.prepared_jit_slot(invocation.context().node_id)
                             && node.gate.publish(&lease, key, || ()).is_ok()
                         {
-                            slot.refill(&node.artifact);
+                            if std::env::var_os("DIY_EXPERIMENT_PREPARED_JIT_DEFER_REFILL").as_deref()
+                                == Some(std::ffi::OsStr::new("1"))
+                            {
+                                deferred_refill = Some((slot, lease.clone()));
+                            } else {
+                                slot.refill(&node.artifact);
+                            }
                         }
                         let bytes = response?;
                         check()?;
@@ -1390,6 +1397,11 @@ impl WasmNode {
                             completion.complete(Err(error));
                         }
                     }
+                }
+                if let Some((slot, lease)) = deferred_refill
+                    && node.gate.publish(&lease, invocation.key(), || ()).is_ok()
+                {
+                    slot.refill(&node.artifact);
                 }
             })
             .map_err(|_| fail("worker-thread", "Host execution thread unavailable"))?;

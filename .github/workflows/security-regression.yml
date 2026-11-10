@@ -139,8 +139,10 @@ jobs:
           $workers = [ordered]@{
             'worker-exit' = 'target/release/diy-ime2-wasm-worker.exe'
             latency = 'target/windows-app/bin/diy-ime2-wasm-worker.exe'
+            'deferred-refill' = 'target/windows-app/bin/diy-ime2-wasm-worker.exe'
           }
           foreach ($variant in $workers.Keys) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT_DEFER_REFILL = if ($variant -eq 'deferred-refill') { '1' } else { '0' }
             $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $workers[$variant] target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $result | Set-Content "target/windows-prepared-jit-$variant.json" -Encoding utf8
@@ -154,8 +156,9 @@ jobs:
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
-          foreach ($mode in @('1', 'all')) {
-            $env:DIY_EXPERIMENT_PREPARED_JIT = $mode
+          foreach ($mode in @('1', 'all', 'all-deferred-refill')) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '1') { '1' } else { 'all' }
+            $env:DIY_EXPERIMENT_PREPARED_JIT_DEFER_REFILL = if ($mode -eq 'all-deferred-refill') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-paced-$mode.json"
             python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-paced-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -185,6 +188,7 @@ jobs:
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
             target/windows-prepared-jit-worker-exit.json
+            target/windows-prepared-jit-deferred-refill.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
           if-no-files-found: error
