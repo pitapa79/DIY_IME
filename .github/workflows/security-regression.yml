@@ -130,6 +130,19 @@ jobs:
           }
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
+      - name: Prepared JIT latency diagnostic
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+        run: |
+          $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result | Set-Content target/windows-prepared-jit-latency.json -Encoding utf8
+          $report = $result | ConvertFrom-Json
+          $scenario = $report.scenarios[0]
+          if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
+          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs} | ConvertTo-Json -Depth 4
+          cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
+          exit $LASTEXITCODE
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -140,6 +153,7 @@ jobs:
             target/windows-latency-smoke.json
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
+            target/windows-prepared-jit-latency.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
