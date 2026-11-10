@@ -841,9 +841,9 @@ impl WasmArtifact {
         );
         let process_time = elapsed_micros(process_started);
         drop(process);
-        let _cleanup = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerCleanup));
         let trace_invocation =
             invocation.or_else(|| deferred_trace.as_deref().and_then(std::sync::OnceLock::get));
+        let _cleanup = trace_invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerCleanup));
         if let (Some(invocation), Some(receipt)) = (
             trace_invocation.filter(|i| i.host_trace_is_detailed()),
             &receipt,
@@ -1291,11 +1291,18 @@ impl WasmNode {
                         {
                             let bytes = serde_json::to_vec(&request)
                                 .map_err(|_| fail("worker-request", "request serialization failed"))?;
-                            node.artifact.0.requests.fetch_add(1, Ordering::AcqRel);
-                            prepared.dispatch(
+                            match prepared.try_dispatch(
                                 JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()) },
                                 Some((&invocation, &completion)),
-                            )
+                            ) {
+                                PreparedDispatch::Settled(result) => {
+                                    node.artifact.0.requests.fetch_add(1, Ordering::AcqRel);
+                                    result
+                                }
+                                PreparedDispatch::Undelivered(delivery) => {
+                                    node.artifact.call_traced(&request, cancel.clone(), Some(&invocation), worker_instance, delivery.check)
+                                }
+                            }
                         } else {
                             node.artifact.call_traced(&request, cancel.clone(), Some(&invocation), worker_instance, Some(delivery))
                         };
@@ -1390,6 +1397,11 @@ struct PreparedJitOwner {
     host: ExecutionHost,
 }
 
+enum PreparedDispatch {
+    Settled(Result<Vec<u8>, CoreError>),
+    Undelivered(JitDelivery),
+}
+
 impl PreparedJitOwner {
     fn is_running(&self) -> bool {
         self.worker
@@ -1461,40 +1473,57 @@ impl PreparedJitOwner {
         })
     }
 
-    fn dispatch(
+    fn try_dispatch(
         mut self,
         delivery: JitDelivery,
         execution: Option<(&OwnedInvocation, &CompletionPermit)>,
-    ) -> Result<Vec<u8>, CoreError> {
+    ) -> PreparedDispatch {
         if let Some((invocation, completion)) = execution {
             if completion.key() != invocation.key() {
-                return Err(fail(
+                return PreparedDispatch::Settled(Err(fail(
                     "invalid-reservation",
                     "prepared Worker and dispatch differ",
-                ));
+                )));
             }
-            let slot = completion.pin_physical_reservation(&self.host)?;
+            let slot = match completion.pin_physical_reservation(&self.host) {
+                Ok(slot) => slot,
+                Err(error) => return PreparedDispatch::Settled(Err(error)),
+            };
             // Both charges exist until admission. Thereafter the original
             // process and the dispatcher own the same reservation.
-            let reservation = self
-                .reservation
-                .upgrade()
-                .ok_or_else(|| fail("worker-request", "prepared Worker ended before delivery"))?;
+            let Some(reservation) = self.reservation.upgrade() else {
+                return PreparedDispatch::Undelivered(delivery);
+            };
             *reservation.lock().unwrap_or_else(|p| p.into_inner()) = slot;
             if invocation.host_trace_is_detailed() {
                 let _ = self.trace.set(invocation.clone());
             }
         }
-        self.input
-            .take()
-            .unwrap()
-            .send(delivery)
-            .map_err(|_| fail("worker-request", "prepared Worker stopped before delivery"))?;
-        self.worker
-            .take()
-            .unwrap()
-            .join()
-            .map_err(|_| fail("worker-thread", "prepared JIT owner failed"))?
+        if let Err(error) = self.input.take().unwrap().send(delivery) {
+            return PreparedDispatch::Undelivered(error.0);
+        }
+        PreparedDispatch::Settled(
+            self.worker
+                .take()
+                .unwrap()
+                .join()
+                .unwrap_or_else(|_| Err(fail("worker-thread", "prepared JIT owner failed"))),
+        )
+    }
+
+    #[cfg(test)]
+    fn dispatch(
+        self,
+        delivery: JitDelivery,
+        execution: Option<(&OwnedInvocation, &CompletionPermit)>,
+    ) -> Result<Vec<u8>, CoreError> {
+        match self.try_dispatch(delivery, execution) {
+            PreparedDispatch::Settled(result) => result,
+            PreparedDispatch::Undelivered(_) => Err(fail(
+                "worker-request",
+                "prepared Worker stopped before delivery",
+            )),
+        }
     }
 }
 
@@ -1633,6 +1662,18 @@ mod tests {
         assert!(owner.worker.take().unwrap().join().unwrap().is_err());
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
+        let unsent = owner.try_dispatch(
+            JitDelivery {
+                bytes: b"not dispatched".to_vec(),
+                check: None,
+                run_cancel: None,
+            },
+            None,
+        );
+        let PreparedDispatch::Undelivered(unsent) = unsent else {
+            panic!("an ended Worker cannot accept input");
+        };
+        assert_eq!(unsent.bytes, b"not dispatched");
 
         let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();

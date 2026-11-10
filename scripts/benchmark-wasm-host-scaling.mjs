@@ -126,7 +126,10 @@ function verify(snapshot, targets, text) {
   for (const target of targets) {
     const output = snapshot.result.ports.find(p => p.endpoint.node === target.node && p.endpoint.port === target.port);
     if (text === null) assert.equal(output?.value.status, 'no-output');
-    else assert.deepEqual(output?.value.packet.root, typeof text === 'string' ? { type: 'text', text } : text);
+    else {
+      assert(output?.value?.packet, `missing benchmark output: ${JSON.stringify(snapshot)}`);
+      assert.deepEqual(output.value.packet.root, typeof text === 'string' ? { type: 'text', text } : text);
+    }
   }
 }
 async function measure(client, spec) {
