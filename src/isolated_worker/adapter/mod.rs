@@ -1353,7 +1353,7 @@ mod tests {
     #[test]
     #[ignore = "requires the production Worker, pinned DLL and a real AppContainer"]
     fn real_prepared_jit_uses_production_worker_lifecycle() {
-        use crate::execution_control::ResourcePolicy;
+        use crate::execution_control::{ResourcePolicy, RunKey};
         let contract: Value = serde_json::from_str(include_str!(
             "../../../tests/contracts/execution_control.json"
         ))
@@ -1391,13 +1391,50 @@ mod tests {
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(artifact.timings().settled_calls, 1);
         assert_eq!(host.usage().physical_jobs, 0);
+
+        let gate = ExecutionGate::default();
+        let key: RunKey = serde_json::from_value(json!({
+            "sessionEpoch":"11111111111111111111111111111111",
+            "planVersion":"1","runId":"1","deliveryGeneration":"1"
+        }))
+        .unwrap();
+        let target = GrantTarget::new(
+            artifact.identity().into(),
+            &key.session_epoch,
+            key.plan_version,
+            "node".into(),
+        );
+        gate.approve(target.clone());
+        let lease = gate
+            .begin(target.clone(), &key, CancellationToken::default())
+            .unwrap();
+        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        gate.revoke(&target);
+        gate.approve(target);
+        let stale = owner.dispatch(JitDelivery {
+            bytes: serde_json::to_vec(&wire::request(
+                "fixture.wasm",
+                1,
+                json!({"method":"describe"}),
+            ))
+            .unwrap(),
+            check: Some(Box::new(move || {
+                gate.publish(&lease, &key, || ())
+                    .map_err(|error| error.to_string())
+            })),
+        });
+        assert_eq!(stale.unwrap_err().code, "worker-failed");
+        assert_eq!(artifact.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+
         let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(artifact.active_processes(), 1);
         assert_eq!(host.usage().physical_jobs, 1);
         drop(owner);
         assert_eq!(artifact.active_processes(), 0);
-        assert_eq!(artifact.timings().settled_calls, 2);
+        assert_eq!(artifact.timings().settled_calls, 3);
         assert_eq!(host.usage().physical_jobs, 0);
     }
 
