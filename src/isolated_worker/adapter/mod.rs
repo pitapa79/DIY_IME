@@ -141,7 +141,7 @@ enum WorkerImage {
 }
 enum WorkerRequest {
     Immediate(Vec<u8>),
-    Jit(Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>),
+    Jit(Box<dyn FnOnce() -> Result<super::pipe::JitDelivery, String> + Send>),
 }
 /// Paths are chosen by trusted Host installation code, never package/Node fields.
 /// All executable bytes are captured before validation, preventing later path replacement.
@@ -654,11 +654,16 @@ impl WasmArtifact {
         self.0.requests.fetch_add(1, Ordering::AcqRel);
         let image = self.worker_image(&cancel);
         let request = if matches!(image, WorkerImage::Jit) {
-            WorkerRequest::Jit(Box::new(move || Ok(bytes)))
+            WorkerRequest::Jit(Box::new(move || {
+                Ok(super::pipe::JitDelivery {
+                    bytes,
+                    check: delivery,
+                })
+            }))
         } else {
             WorkerRequest::Immediate(bytes)
         };
-        self.call_worker(request, cancel, invocation, instance, image, delivery)
+        self.call_worker(request, cancel, invocation, instance, image)
     }
 
     fn worker_image(&self, cancel: &CancellationToken) -> WorkerImage {
@@ -707,7 +712,6 @@ impl WasmArtifact {
             None,
             0,
             WorkerImage::Compile,
-            None,
         )?;
         let digest = sha256(&bytes)?;
         let files = Arc::new(CodeFiles::new(
@@ -729,7 +733,6 @@ impl WasmArtifact {
         invocation: Option<&OwnedInvocation>,
         instance: u32,
         image: WorkerImage,
-        delivery: Option<super::pipe::JitDeliveryCheck>,
     ) -> Result<Vec<u8>, CoreError> {
         if cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "Worker was not started"));
@@ -815,7 +818,7 @@ impl WasmArtifact {
         );
         let (scope, bytes) = match request {
             WorkerRequest::Jit(request) => (
-                scope.with_jit_delivery(request, control.cancel.clone(), delivery),
+                scope.with_jit_delivery(request, control.cancel.clone()),
                 Vec::new(),
             ),
             WorkerRequest::Immediate(bytes) => (scope, bytes),
@@ -1273,11 +1276,84 @@ impl WasmNode {
 }
 #[cfg(test)]
 mod tests {
+    use super::super::pipe::JitDelivery;
     use super::*;
+    use crate::execution_control::{ExecutionHost, ResourceUsage};
+    use std::sync::mpsc;
+
+    struct PreparedJitOwner {
+        input: Option<mpsc::SyncSender<JitDelivery>>,
+        ready: mpsc::Receiver<()>,
+        cancel: CancellationToken,
+        worker: Option<std::thread::JoinHandle<Result<Vec<u8>, CoreError>>>,
+    }
+
+    impl PreparedJitOwner {
+        fn start(host: &ExecutionHost, artifact: WasmArtifact) -> Result<Self, CoreError> {
+            let slot = host.try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..ResourceUsage::default()
+            })?;
+            let (notify, ready) = mpsc::sync_channel(1);
+            let (input, receive) = mpsc::sync_channel(1);
+            let cancel = CancellationToken::default();
+            let stop = cancel.clone();
+            let worker = std::thread::Builder::new()
+                .name("diyime-prepared-jit".into())
+                .spawn(move || {
+                    let _slot = slot;
+                    artifact.call_worker(
+                        WorkerRequest::Jit(Box::new(move || {
+                            notify
+                                .send(())
+                                .map_err(|_| "prepared Worker owner closed")?;
+                            receive
+                                .recv_timeout(Duration::from_secs(5))
+                                .map_err(|error| error.to_string())
+                        })),
+                        stop,
+                        None,
+                        0,
+                        WorkerImage::Jit,
+                    )
+                })
+                .map_err(|_| fail("worker-thread", "prepared JIT owner unavailable"))?;
+            Ok(Self {
+                input: Some(input),
+                ready,
+                cancel,
+                worker: Some(worker),
+            })
+        }
+
+        fn dispatch(mut self, delivery: JitDelivery) -> Result<Vec<u8>, CoreError> {
+            self.input
+                .take()
+                .unwrap()
+                .send(delivery)
+                .map_err(|_| fail("worker-request", "prepared Worker stopped before delivery"))?;
+            self.worker
+                .take()
+                .unwrap()
+                .join()
+                .map_err(|_| fail("worker-thread", "prepared JIT owner failed"))?
+        }
+    }
+
+    impl Drop for PreparedJitOwner {
+        fn drop(&mut self) {
+            self.cancel.cancel();
+            self.input.take();
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires the production Worker, pinned DLL and a real AppContainer"]
     fn real_prepared_jit_uses_production_worker_lifecycle() {
-        use crate::execution_control::{ExecutionHost, ResourcePolicy, ResourceUsage};
+        use crate::execution_control::ResourcePolicy;
         let contract: Value = serde_json::from_str(include_str!(
             "../../../tests/contracts/execution_control.json"
         ))
@@ -1296,47 +1372,32 @@ mod tests {
             WorkerPolicy::bounded_probe(),
         )
         .unwrap();
-        let slot = host
-            .try_reserve(ResourceUsage {
-                physical_jobs: 1,
-                ..ResourceUsage::default()
-            })
-            .unwrap();
-        let (ready, prepared) = std::sync::mpsc::sync_channel(1);
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
-        let execution = artifact.clone();
-        let owner = std::thread::spawn(move || {
-            execution.call_worker(
-                WorkerRequest::Jit(Box::new(move || {
-                    ready.send(()).map_err(|error| error.to_string())?;
-                    receive
-                        .recv_timeout(Duration::from_secs(5))
-                        .map_err(|error| error.to_string())
-                })),
-                CancellationToken::default(),
-                None,
-                0,
-                WorkerImage::Jit,
-                None,
-            )
-        });
-        prepared.recv_timeout(Duration::from_secs(5)).unwrap();
+        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(artifact.active_processes(), 1);
         assert_eq!(host.usage().physical_jobs, 1);
-        send.send(
-            serde_json::to_vec(&wire::request(
-                "fixture.wasm",
-                1,
-                json!({"method":"describe"}),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        let output = owner.join().unwrap().unwrap();
+        let output = owner
+            .dispatch(JitDelivery {
+                bytes: serde_json::to_vec(&wire::request(
+                    "fixture.wasm",
+                    1,
+                    json!({"method":"describe"}),
+                ))
+                .unwrap(),
+                check: Some(Box::new(|| Ok(()))),
+            })
+            .unwrap();
         assert_eq!(wire::reply(&output).unwrap()["kind"], "fixture.wasm");
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(artifact.timings().settled_calls, 1);
-        drop(slot);
+        assert_eq!(host.usage().physical_jobs, 0);
+        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(artifact.active_processes(), 1);
+        assert_eq!(host.usage().physical_jobs, 1);
+        drop(owner);
+        assert_eq!(artifact.active_processes(), 0);
+        assert_eq!(artifact.timings().settled_calls, 2);
         assert_eq!(host.usage().physical_jobs, 0);
     }
 

@@ -1078,14 +1078,17 @@ fn real_jit_preparation_acknowledges_before_input() {
                 ready.send(()).map_err(|error| error.to_string())?;
                 receive
                     .recv_timeout(Duration::from_secs(5))
+                    .map(|bytes| super::pipe::JitDelivery {
+                        bytes,
+                        check: Some(Box::new(move || {
+                            deliver
+                                .then_some(())
+                                .ok_or_else(|| "test delivery denied".into())
+                        })),
+                    })
                     .map_err(|error| error.to_string())
             },
             control.cancel.clone(),
-            Some(Box::new(move || {
-                deliver
-                    .then_some(())
-                    .ok_or_else(|| "test delivery denied".into())
-            })),
         );
         let Outcome::Exited(receipt) =
             execute_observed(scope, &executable, &args, vec![], &control).unwrap()
