@@ -408,7 +408,7 @@ impl<'a> Runtime<'a> {
         limits: &Limits,
         diagnostics: Option<&'a Recorder>,
     ) -> Result<Self, String> {
-        Self::with_module(api, limits, diagnostics, |engine, result| {
+        let load = |engine, result: &mut P| {
             let _compile = diagnostics.map(|d| d.span(WorkerTracePhase::Compile));
             // SAFETY: the module bytes remain live until compilation returns.
             unsafe {
@@ -417,8 +417,20 @@ impl<'a> Runtime<'a> {
                     ptr::null_mut(),
                 )
             }
-        })
+        };
+        let mut result = Self::prepare_module_using(
+            api,
+            limits,
+            diagnostics,
+            || create_winch_engine(api, limits),
+            load,
+        )
+        .or_else(|_| Self::prepare_module(api, limits, diagnostics, load))?;
+        // Instantiation can run a start function. Keep it outside the retry.
+        result.instantiate()?;
+        Ok(result)
     }
+
     fn with_module(
         api: &'a Api,
         limits: &Limits,
@@ -435,8 +447,24 @@ impl<'a> Runtime<'a> {
         diagnostics: Option<&'a Recorder>,
         load: impl FnOnce(P, &mut P) -> Result<(), String>,
     ) -> Result<Self, String> {
+        Self::prepare_module_using(
+            api,
+            limits,
+            diagnostics,
+            || create_engine(api, limits),
+            load,
+        )
+    }
+
+    fn prepare_module_using(
+        api: &'a Api,
+        limits: &Limits,
+        diagnostics: Option<&'a Recorder>,
+        engine: impl FnOnce() -> Result<P, String>,
+        load: impl FnOnce(P, &mut P) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let engine_phase = diagnostics.map(|d| d.span(WorkerTracePhase::EngineSetup));
-        let engine = create_engine(api, limits)?;
+        let engine = engine()?;
         let mut result = Self {
             api,
             engine,
@@ -627,6 +655,39 @@ impl<'a> Runtime<'a> {
     }
 }
 fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
+    create_engine_configured(api, limits, |_| {})
+}
+
+#[cfg(target_arch = "x86_64")]
+fn create_winch_engine(api: &Api, limits: &Limits) -> Result<P, String> {
+    if !std::is_x86_feature_detected!("avx") {
+        return Err("Winch CPU unsupported".into());
+    }
+    // SAFETY: the symbol is looked up in the verified, process-owned DLL.
+    let symbol = unsafe {
+        GetProcAddress(
+            api._library.0,
+            c"wasmtime_config_strategy_set".as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        return Err("Winch strategy API unavailable".into());
+    }
+    // SAFETY: the pinned C header declares wasm_config_t* and uint8_t.
+    let set_strategy = unsafe { std::mem::transmute::<P, unsafe extern "C" fn(P, u8)>(symbol) };
+    create_engine_configured(api, limits, |config| unsafe { set_strategy(config, 2) })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn create_winch_engine(_: &Api, _: &Limits) -> Result<P, String> {
+    Err("Winch architecture unsupported".into())
+}
+
+fn create_engine_configured(
+    api: &Api,
+    limits: &Limits,
+    configure: impl FnOnce(P),
+) -> Result<P, String> {
     // SAFETY: the fresh config is owned by this function until engine creation consumes it.
     unsafe {
         let config = (api.config_new)();
@@ -636,6 +697,7 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
         (api.fuel_enable)(config, limits.fuel.is_some());
         // WASMTIME_OPT_LEVEL_NONE (pinned config.h).
         (api.opt_level)(config, 0);
+        configure(config);
         let engine = (api.engine_new)(config);
         if engine.is_null() {
             return Err("engine unavailable".into());
