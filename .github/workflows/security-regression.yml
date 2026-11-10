@@ -134,6 +134,8 @@ jobs:
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
         run: |
+          cargo build --locked --release --features worker-exit-probe --bin diy-ime2-wasm-worker
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $result | Set-Content target/windows-prepared-jit-latency.json -Encoding utf8
@@ -141,6 +143,8 @@ jobs:
           $scenario = $report.scenarios[0]
           if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
           @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/release/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-worker-exit.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
@@ -175,6 +179,7 @@ jobs:
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
+            target/windows-prepared-jit-worker-exit.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
           if-no-files-found: error
