@@ -287,6 +287,13 @@ async function measure(client, spec) {
       if (preparedExperiment) {
         // A prepared launch precedes this invocation and has no per-run Host launch span.
         record.preparedWorker = !trace.events.some(event => sameRun(event) && event.event === 'worker-process-started');
+        const cleanupStarted = only(event => sameRun(event) && event.event === 'worker-cleanup-started');
+        const cleanupFinished = only(event => sameRun(event) && event.event === 'worker-cleanup-finished');
+        const physicalEnded = only(event => sameRun(event) && event.event === 'physical-ended');
+        assert(BigInt(cleanupStarted.sequence) < BigInt(cleanupFinished.sequence), 'invalid Worker cleanup interval');
+        assert(BigInt(cleanupFinished.sequence) < BigInt(physicalEnded.sequence), 'physical end preceded Worker cleanup');
+        assert(BigInt(physicalEnded.sequence) < BigInt(published.sequence), 'result preceded physical end');
+        record.workerCleanupUs = Number(BigInt(cleanupFinished.atUs) - BigInt(cleanupStarted.atUs));
       }
       await client.call({ method: 'traceStop' });
     }
@@ -308,7 +315,10 @@ async function measure(client, spec) {
   const diagnostic = records.pop();
   return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
-    ...(paired && preparedExperiment ? { preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length } : {}),
+    ...(paired && preparedExperiment ? {
+      preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length,
+      workerCleanupUs: distribution(records.slice(1).map(r => r.workerCleanupUs)),
+    } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
 let client;
