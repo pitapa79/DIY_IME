@@ -136,8 +136,9 @@ async function measure(client, spec) {
   const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
   const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
-    && physicalSlots >= 2 && ['single', 'single-detailed', 'paced'].includes(scenario);
-  const spareLimit = Math.min(allNodes ? spec.count : requestedSpares, physicalSlots - 1);
+    && physicalSlots >= 2 && ['single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
+  const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
+  const spareLimit = Math.min(allNodes ? nodeCount : requestedSpares, physicalSlots - 1);
   const { graph, targets } = graphFor(spec);
   const prepareStart = performance.now();
   let review = await client.call({ method: 'prepare', graph });
@@ -238,7 +239,7 @@ async function measure(client, spec) {
   const records = [];
   const paired = scenario === 'single-detailed';
   for (let revision = 1; revision <= samples + 2; revision++) {
-    if (preparedExperiment && revision > 1) {
+    if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {

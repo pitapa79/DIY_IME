@@ -153,6 +153,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing fixed-cadence report ($mode)" }
           }
+      - name: Prepared JIT mixed Wasm graph comparison
+        run: |
+          $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
+          cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($mode in @('0', 'all')) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT = $mode
+            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm | Set-Content "target/windows-prepared-jit-mixed-$mode.json" -Encoding utf8
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -165,6 +175,7 @@ jobs:
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
             target/windows-prepared-jit-paced-*.json
+            target/windows-prepared-jit-mixed-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
