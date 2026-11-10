@@ -62,6 +62,17 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Real Wasm permission/flow/withdrawal integration failed'}
  & $Node (Join-Path $root 'scripts/check-external-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json')
  if($LASTEXITCODE -ne 0){throw 'Production external Host execution/consent/EOF integration failed'}
+ $oldPreparedJit=$env:DIY_EXPERIMENT_PREPARED_JIT
+ try {
+  $env:DIY_EXPERIMENT_PREPARED_JIT='1'
+  $preparedJitReport=& $Node (Join-Path $root 'scripts/benchmark-wasm-host-scaling.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module 3 2 single-detailed
+  if($LASTEXITCODE -ne 0){throw 'Opt-in prepared JIT Host integration failed'}
+  $preparedJit=$preparedJitReport | ConvertFrom-Json
+  if($preparedJit.scenarios.Count -ne 1 -or $preparedJit.scenarios[0].preparedWorkers -lt 1){throw 'Opt-in prepared JIT Host never used a prepared Worker'}
+  Write-Output "Opt-in prepared JIT Host verified $($preparedJit.scenarios[0].preparedWorkers)/3 warm routes and cleaned all reservations on close"
+ } finally {
+  $env:DIY_EXPERIMENT_PREPARED_JIT=$oldPreparedJit
+ }
  & $Node (Join-Path $root 'scripts/check-wasm-dictionary.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json') (Join-Path $target 'debug/examples/wasm_dictionary_probe.exe')
  if($LASTEXITCODE -ne 0){throw 'Dictionary broker resource consent/isolation/true-ending integration failed'}
  & $Node (Join-Path $root 'scripts/check-wasm-network.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json')
