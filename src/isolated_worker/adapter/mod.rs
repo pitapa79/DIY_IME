@@ -144,6 +144,7 @@ enum WorkerRequest {
     Jit {
         request: Box<dyn FnOnce() -> Result<JitDelivery, String> + Send>,
         trace: Option<Arc<std::sync::OnceLock<OwnedInvocation>>>,
+        private_runtime: Option<Arc<CodeFiles>>,
     },
 }
 /// Paths are chosen by trusted Host installation code, never package/Node fields.
@@ -611,16 +612,20 @@ impl WasmArtifact {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if captured.is_none() {
-            *captured = Some(Arc::new(CodeFiles::new(
-                &self.0.workspace,
-                &[
-                    ("worker.exe", &self.0.worker),
-                    ("wasmtime.dll", &self.0.dll),
-                ],
-                &self.0.code_budget,
-            )?));
+            *captured = Some(self.stage_runtime_code()?);
         }
         Ok(captured.as_ref().expect("captured runtime").clone())
+    }
+
+    fn stage_runtime_code(&self) -> Result<Arc<CodeFiles>, CoreError> {
+        Ok(Arc::new(CodeFiles::new(
+            &self.0.workspace,
+            &[
+                ("worker.exe", &self.0.worker),
+                ("wasmtime.dll", &self.0.dll),
+            ],
+            &self.0.code_budget,
+        )?))
     }
 
     fn module_code_files(&self) -> Result<Arc<CodeFiles>, CoreError> {
@@ -666,6 +671,7 @@ impl WasmArtifact {
                     })
                 }),
                 trace: None,
+                private_runtime: None,
             }
         } else {
             WorkerRequest::Immediate(bytes)
@@ -759,7 +765,13 @@ impl WasmArtifact {
                     "AppContainer unavailable; refusing execution",
                 )
             })?;
-        let runtime_files = self.runtime_code_files()?;
+        let runtime_files = match &request {
+            WorkerRequest::Jit {
+                private_runtime: Some(files),
+                ..
+            } => files.clone(),
+            _ => self.runtime_code_files()?,
+        };
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
@@ -1203,9 +1215,16 @@ impl WasmNode {
         if !self.can_prepare_jit() || host.policy().max_physical_jobs < 2 {
             return None;
         }
+        let private_runtime = (std::env::var_os("DIY_EXPERIMENT_PREPARED_JIT_PRIVATE_RUNTIME")
+            .as_deref()
+            == Some(std::ffi::OsStr::new("1")))
+        .then(|| self.artifact.stage_runtime_code())
+        .transpose()
+        .ok()?;
         let slot = Arc::new(PreparedJitSlot {
             id,
             owners: std::sync::Mutex::new(Vec::new()),
+            private_runtime,
             capacity: limit.min(host.policy().max_physical_jobs.saturating_sub(1) as usize),
             host: host.clone(),
         });
@@ -1411,6 +1430,7 @@ impl WasmNode {
 pub(in crate::isolated_worker) struct PreparedJitSlot {
     id: String,
     owners: std::sync::Mutex<Vec<PreparedJitOwner>>,
+    private_runtime: Option<Arc<CodeFiles>>,
     capacity: usize,
     host: ExecutionHost,
 }
@@ -1420,7 +1440,9 @@ impl PreparedJitSlot {
         let mut owners = self.owners.lock().unwrap_or_else(|p| p.into_inner());
         owners.retain(PreparedJitOwner::is_running);
         while owners.len() < self.capacity {
-            let Ok(owner) = PreparedJitOwner::start(&self.host, artifact.clone()) else {
+            let Ok(owner) =
+                PreparedJitOwner::start(&self.host, artifact.clone(), self.private_runtime.clone())
+            else {
                 break;
             };
             owners.push(owner);
@@ -1449,7 +1471,11 @@ impl PreparedJitOwner {
             .as_ref()
             .is_some_and(|thread| !thread.is_finished())
     }
-    fn start(host: &ExecutionHost, artifact: WasmArtifact) -> Result<Self, CoreError> {
+    fn start(
+        host: &ExecutionHost,
+        artifact: WasmArtifact,
+        private_runtime: Option<Arc<CodeFiles>>,
+    ) -> Result<Self, CoreError> {
         use std::sync::mpsc;
         let slot = host.try_reserve(ResourceUsage {
             physical_jobs: 1,
@@ -1495,6 +1521,7 @@ impl PreparedJitOwner {
                             }
                         }),
                         trace: Some(worker_trace),
+                        private_runtime,
                     },
                     stop,
                     None,
@@ -1609,11 +1636,11 @@ mod tests {
             },
         )
         .unwrap();
-        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        let owner = PreparedJitOwner::start(&host, artifact.clone(), None).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(artifact.active_processes(), 1);
         assert_eq!(host.usage().physical_jobs, 1);
-        let second = match PreparedJitOwner::start(&host, artifact.clone()) {
+        let second = match PreparedJitOwner::start(&host, artifact.clone(), None) {
             Ok(_) => panic!("a second Worker bypassed the only physical slot"),
             Err(error) => error,
         };
@@ -1654,7 +1681,7 @@ mod tests {
         let lease = gate
             .begin(target.clone(), &key, CancellationToken::default())
             .unwrap();
-        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        let owner = PreparedJitOwner::start(&host, artifact.clone(), None).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         gate.revoke(&target);
         gate.approve(target);
@@ -1678,7 +1705,7 @@ mod tests {
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
 
-        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        let owner = PreparedJitOwner::start(&host, artifact.clone(), None).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(artifact.active_processes(), 1);
         assert_eq!(host.usage().physical_jobs, 1);
@@ -1687,7 +1714,7 @@ mod tests {
         assert_eq!(artifact.timings().settled_calls, 3);
         assert_eq!(host.usage().physical_jobs, 0);
 
-        let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        let mut owner = PreparedJitOwner::start(&host, artifact.clone(), None).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(host.usage().physical_jobs, 1);
         // Retain the sender to prove cancellation alone wakes the blocked reader.
@@ -1716,7 +1743,7 @@ mod tests {
         };
         assert_eq!(unsent.bytes, b"not dispatched");
 
-        let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        let mut owner = PreparedJitOwner::start(&host, artifact.clone(), None).unwrap();
         owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
         let run_cancel = CancellationToken::default();
         let (notify, checked) = mpsc::sync_channel(1);
