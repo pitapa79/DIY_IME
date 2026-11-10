@@ -359,7 +359,50 @@ pub(super) struct WorkerScope<'a> {
     prepared: bool,
 }
 type HostExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
+pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
 impl<'a> WorkerScope<'a> {
+    pub(super) fn with_jit_delivery(
+        mut self,
+        request: impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static,
+        cancel: CancellationToken,
+        check: Option<JitDeliveryCheck>,
+    ) -> Self {
+        self.exchange = Some(Box::new(move |mut output, mut input| {
+            let mut ready = [0; super::runtime::JIT_READY.len()];
+            output
+                .read_exact(&mut ready)
+                .map_err(|_| "JIT readiness pipe closed")?;
+            if ready != super::runtime::JIT_READY {
+                return Err("invalid JIT readiness frame".into());
+            }
+            let request = request()?;
+            if request.is_empty() || request.len() > WIRE_LIMIT {
+                return Err("invalid prepared JIT request size".into());
+            }
+            if let Some(check) = check {
+                check()?;
+            }
+            if cancel.is_cancelled() {
+                return Err("JIT input cancelled before delivery".into());
+            }
+            input
+                .write_all(&request)
+                .map_err(|_| "Worker input pipe failed")?;
+            drop(input);
+            let mut bytes = Vec::new();
+            match output.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes) {
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => (),
+                Err(_) => return Err("Worker output pipe failed".into()),
+            }
+            if bytes.len() > WIRE_LIMIT {
+                return Err("Worker output exceeds wire limit".into());
+            }
+            Ok(bytes)
+        }));
+        self
+    }
+
     pub(super) fn observed(
         profile: &'a Profile,
         job: &'a Job,

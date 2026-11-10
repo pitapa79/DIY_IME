@@ -115,10 +115,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Interval>, ()> {
     {
         return Err(());
     }
-    let mut phases = BTreeMap::new();
+    let mut phases: BTreeMap<WorkerTracePhase, (u64, Option<u64>)> = BTreeMap::new();
     let mut order = Vec::new();
     let mut previous = 0;
     let mut ended = false;
+    let mut retried = [false; 2];
     for (i, frame) in bytes[MAGIC.len()..].chunks_exact(10).enumerate() {
         let phase = WorkerTracePhase::try_from(frame[1])?;
         let at = u64::from_le_bytes(frame[2..].try_into().map_err(|_| ())?);
@@ -131,9 +132,21 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Interval>, ()> {
         previous = at;
         match frame[0] {
             0 => {
-                if phases.insert(phase, (at, None)).is_some() {
-                    return Err(());
+                // JIT preparation may retry once with the standard compiler.
+                // Keep the first start and report the final end for each phase.
+                if let Some((_, end)) = phases.get_mut(&phase) {
+                    let retry = match phase {
+                        WorkerTracePhase::EngineSetup => &mut retried[0],
+                        WorkerTracePhase::Compile => &mut retried[1],
+                        _ => return Err(()),
+                    };
+                    if *retry || end.take().is_none() {
+                        return Err(());
+                    }
+                    *retry = true;
+                    continue;
                 }
+                phases.insert(phase, (at, None));
                 order.push(phase);
             }
             1 => {
@@ -201,6 +214,28 @@ mod tests {
         body.extend_from_slice(b"PRIVATE-CANARY");
         assert!(decode(&body).is_err());
     }
+    #[test]
+    fn jit_retry_keeps_first_start_and_final_end() {
+        let bytes = stream(&[
+            (0, 0, 0),
+            (0, 4, 1),
+            (1, 4, 2),
+            (0, 5, 3),
+            (1, 5, 4),
+            (0, 4, 5),
+            (1, 4, 6),
+            (0, 5, 7),
+            (1, 5, 8),
+            (0, 6, 9),
+            (1, 6, 10),
+            (1, 0, 11),
+        ]);
+        let intervals = decode(&bytes).unwrap();
+        assert_eq!(intervals.len(), 4);
+        assert_eq!((intervals[1].start, intervals[1].end), (1, Some(6)));
+        assert_eq!((intervals[2].start, intervals[2].end), (3, Some(8)));
+    }
+
     #[test]
     fn oversized_diagnostics_are_drained_but_never_retained() {
         let mut input = std::io::Cursor::new(vec![0u8; LIMIT * 3]);
