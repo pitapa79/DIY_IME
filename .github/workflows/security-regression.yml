@@ -143,6 +143,14 @@ jobs:
           @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
+      - name: Prepared JIT fixed-cadence comparison
+        run: |
+          foreach ($mode in @('1', 'all')) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT = $mode
+            $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $result | Set-Content "target/windows-prepared-jit-paced-$mode.json" -Encoding utf8
+          }
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -154,6 +162,7 @@ jobs:
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
+            target/windows-prepared-jit-paced-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
