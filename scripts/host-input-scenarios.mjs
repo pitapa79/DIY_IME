@@ -10,11 +10,12 @@ const defaultSteps = [
   {id: 'dictionary-hit', text: 'kousui', expected: '降水'},
 ];
 
-export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps}) {
+export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound}) {
   const scenarios = [];
   for (const intervalMs of [null, 100, 20]) {
     const records = [];
     for (let round = 0; round < rounds; round++) {
+      if (beginRound) await beginRound();
       const origin = performance.now();
       const pending = [];
       let index = 0;
@@ -67,6 +68,7 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         }
       }
       records.push(...pending);
+      if (finishRound) await finishRound(intervalMs, pending);
     }
     const stats = values => values.length ? summarize(values) : null;
     const summarizeRecords = group => {

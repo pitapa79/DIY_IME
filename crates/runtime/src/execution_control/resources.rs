@@ -142,9 +142,7 @@ impl ExecutionHost {
         lease: &ResourceLease,
         usage: ResourceUsage,
     ) -> Result<(), CoreError> {
-        if !Arc::ptr_eq(&self.inner, &lease.inner.host)
-            || lease.usage() != usage
-            || Arc::strong_count(&lease.inner) != 1
+        if !self.owns_lease(lease) || lease.usage() != usage || Arc::strong_count(&lease.inner) != 1
         {
             return Err(CoreError::new(
                 "invalid-reservation",
@@ -152,6 +150,9 @@ impl ExecutionHost {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn owns_lease(&self, lease: &ResourceLease) -> bool {
+        Arc::ptr_eq(&self.inner, &lease.inner.host)
     }
     pub fn resource_domain(&self) -> &str {
         &self.inner.domain

@@ -257,6 +257,7 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
             activity,
             resource_deadline: Some(deadline),
             exchange: Some(wrapped),
+            jit_run_cancel: None,
             resource_owner: Some(Box::new(ProcessPin(request.reservation, process_id))),
             #[cfg(test)]
             prepared: false,

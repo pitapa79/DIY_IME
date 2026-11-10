@@ -130,6 +130,11 @@ function verify(snapshot, targets, text) {
   }
 }
 async function measure(client, spec) {
+  const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
+  const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
+  const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
+    && physicalSlots >= 2 && ['single', 'single-detailed', 'paced'].includes(scenario);
+  const spareLimit = Math.min(allNodes ? spec.count : requestedSpares, physicalSlots - 1);
   const { graph, targets } = graphFor(spec);
   const prepareStart = performance.now();
   let review = await client.call({ method: 'prepare', graph });
@@ -148,6 +153,14 @@ async function measure(client, spec) {
   const active = await client.call({ method: 'activate', reviewId: review.reviewId });
   assert.equal(active.phase, 'ready');
   const prepareMs = performance.now() - prepareStart;
+  if (preparedExperiment) {
+    // Give the single-use experimental Worker time to finish preparation.
+    // This delay models time between plan activation and the first input.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const status = await client.call({ method: 'status' });
+    assert.equal(status.physical.physicalJobs, spareLimit);
+    assert.equal(status.workerProcesses, spareLimit);
+  }
   const expectedPlanVersion = active.state.activePlanVersion;
   async function submit(text, revision) {
     if (revision > 1) await client.call({ method: 'invalidateInput', expectedPlanVersion, revision });
@@ -156,24 +169,75 @@ async function measure(client, spec) {
     return receipt.key;
   }
   const read = async key => (await client.call({ method: 'getRun', key })).snapshot;
+  async function verifyIdle(allowSpare) {
+    const status = await client.call({ method: 'status' });
+    if (allowSpare) {
+      assert(status.workerProcesses <= spareLimit, 'prepared processes exceed the spare limit');
+      assert(status.physical.physicalJobs <= spareLimit, 'physical reservations exceed the spare limit');
+    } else {
+      assert.equal(status.workerProcesses, 0);
+      assert.equal(status.physical.physicalJobs, 0);
+    }
+  }
   if (scenario === 'paced') {
     let revision = 0;
+    const routeCounts = new Map();
+    const countRoutes = async (interval, pending) => {
+      const events = [];
+      let dropped = false;
+      let after = '0';
+      for (;;) {
+        const { trace } = await client.call({ method: 'traceRead', after, limit: 256 });
+        dropped ||= trace.dropped !== 0;
+        if (trace.events.length === 0) break;
+        events.push(...trace.events);
+        after = trace.events.at(-1).sequence;
+      }
+      await client.call({ method: 'traceStop' });
+      const accepted = events.filter(event => event.event === 'run-accepted');
+      assert(accepted.length <= pending.length);
+      if (!dropped) assert.equal(accepted.length, pending.length);
+      if (!routeCounts.has(interval)) routeCounts.set(interval, { prepared: 0, cold: 0, unknown: 0, incompleteRounds: 0,
+        preparedStages: 0, coldStages: 0, unknownStages: 0, allStagesPrepared: 0 });
+      const counts = routeCounts.get(interval);
+      if (dropped) counts.incompleteRounds++;
+      counts.unknown += pending.length - accepted.length;
+      for (const run of accepted) {
+        const runEvents = events.filter(event => event.run === run.run && event.plan === run.plan && event.input === run.input);
+        const nodes = runEvents.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
+        const routes = nodes.map(({ node }) => {
+          const nodeEvents = runEvents.filter(event => event.node === node);
+          if (nodeEvents.some(event => event.event === 'worker-process-started')) return 'cold';
+          if (!dropped && nodeEvents.some(event => event.worker?.phase === 'guest-call')) return 'prepared';
+          return 'unknown';
+        });
+        counts[routes[0] ?? 'unknown']++;
+        for (const route of routes) counts[`${route}Stages`]++;
+        if (routes.length === spec.count && routes.every(route => route === 'prepared')) counts.allStagesPrepared++;
+      }
+    };
     const steps = Array.from({ length: 7 }, (_, i) => {
       const text = `paced-fixture-${i}`;
       return { id: String(i), text, expected: text };
     });
     const pacing = await measureHostInput({ steps, submit: text => submit(text, ++revision),
       read, ended, verify: (snapshot, text) => verify(snapshot, targets, text),
-      summarize: distribution, pollMs: 5, rounds: samples });
-    const status = await client.call({ method: 'status' });
-    assert.equal(status.workerProcesses, 0);
-    assert.equal(status.physical.physicalJobs, 0);
+      summarize: distribution, pollMs: 5, rounds: samples,
+      ...(preparedExperiment ? { beginRound: () => client.call({ method: 'traceStartDetailed' }), finishRound: countRoutes } : {}) });
+    if (preparedExperiment) {
+      for (const result of pacing) result.workerRoutes = routeCounts.get(result.intervalMs);
+    }
+    await verifyIdle(preparedExperiment);
     await client.call({ method: 'closeSession' });
+    if (preparedExperiment) await verifyIdle(false);
     return { ...spec, prepareMs, pacing };
   }
   const records = [];
   const paired = scenario === 'single-detailed';
   for (let revision = 1; revision <= samples + 2; revision++) {
+    if (preparedExperiment && revision > 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'begin', epochMs: Date.now() }));
     }
@@ -197,9 +261,7 @@ async function measure(client, spec) {
     if (spec.shape === 'dictionary') expected = dictionaryGrant
       ? { type: 'choice', options: [{ value: { type: 'text', text: '降水' }, score: 90 }] } : 'こうすい';
     verify(snapshot, targets, expected);
-    const status = await client.call({ method: 'status' });
-    assert.equal(status.workerProcesses, 0);
-    assert.equal(status.physical.physicalJobs, 0);
+    await verifyIdle(preparedExperiment);
     const record = { admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start };
     if (paired && revision < samples + 2) {
       const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
@@ -219,6 +281,10 @@ async function measure(client, spec) {
       const hostUs = Number(BigInt(published.atUs) - BigInt(accepted.atUs));
       assert(guestUs >= 0 && hostUs >= guestUs);
       Object.assign(record, { hostUs, guestUs, hostMinusGuestCallUs: hostUs - guestUs, trace });
+      if (preparedExperiment) {
+        // A prepared launch precedes this invocation and has no per-run Host launch span.
+        record.preparedWorker = !trace.events.some(event => sameRun(event) && event.event === 'worker-process-started');
+      }
       await client.call({ method: 'traceStop' });
     }
     records.push(record);
@@ -235,9 +301,11 @@ async function measure(client, spec) {
   }
   await client.call({ method: 'traceStop' });
   await client.call({ method: 'closeSession' });
+  if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
   return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
+    ...(paired && preparedExperiment ? { preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
 let client;

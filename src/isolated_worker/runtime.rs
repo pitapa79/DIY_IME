@@ -1080,6 +1080,7 @@ fn real_jit_preparation_acknowledges_before_input() {
                     .recv_timeout(Duration::from_secs(5))
                     .map(|bytes| super::pipe::JitDelivery {
                         bytes,
+                        run_cancel: None,
                         check: Some(Box::new(move || {
                             deliver
                                 .then_some(())

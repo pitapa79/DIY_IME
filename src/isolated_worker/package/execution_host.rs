@@ -512,6 +512,7 @@ struct ActivePlan {
     session: PermissionSession,
     evidence: PlanEvidence,
     retained: Option<super::super::adapter::RetainedOwner>,
+    _prepared_jit: Vec<Arc<super::super::adapter::PreparedJitSlot>>,
 }
 struct Runner {
     catalog: Catalog,
@@ -913,6 +914,21 @@ impl Runner {
                     })?)
                 };
                 let pending = self.pending.take().unwrap();
+                let (jit_nodes, jit_limit) =
+                    match std::env::var("DIY_EXPERIMENT_PREPARED_JIT").as_deref() {
+                        Ok("1") => (1, 1),
+                        Ok("2") => (1, 2),
+                        Ok("all") => (
+                            self.host.policy().max_physical_jobs.saturating_sub(1) as usize,
+                            1,
+                        ),
+                        _ => (0, 0),
+                    };
+                let jit_candidates = if pending.evidence.official.is_none() && jit_nodes > 0 {
+                    pending.session.jit_candidates(jit_nodes)
+                } else {
+                    Vec::new()
+                };
                 let retained_stages = pending
                     .evidence
                     .official
@@ -944,6 +960,10 @@ impl Runner {
                     session,
                     evidence: pending.evidence,
                     retained,
+                    _prepared_jit: jit_candidates
+                        .into_iter()
+                        .filter_map(|(id, node)| node.prepare_jit_slot(&self.host, id, jit_limit))
+                        .collect(),
                 };
                 if transactional {
                     // Order cancellation acceptance and the commit. Do not hold

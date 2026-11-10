@@ -4,7 +4,7 @@ use crate::execution_control::CancellationToken;
 use std::{
     io::Write,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -354,6 +354,7 @@ pub(super) struct WorkerScope<'a> {
     activity: Option<Arc<AtomicU64>>,
     resource_deadline: Option<Instant>,
     exchange: Option<HostExchange>,
+    jit_run_cancel: Option<Arc<OnceLock<CancellationToken>>>,
     #[cfg(target_arch = "x86_64")]
     resource_owner: Option<ResourcePin>,
     #[cfg(test)]
@@ -364,6 +365,7 @@ pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send
 pub(super) struct JitDelivery {
     pub bytes: Vec<u8>,
     pub check: Option<JitDeliveryCheck>,
+    pub run_cancel: Option<CancellationToken>,
 }
 impl<'a> WorkerScope<'a> {
     pub(super) fn with_jit_delivery(
@@ -371,6 +373,8 @@ impl<'a> WorkerScope<'a> {
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
     ) -> Self {
+        let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
+        self.jit_run_cancel = Some(run_cancellation.clone());
         self.exchange = Some(Box::new(move |mut output, mut input| {
             let mut ready = [0; super::runtime::JIT_READY.len()];
             output
@@ -382,14 +386,25 @@ impl<'a> WorkerScope<'a> {
             if cancel.is_cancelled() {
                 return Err("JIT input cancelled before delivery".into());
             }
-            let JitDelivery { bytes, check } = request()?;
+            let JitDelivery {
+                bytes,
+                check,
+                run_cancel,
+            } = request()?;
+            if let Some(token) = run_cancel {
+                let _ = run_cancellation.set(token);
+            }
             if bytes.is_empty() || bytes.len() > WIRE_LIMIT {
                 return Err("invalid prepared JIT request size".into());
             }
             if let Some(check) = check {
                 check()?;
             }
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled()
+                || run_cancellation
+                    .get()
+                    .is_some_and(CancellationToken::is_cancelled)
+            {
                 return Err("JIT input cancelled before delivery".into());
             }
             input
@@ -423,6 +438,7 @@ impl<'a> WorkerScope<'a> {
             activity: Some(activity),
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             #[cfg(test)]
@@ -438,6 +454,7 @@ impl<'a> WorkerScope<'a> {
             activity: None,
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             prepared: true,
@@ -471,6 +488,7 @@ pub fn execute<'a>(
             activity: None,
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             #[cfg(test)]
@@ -537,6 +555,7 @@ pub fn execute_resources<'a>(
             cache,
             activity: None,
             exchange: Some(exchange),
+            jit_run_cancel: None,
             resource_deadline,
             resource_owner: Some(Box::new(session)),
             #[cfg(test)]
@@ -574,6 +593,7 @@ pub(super) fn execute_with_diagnostics<'a>(
         activity,
         resource_deadline,
         exchange,
+        jit_run_cancel,
         #[cfg(target_arch = "x86_64")]
         resource_owner,
         #[cfg(test)]
@@ -927,7 +947,12 @@ pub(super) fn execute_with_diagnostics<'a>(
             // Resource expiry also cancels the shared token. Preserve the
             // absolute deadline cause instead of relabelling it cancellation.
             Some(EndReason::Deadline)
-        } else if control.cancel.is_cancelled() {
+        } else if control.cancel.is_cancelled()
+            || jit_run_cancel
+                .as_deref()
+                .and_then(OnceLock::get)
+                .is_some_and(CancellationToken::is_cancelled)
+        {
             Some(EndReason::Cancelled)
         } else if overflow.load(Ordering::Acquire) {
             Some(EndReason::OutputLimit)

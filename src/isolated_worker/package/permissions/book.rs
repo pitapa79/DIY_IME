@@ -312,6 +312,21 @@ pub struct PendingPermissionSession {
     owns_session: bool,
 }
 impl PendingPermissionSession {
+    pub(in crate::isolated_worker) fn jit_candidates(
+        &self,
+        limit: usize,
+    ) -> Vec<(String, crate::isolated_worker::adapter::WasmNode)> {
+        self.plan
+            .as_ref()
+            .expect("pending plan")
+            .nodes
+            .iter()
+            .filter(|node| node.node.can_prepare_jit())
+            .take(limit)
+            .map(|node| (node.id.clone(), node.node.clone()))
+            .collect()
+    }
+
     pub(in crate::isolated_worker) fn retained_stages(
         &self,
         proof: &super::super::StaticOfficialPipeline,

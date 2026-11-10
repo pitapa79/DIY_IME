@@ -158,6 +158,7 @@ pub fn execute_preparation<'a>(
             activity: None,
             resource_deadline,
             exchange: Some(exchange),
+            jit_run_cancel: None,
             resource_owner: Some(Box::new(ranges.clone())),
             #[cfg(test)]
             prepared: false,

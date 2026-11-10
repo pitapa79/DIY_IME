@@ -533,6 +533,32 @@ impl fmt::Debug for CompletionPermit {
     }
 }
 impl CompletionPermit {
+    /// Internal native-Host bridge for attaching an already-running Worker.
+    /// The returned pin shares the dispatcher's charge through physical cleanup.
+    #[doc(hidden)]
+    pub fn pin_physical_reservation(
+        &self,
+        host: &ExecutionHost,
+    ) -> Result<ResourceLease, CoreError> {
+        let slot = self.state.lease.lock().unwrap_or_else(|p| p.into_inner());
+        slot.as_ref()
+            .filter(|lease| {
+                host.owns_lease(lease)
+                    && lease.usage()
+                        == (ResourceUsage {
+                            physical_jobs: 1,
+                            ..ResourceUsage::default()
+                        })
+                    && !self.state.finished.load(Ordering::Acquire)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::new(
+                    "invalid-reservation",
+                    "execution has no live physical reservation",
+                )
+            })
+    }
     pub fn key(&self) -> &RunKey {
         &self.state.stamp.key
     }
