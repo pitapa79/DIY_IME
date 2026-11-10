@@ -145,7 +145,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
         run: |
-          $node = (Get-Command node -CommandType Application).Source
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           foreach ($mode in @('1', 'all')) {
             $env:DIY_EXPERIMENT_PREPARED_JIT = $mode
             $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-paced-$mode.json"
