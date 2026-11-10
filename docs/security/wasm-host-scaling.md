@@ -147,3 +147,11 @@ node scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM 2
 | `issue95-paced-20-rounds.json` | `084ca8db1ce37fa7c1d29d92a7ee607eb52ddccf9744e14c24322488d78fc43e` |
 
 Host SHA-256 は `19ac7e8fd0317ef1c0cf78ebca9be152d64f98d8d1bd71cfff83def82e690cae`、Worker は `181c0453f2df49ac389f91b1a96ebb76f85349f272e27165270b343ba1607daf`、Wasm は `482a35a1698e9563daa57442dfeac8a2770fa4cf22c06d24518237bc56e9a1cf`。
+
+同じリリース資産で、単段・直列4段の逐次・100 ms・20 msを各140件、計840件実行した。パッケージ導入と計測ドライバーを含む Windows Job 全体で、CPU 時間は131.92秒、ピークコミットメモリは108.91 MiB、累計2,805プロセス。終了時に Job 内のプロセスが残っていないことを確認した。個々の構成の値はこの集計から分離できない。
+
+```text
+python scripts/measure-windows-benchmark-job.py --command JOB_JSON NODE scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM 20 2 paced > TIMINGS_JSON
+```
+
+ローカルの Job 集計 `issue95-paced-job.json` の SHA-256 は `4a9567dccee83c506d3bf760a616a00e65286116133b2d571d4eb07b1622166a`、応答時間ログ `issue95-paced-job-timings.json` は `06137e24f5ccd062dd9beddca73bdc17747a5d515dbabb4c7627e3d1e35b1154`。
