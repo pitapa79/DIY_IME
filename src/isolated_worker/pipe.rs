@@ -379,6 +379,9 @@ impl<'a> WorkerScope<'a> {
             if ready != super::runtime::JIT_READY {
                 return Err("invalid JIT readiness frame".into());
             }
+            if cancel.is_cancelled() {
+                return Err("JIT input cancelled before delivery".into());
+            }
             let JitDelivery { bytes, check } = request()?;
             if bytes.is_empty() || bytes.len() > WIRE_LIMIT {
                 return Err("invalid prepared JIT request size".into());

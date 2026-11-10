@@ -418,6 +418,12 @@ fn real_appcontainer_preparation() {
             .unwrap();
         let runtime = cache.copy(&dll, "wasmtime.dll").unwrap();
         cache.allow_read_execute(&profile).unwrap();
+        let remove_test_assets = || {
+            for file in ["worker.exe", "wasmtime.dll", "fixture.wat"] {
+                super::super::remove_asset(&cache.path().join(file)).unwrap();
+            }
+            std::fs::remove_dir(cache.path()).unwrap();
+        };
         let identity = PreparationIdentity {
             producer_sha256: if name == "crash-after-reply" {
                 sha256(&std::fs::read(&crash).unwrap())
@@ -506,6 +512,7 @@ fn real_appcontainer_preparation() {
                 "builder import admitted in read-only mode"
             );
             cache.revoke_read_execute(&profile).unwrap();
+            remove_test_assets();
             continue;
         }
         let mut output_limits = limits();
@@ -578,6 +585,7 @@ fn real_appcontainer_preparation() {
             }
         }
         cache.revoke_read_execute(&profile).unwrap();
+        remove_test_assets();
     }
     eprintln!(
         "preparation Worker: 17 cases passed; {pending} original process owners retained through confirmed exit"

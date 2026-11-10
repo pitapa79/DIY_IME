@@ -1123,6 +1123,10 @@ fn real_jit_preparation_acknowledges_before_input() {
         drop(slot);
         assert_eq!(host.usage().physical_jobs, 0);
     }
+    for file in ["worker.exe", "wasmtime.dll", "fixture.wat"] {
+        super::adapter::remove_asset(&cache.path().join(file)).unwrap();
+    }
+    std::fs::remove_dir(cache.path()).unwrap();
     if repeats > 1 {
         for (index, phase) in ["dispatch-to-exit-confirmed", "dispatch-to-recovered"]
             .into_iter()

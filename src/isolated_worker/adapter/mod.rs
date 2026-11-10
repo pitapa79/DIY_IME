@@ -394,7 +394,7 @@ impl Drop for CodeLease<'_> {
         let _ = self.release();
     }
 }
-fn remove_asset(path: &Path) -> Result<(), CoreError> {
+pub(super) fn remove_asset(path: &Path) -> Result<(), CoreError> {
     // A signalled process handle does not prevent another Windows service
     // temporarily opening the exited image without FILE_SHARE_DELETE.
     for attempt in 0..31 {
