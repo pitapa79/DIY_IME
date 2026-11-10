@@ -37,12 +37,20 @@ try {
  $oldRangeWorker=$env:DIY_RANGE_WORKER_BINARY
  $oldRangeRuntime=$env:DIY_RANGE_RUNTIME_DLL
  $oldPreparationCrash=$env:DIY_PREPARATION_CRASH_FIXTURE
+ $oldPreparedFixture=$env:DIY_RETAINED_HOST_FIXTURE_WASM
+ $oldFastCancel=$env:DIY_EXPERIMENT_JIT_FAST_CANCEL
  try {
   $env:DIY_RANGE_WORKER_BINARY=$worker
   $env:DIY_RANGE_RUNTIME_DLL=$dll
   $env:DIY_PREPARATION_CRASH_FIXTURE=Join-Path $target 'debug/examples/worker_pipe_probe.exe'
   & $Cargo test --locked --lib isolated_worker::runtime::real_jit_ -- --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real JIT fallback and trap regression failed'}
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
+  foreach ($mode in @('0', '1')) {
+   $env:DIY_EXPERIMENT_JIT_FAST_CANCEL=$mode
+   & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+   if($LASTEXITCODE -ne 0){throw "Prepared JIT ownership regression (fast cancel=$mode)"}
+  }
   & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
@@ -53,6 +61,8 @@ try {
   $env:DIY_RANGE_WORKER_BINARY=$oldRangeWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRangeRuntime
   $env:DIY_PREPARATION_CRASH_FIXTURE=$oldPreparationCrash
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$oldPreparedFixture
+  $env:DIY_EXPERIMENT_JIT_FAST_CANCEL=$oldFastCancel
  }
  & (Join-Path $target 'debug/examples/wasm_package_probe.exe') $worker $dll $module
  if($LASTEXITCODE -ne 0){throw 'Real Wasm package/catalog integration failed'}
