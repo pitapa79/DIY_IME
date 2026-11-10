@@ -660,6 +660,12 @@ pub(super) fn execute_with_diagnostics<'a>(
         "PATH".into(),
         Path::new(&system).join("System32").into_os_string(),
     );
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("DIY_REFILL_RAYON_THREADS")
+        && matches!(value.as_str(), "2" | "4" | "8")
+    {
+        variables.insert("RAYON_NUM_THREADS".into(), value.into());
+    }
     let mut environment = Vec::new();
     for (name, value) in variables {
         let mut entry = OsString::from(name);

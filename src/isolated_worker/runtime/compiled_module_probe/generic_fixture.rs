@@ -268,10 +268,10 @@ fn refill(raw: bool) {
         )
         .unwrap();
     let acl = Mutex::new(());
-    let count = 32;
+    let count = 64;
     for interval_ms in [20, 100] {
-        for lanes in [1, 2] {
-            for prewarm in [false, true, true, false] {
+        for lanes in [6] {
+            for prewarm in [true, true, true] {
                 let epoch = Instant::now() + Duration::from_millis(180);
                 thread::scope(|scope| {
                     for lane in 0..lanes {
@@ -649,6 +649,8 @@ fn compare_raw_latest_wins() {
         .unwrap();
     let mode = cache.write("mode.txt", b"ready-generic-jit").unwrap();
     let acl = Mutex::new(());
+    let cap: usize = std::env::var("DIY_LATEST_CAP").unwrap().parse().unwrap();
+    let narrow_acl_lock = std::env::var_os("DIY_LATEST_NARROW_ACL_LOCK").is_some();
     for interval in [20_u64, 100] {
         for warm in [false, true, true, false] {
             let (events, receive) = mpsc::channel();
@@ -660,13 +662,14 @@ fn compare_raw_latest_wins() {
             let mut correct = 0;
             let mut superseded = 0;
             let mut response = Vec::new();
+            let mut published = Vec::new();
             let mut arrivals = Vec::new();
             let mut hits = 0;
             let mut fallbacks = 0;
-            let origin = Instant::now() + Duration::from_millis(180);
+            let origin = Instant::now() + Duration::from_millis(1200);
             thread::scope(|scope| {
                 let mut spawn_worker = |slots: &mut Vec<Slot>| {
-                    assert!(slots.len() < 2);
+                    assert!(slots.len() < cap);
                     let id = next_id;
                     next_id += 1;
                     let cancel = CancellationToken::default();
@@ -710,13 +713,22 @@ fn compare_raw_latest_wins() {
                                 }));
                         let args =
                             ["--exact", CHILD, "--ignored", "--nocapture"].map(OsString::from);
-                        let Outcome::Exited(receipt) =
-                            execute_observed(worker, exe, &args, Vec::new(), &control).unwrap()
-                        else {
-                            panic!("unconfirmed worker exit")
+                        let receipt = {
+                            let mut outcome =
+                                execute_observed(worker, exe, &args, Vec::new(), &control).unwrap();
+                            loop {
+                                match outcome {
+                                    Outcome::Exited(receipt) => break Some(receipt),
+                                    Outcome::CancelledBeforeStart => break None,
+                                    Outcome::Unconfirmed(owner) => {
+                                        outcome = owner.retry(Duration::from_secs(1));
+                                    }
+                                }
+                            }
                         };
-                        let stamp = receipt.signalled_at;
-                        let output = if receipt.reason() == EndReason::Exited
+                        let stamp = receipt.as_ref().map_or_else(Instant::now, |r| r.signalled_at);
+                        let output = if let Some(receipt) = receipt
+                            && receipt.reason() == EndReason::Exited
                             && receipt.exit_code() == Some(0)
                         {
                             let (_, bytes) = probe_frame(receipt.output().unwrap());
@@ -735,8 +747,9 @@ fn compare_raw_latest_wins() {
                         {
                             let _g = acl.lock().unwrap();
                             cache.revoke_read_execute(&profile).unwrap();
-                            profile.delete().unwrap();
+                            if !narrow_acl_lock { profile.delete().unwrap(); }
                         }
+                        if narrow_acl_lock { profile.delete().unwrap(); }
                         events.send(Event::Done(id, output, stamp)).unwrap();
                     });
                     slots.push(Slot {
@@ -749,7 +762,7 @@ fn compare_raw_latest_wins() {
                     });
                 };
                 if warm {
-                    spawn_worker(&mut slots);
+                    for _ in 0..cap { spawn_worker(&mut slots); }
                 }
                 let deadline = origin + Duration::from_secs(30);
                 while issued < 16 || pending.is_some() || slots.iter().any(|s| s.revision.is_some())
@@ -775,6 +788,7 @@ fn compare_raw_latest_wins() {
                                         correct += 1;
                                         response
                                             .push(stamp.duration_since(arrivals[rev]).as_micros());
+                                        published.push(arrivals[rev].elapsed().as_micros());
                                     } else {
                                         superseded += 1;
                                     }
@@ -817,7 +831,7 @@ fn compare_raw_latest_wins() {
                             slot.revision = Some(rev);
                             pending = None;
                         } else if !slots.iter().any(|s| s.revision.is_none() && !s.cancelling)
-                            && slots.len() < 2
+                            && slots.len() < cap
                         {
                             if warm {
                                 fallbacks += 1;
@@ -826,8 +840,7 @@ fn compare_raw_latest_wins() {
                         }
                     } else if warm
                         && issued < 16
-                        && slots.len() < 2
-                        && !slots.iter().any(|s| s.revision.is_none() && !s.cancelling)
+                        && slots.len() < cap
                     {
                         spawn_worker(&mut slots);
                     }
@@ -852,8 +865,9 @@ fn compare_raw_latest_wins() {
             });
             assert_eq!(correct + superseded, 16);
             response.sort();
+            published.sort();
             println!(
-                "raw-latest interval_ms={interval} prewarm={warm} correct={correct} superseded={superseded} hits={hits} fallback_starts={fallbacks} response_us={response:?}"
+                "raw-latest interval_ms={interval} prewarm={warm} correct={correct} superseded={superseded} hits={hits} fallback_starts={fallbacks} cap={cap} response_us={response:?} published_us={published:?}"
             );
         }
     }

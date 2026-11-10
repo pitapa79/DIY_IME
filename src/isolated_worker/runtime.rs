@@ -312,6 +312,7 @@ macro_rules! api {
 api! {
  config_new:[unsafe extern "C" fn()->P] =>"wasm_config_new",
  fuel_enable:[unsafe extern "C" fn(P,bool)] =>"wasmtime_config_consume_fuel_set",
+ strategy:[unsafe extern "C" fn(P,u8)] =>"wasmtime_config_strategy_set",
  opt_level:[unsafe extern "C" fn(P,u8)] =>"wasmtime_config_cranelift_opt_level_set",
  engine_new:[unsafe extern "C" fn(P)->P] =>"wasm_engine_new_with_config",
  engine_delete:[unsafe extern "C" fn(P)] =>"wasm_engine_delete",
@@ -634,6 +635,7 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
             return Err("config unavailable".into());
         }
         (api.fuel_enable)(config, limits.fuel.is_some());
+        (api.strategy)(config, 2);
         // WASMTIME_OPT_LEVEL_NONE (pinned config.h).
         (api.opt_level)(config, 0);
         let engine = (api.engine_new)(config);
