@@ -379,12 +379,15 @@ try {
     scenarios.push(result);
     console.error(JSON.stringify({ ...spec, summaryMs: result.summaryMs }));
   }
-  console.log(JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
+  const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
     physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
     alternateFixtureSupplied: Boolean(alternateWasm),
     ...(usesOfficial ? { officialModuleSha256: sha(readFileSync(join(officialRoot, 'official.wasm'))) } : {}),
     ...(scenario === 'dictionary' ? { dictionarySha256: sha(dictionaryBytes) } : {}),
-    workerSha256: sha(readFileSync(worker)), runtimeSha256: sha(readFileSync(dll)), scenarios }));
+    workerSha256: sha(readFileSync(worker)), runtimeSha256: sha(readFileSync(dll)), scenarios });
+  const reportPath = process.env.DIY_WASM_SCALING_REPORT_PATH;
+  if (reportPath) writeFileSync(reportPath, report, { flag: 'wx' });
+  else console.log(report);
 } finally {
   if (client) await client.close();
   assert.equal(dirname(realpathSync(root)), tempParent);

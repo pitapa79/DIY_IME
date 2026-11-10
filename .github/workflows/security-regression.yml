@@ -156,11 +156,13 @@ jobs:
           exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
         run: |
+          $node = (Get-Command node -CommandType Application).Source
           foreach ($mode in @('1', 'all')) {
             $env:DIY_EXPERIMENT_PREPARED_JIT = $mode
-            $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-paced-$mode.json"
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-paced-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $result | Set-Content "target/windows-prepared-jit-paced-$mode.json" -Encoding utf8
+            if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing fixed-cadence report ($mode)" }
           }
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
