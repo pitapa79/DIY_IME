@@ -1040,7 +1040,10 @@ impl Runner {
 }
 pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
     let official_assets = config.package_manager.official_review_assets();
-    let (catalog, mut verifier) = config.package_manager.prepare_assets(true)?;
+    let policy = ResourcePolicy::from_value(config.resource_policy)?;
+    let (catalog, mut verifier) = config
+        .package_manager
+        .prepare_assets(Some(policy.max_physical_jobs))?;
     if let Some(network) = config.network {
         verifier = verifier.with_network_provider(
             crate::isolated_worker::adapter::NetworkProvider::open(network)?,
@@ -1058,7 +1061,7 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
             SecretVault::open(root)
         })
         .transpose()?;
-    let host = ExecutionHost::new(domain, ResourcePolicy::from_value(config.resource_policy)?)?;
+    let host = ExecutionHost::new(domain, policy)?;
     let service = ExecutionService::new(host.clone())?;
     let controls = Arc::new(Controls {
         generation: Mutex::new(Arc::new(())),

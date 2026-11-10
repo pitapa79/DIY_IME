@@ -118,3 +118,46 @@ node scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM_A
 | `issue85-mixed-real-code.json` | `f946dba1010db31ade7af6e3dedf78f4ee1d3018a71e9d37b7a8cc2506930f76` |
 
 元 JSON に記録された Host、Worker、runtime の SHA-256 はそれぞれ `a5498697cf60a2d6e93d89435657241cf8bc22f1f21f07129716c4922575a74e`、`6dd0d59e1651b01d9bdb58e77a3134ccb04f420d22ee18b3d6003bd46dc93f92`、`fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef`。混成試験の完全な Wasm SHA-256 は A `1301ed6b7c9693bffe328cf8ae56a99c1db68a13f30abfe2604997a346dee2ca`、B `49f60add1f5a97d0774c5d0cadedcf1844b6236ef7e1fc6b97064ddc09685bf4`。B の正確なビルド設定はこの記録から検証できないため、同一ハッシュの再生成手順は未確定である。
+
+## #95 / #101 汎用 JIT の入力配送前準備
+
+Windows x64、Rust 1.90.0 GNU の release Host / Worker、Node 24.22.1、Wasmtime 50.0.1、物理2枠。コードはドラフト PR #102 の `78aaafcb76cf39e592da2652b27131e146e8bf46`。軽量 Wasm は `tests/fixtures/wasm_guest` の release ビルドを使用した。
+
+```text
+node scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM 150 2 single-detailed
+node scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM 20 2 paced
+```
+
+単段のウォーム150件は全件正答し、各回の結果検証後に物理枠が空であることを確認した。同じ試行の Host 受付→公開からゲスト呼び出し区間を差し引いた時間は P50/P95/P99 が **54.07 / 56.59 / 57.75 ms**。詳細トレースの費用を含む。Worker 内の入力読取前の準備 P95 は25.92 ms、実終了後の Host 回収 P95 は7.54 ms。
+
+| 構成 | 入力間隔 | 正答 / 試行 | 置換 | 正答の応答 P95 |
+| --- | ---: | ---: | ---: | ---: |
+| 単段 | 100 ms | 140 / 140 | 0 | 64.69 ms |
+| 単段 | 20 ms | 25 / 140 | 115 | 87.91 ms |
+| 直列4段 | 100 ms | 20 / 140 | 120 | 241.92 ms |
+| 直列4段 | 20 ms | 20 / 140 | 120 | 254.40 ms |
+
+入力置換では旧結果の公開や誤答は検出されなかった。通常 Host は入力要求後に Worker を起動する。準備済みの実 AppContainer を直接駆動した別試験では、入力配送→実終了確認が P95 2.20 ms、配送→ACL・プロファイル回収が P95 9.70 ms、P99 10.74 ms（ウォーム100件）。この試験区間には通常 Host の受付・スケジューリング・公開が含まれず、#95 の達成判定には使えない。
+
+通常 Host への接続では、待機中から物理枠を保持し、対象 Worker を確保した呼び出しへ同じ予約を引き継ぐ。対象の照合には実行 Host、Session、プラン、ノード、検証済みモジュールを用い、配送時は現在の入力世代と許可を照合する。回収完了後に結果を公開する経路で、冷間、逐次、20/100 ms、直列・並列・分岐を測定する。
+
+| ローカル生ログ | SHA-256 |
+| --- | --- |
+| `issue95-78aaafc-single-detailed-150.json` | `5963b28324529eab410c3d617f3dd5ebb4b8930fcf148a90a67874d5b8c127f7` |
+| `issue95-paced-20-rounds.json` | `084ca8db1ce37fa7c1d29d92a7ee607eb52ddccf9744e14c24322488d78fc43e` |
+
+Host SHA-256 は `19ac7e8fd0317ef1c0cf78ebca9be152d64f98d8d1bd71cfff83def82e690cae`、Worker は `181c0453f2df49ac389f91b1a96ebb76f85349f272e27165270b343ba1607daf`、Wasm は `482a35a1698e9563daa57442dfeac8a2770fa4cf22c06d24518237bc56e9a1cf`。
+
+同じリリース資産で、単段・直列4段の逐次・100 ms・20 msを各140件、計840件実行した。パッケージ導入と計測ドライバーを含む Windows Job 全体で、CPU 時間は131.92秒、ピークコミットメモリは108.91 MiB、累計2,805プロセス。終了時に Job 内のプロセスが残っていないことを確認した。個々の構成の値はこの集計から分離できない。
+
+```text
+python scripts/measure-windows-benchmark-job.py --command JOB_JSON NODE scripts/benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM 20 2 paced > TIMINGS_JSON
+```
+
+ローカルの Job 集計 `issue95-paced-job.json` の SHA-256 は `4a9567dccee83c506d3bf760a616a00e65286116133b2d571d4eb07b1622166a`、応答時間ログ `issue95-paced-job-timings.json` は `06137e24f5ccd062dd9beddca73bdc17747a5d515dbabb4c7627e3d1e35b1154`。
+
+### 未使用 AppContainer プロファイルの補充
+
+混合 Wasm の並列4段を物理4枠、ウォーム各20件で比較した。入力も ACL も未使用プロファイルには割り当てず、Worker の起動は要求後。Windows Job 内の変更前1個と上限4個の試作は、応答 P95 が117.42→92.42 ms、CPU 時間が11.94→10.91秒、ピークコミットが139.11→162.57 MiBだった。CPU とメモリはパッケージ導入・ドライバー込み。単段の試作では同一試行のゲスト呼び出しを差し引いた P95 が57.10 msで、単段目標には届いていない。
+
+上限を `min(物理枠, 4)` にした版では、同じ混合並列4段を物理1枠と4枠で各20件測定し、全件正答と実行後の物理枠ゼロを確認した。応答 P95/P99 は1枠で213.52/217.28 ms、4枠で96.88/120.85 ms。こちらは Windows Job による外側の資源計測なし。再現は上記スケーリングドライバーに `20 1 parallel` または `20 4 parallel` を渡す。

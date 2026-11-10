@@ -11,6 +11,7 @@ use std::{
 };
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
+const OUTPUT_LIMIT_ERROR: &str = "Worker output exceeds wire limit";
 #[cfg(target_arch = "x86_64")]
 mod preparation;
 #[cfg(target_arch = "x86_64")]
@@ -359,7 +360,56 @@ pub(super) struct WorkerScope<'a> {
     prepared: bool,
 }
 type HostExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
+pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
+pub(super) struct JitDelivery {
+    pub bytes: Vec<u8>,
+    pub check: Option<JitDeliveryCheck>,
+}
 impl<'a> WorkerScope<'a> {
+    pub(super) fn with_jit_delivery(
+        mut self,
+        request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
+        cancel: CancellationToken,
+    ) -> Self {
+        self.exchange = Some(Box::new(move |mut output, mut input| {
+            let mut ready = [0; super::runtime::JIT_READY.len()];
+            output
+                .read_exact(&mut ready)
+                .map_err(|_| "JIT readiness pipe closed")?;
+            if ready != super::runtime::JIT_READY {
+                return Err("invalid JIT readiness frame".into());
+            }
+            if cancel.is_cancelled() {
+                return Err("JIT input cancelled before delivery".into());
+            }
+            let JitDelivery { bytes, check } = request()?;
+            if bytes.is_empty() || bytes.len() > WIRE_LIMIT {
+                return Err("invalid prepared JIT request size".into());
+            }
+            if let Some(check) = check {
+                check()?;
+            }
+            if cancel.is_cancelled() {
+                return Err("JIT input cancelled before delivery".into());
+            }
+            input
+                .write_all(&bytes)
+                .map_err(|_| "Worker input pipe failed")?;
+            drop(input);
+            let mut bytes = Vec::new();
+            match output.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes) {
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => (),
+                Err(_) => return Err("Worker output pipe failed".into()),
+            }
+            if bytes.len() > WIRE_LIMIT {
+                return Err(OUTPUT_LIMIT_ERROR.into());
+            }
+            Ok(bytes)
+        }));
+        self
+    }
+
     pub(super) fn observed(
         profile: &'a Profile,
         job: &'a Job,
@@ -746,7 +796,14 @@ pub(super) fn execute_with_diagnostics<'a>(
     let overflow = Arc::new(AtomicBool::new(false));
     let exceeded = overflow.clone();
     let pipes = if let Some(exchange) = exchange {
-        running.output = Some(thread::spawn(move || exchange(file, writer)));
+        let exceeded = overflow.clone();
+        running.output = Some(thread::spawn(move || {
+            let result = exchange(file, writer);
+            if matches!(&result, Err(error) if error == OUTPUT_LIMIT_ERROR) {
+                exceeded.store(true, Ordering::Release);
+            }
+            result
+        }));
         None
     } else {
         Some((file, writer))
@@ -808,7 +865,7 @@ pub(super) fn execute_with_diagnostics<'a>(
             let result = output.read_to_end(&mut bytes);
             if bytes.len() > WIRE_LIMIT {
                 exceeded.store(true, Ordering::Release);
-                return Err("Worker output exceeds wire limit".into());
+                return Err(OUTPUT_LIMIT_ERROR.into());
             }
             match result {
                 Ok(_) => Ok(bytes),

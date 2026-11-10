@@ -115,19 +115,35 @@ def measure(command, timeout_ms):
         close(job)
 
 
-bundle, report = map(Path, sys.argv[1:3])
-rounds = int(sys.argv[3])
-if not 1 <= rounds <= 10:
-    raise ValueError("expected 1–10 rounds")
-bundle, report = bundle.resolve(strict=True), report.resolve()
-driver = bundle / "runtime" / "node.exe"
-js = """import {benchmark} from './scripts/benchmark-windows-application.mjs';
+def main(args):
+    arbitrary_command = args[0] == "--command"
+    if arbitrary_command:
+        report = Path(args[1]).resolve()
+        command = [str(Path(args[2]).resolve(strict=True)), *args[3:]]
+        timeout = 300_000
+    else:
+        bundle, benchmark_report = map(Path, args[:2])
+        rounds = int(args[2])
+        if not 1 <= rounds <= 10:
+            raise ValueError("expected 1–10 rounds")
+        bundle, benchmark_report = bundle.resolve(strict=True), benchmark_report.resolve()
+        report = benchmark_report.with_suffix(".job.json")
+        driver = bundle / "runtime" / "node.exe"
+        js = """import {benchmark} from './scripts/benchmark-windows-application.mjs';
 import {writeFileSync} from 'node:fs';
 const [folder,output,rounds]=process.argv.slice(1);
 const report=await benchmark({folder,hostInputRounds:Number(rounds),pollMs:5,trace:0});
 writeFileSync(output,JSON.stringify(report),{flag:'wx'});"""
-result = measure([str(driver), "--input-type=module", "-e", js, str(bundle), str(report),
-                  str(rounds)], 300_000 + rounds * 240_000)
-with report.with_suffix(".job.json").open("x", encoding="utf-8") as f:
-    json.dump(result, f)
-print(json.dumps(result))
+        command = [str(driver), "--input-type=module", "-e", js, str(bundle),
+                   str(benchmark_report), str(rounds)]
+        timeout = 300_000 + rounds * 240_000
+    if report.exists():
+        raise FileExistsError(report)
+    result = measure(command, timeout)
+    with report.open("x", encoding="utf-8") as f:
+        json.dump(result, f)
+    print(json.dumps(result), file=sys.stderr if arbitrary_command else sys.stdout)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

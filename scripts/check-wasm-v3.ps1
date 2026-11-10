@@ -41,6 +41,8 @@ try {
   $env:DIY_RANGE_WORKER_BINARY=$worker
   $env:DIY_RANGE_RUNTIME_DLL=$dll
   $env:DIY_PREPARATION_CRASH_FIXTURE=Join-Path $target 'debug/examples/worker_pipe_probe.exe'
+  & $Cargo test --locked --lib isolated_worker::runtime::real_jit_ -- --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Real JIT fallback and trap regression failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
@@ -79,6 +81,8 @@ try {
   $env:DIY_RANGE_WORKER_BINARY=$worker
   $env:DIY_RANGE_RUNTIME_DLL=$dll
   $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
+  & $Cargo test --locked --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Prepared JIT production Worker lifecycle failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::retained::tests::real_core_skipped_suffix -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Retained coordinator actual Core Skipped suffix integration failed'}
  } finally {

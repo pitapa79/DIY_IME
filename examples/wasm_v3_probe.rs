@@ -232,6 +232,38 @@ mod probe {
             h.drained()?;
             h.c().stop_trace();
             let trace = h.c().read_trace(0, 256).map_err(|e| e.to_string())?;
+            use diy_ime2_core::execution_control::WorkerTracePhase;
+            let phase = |phase| {
+                trace
+                    .events
+                    .iter()
+                    .filter_map(|event| event.worker.as_ref())
+                    .find(|interval| interval.phase == phase)
+            };
+            let compile = phase(WorkerTracePhase::Compile).ok_or("missing compilation trace")?;
+            let input = phase(WorkerTracePhase::InputRead).ok_or("missing input read trace")?;
+            let instantiate =
+                phase(WorkerTracePhase::Instantiate).ok_or("missing instantiation trace")?;
+            let micros = |value: &str| value.parse::<u64>().map_err(|error| error.to_string());
+            if compile.instance != input.instance
+                || input.instance != instantiate.instance
+                || micros(
+                    compile
+                        .finished_us
+                        .as_deref()
+                        .ok_or("incomplete compilation")?,
+                )? > micros(&input.started_us)?
+                || micros(
+                    input
+                        .finished_us
+                        .as_deref()
+                        .ok_or("incomplete input read")?,
+                )? > micros(&instantiate.started_us)?
+            {
+                return Err(
+                    "JIT preparation, input read, and instantiation occurred out of order".into(),
+                );
+            }
             cpu_phases = json!({"dropped":trace.dropped,"worker":trace.events.iter().filter_map(|e| e.worker.as_ref()).filter(|w| matches!(w.phase, diy_ime2_core::execution_control::WorkerTracePhase::Compile | diy_ime2_core::execution_control::WorkerTracePhase::GuestCall)).collect::<Vec<_>>()});
         }
         if bounded.active_processes() != 0 {

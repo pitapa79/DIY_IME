@@ -1,6 +1,7 @@
 //! Pinned Wasmtime50.0.1 full x64 C API. Host worker and developer probe entrypoints.
 use super::worker_trace::Recorder;
 use crate::execution_control::WorkerTracePhase;
+pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
 #[derive(Clone)]
 struct Limits {
     fuel: Option<u64>,
@@ -23,7 +24,9 @@ pub fn run_probe() -> Result<(), String> {
         },
         None,
         None,
-        ModuleMode::Jit,
+        ModuleMode::Jit {
+            acknowledge_preparation: false,
+        },
     )
 }
 /// stdin-only worker, refusing ordinary-privilege invocation.
@@ -79,9 +82,16 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         } else if let Some(digest) = flag.strip_prefix("--compiled-official=") {
             ModuleMode::Reuse(digest.to_owned())
         } else {
-            ModuleMode::Jit
+            ModuleMode::Jit {
+                acknowledge_preparation: flag == "--prepare-jit-v1",
+            }
         };
-        if !matches!(mode, ModuleMode::Jit) {
+        if !matches!(
+            mode,
+            ModuleMode::Jit {
+                acknowledge_preparation: false
+            }
+        ) {
             args.remove(0);
         }
         (args, mode)
@@ -402,13 +412,13 @@ impl Drop for Runtime<'_> {
     }
 }
 impl<'a> Runtime<'a> {
-    fn new(
+    fn prepare_jit(
         api: &'a Api,
         module: &[u8],
         limits: &Limits,
         diagnostics: Option<&'a Recorder>,
     ) -> Result<Self, String> {
-        Self::with_module(api, limits, diagnostics, |engine, result| {
+        let load = |engine, result: &mut P| {
             let _compile = diagnostics.map(|d| d.span(WorkerTracePhase::Compile));
             // SAFETY: the module bytes remain live until compilation returns.
             unsafe {
@@ -417,8 +427,30 @@ impl<'a> Runtime<'a> {
                     ptr::null_mut(),
                 )
             }
-        })
+        };
+        Self::prepare_module_using(
+            api,
+            limits,
+            diagnostics,
+            || create_winch_engine(api, limits),
+            load,
+        )
+        .or_else(|_| Self::prepare_module(api, limits, diagnostics, load))
     }
+
+    #[cfg(test)]
+    fn new(
+        api: &'a Api,
+        module: &[u8],
+        limits: &Limits,
+        diagnostics: Option<&'a Recorder>,
+    ) -> Result<Self, String> {
+        let mut result = Self::prepare_jit(api, module, limits, diagnostics)?;
+        // Instantiation can run a start function. Keep it outside the retry.
+        result.instantiate()?;
+        Ok(result)
+    }
+
     fn with_module(
         api: &'a Api,
         limits: &Limits,
@@ -435,8 +467,24 @@ impl<'a> Runtime<'a> {
         diagnostics: Option<&'a Recorder>,
         load: impl FnOnce(P, &mut P) -> Result<(), String>,
     ) -> Result<Self, String> {
+        Self::prepare_module_using(
+            api,
+            limits,
+            diagnostics,
+            || create_engine(api, limits),
+            load,
+        )
+    }
+
+    fn prepare_module_using(
+        api: &'a Api,
+        limits: &Limits,
+        diagnostics: Option<&'a Recorder>,
+        engine: impl FnOnce() -> Result<P, String>,
+        load: impl FnOnce(P, &mut P) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let engine_phase = diagnostics.map(|d| d.span(WorkerTracePhase::EngineSetup));
-        let engine = create_engine(api, limits)?;
+        let engine = engine()?;
         let mut result = Self {
             api,
             engine,
@@ -445,13 +493,15 @@ impl<'a> Runtime<'a> {
             context: ptr::null_mut(),
             instance: Handle::default(),
             fuel: limits.fuel,
-            diagnostics,
+            // A failed preparation is already covered by its preparation phases.
+            diagnostics: None,
             resource: None,
             owns_code: true,
         };
         result.install_store(limits)?;
         drop(engine_phase);
         load(engine, &mut result.module)?;
+        result.diagnostics = diagnostics;
         Ok(result)
     }
     fn install_store(&mut self, limits: &Limits) -> Result<(), String> {
@@ -627,6 +677,39 @@ impl<'a> Runtime<'a> {
     }
 }
 fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
+    create_engine_configured(api, limits, |_| {})
+}
+
+#[cfg(target_arch = "x86_64")]
+fn create_winch_engine(api: &Api, limits: &Limits) -> Result<P, String> {
+    if !std::is_x86_feature_detected!("avx") {
+        return Err("Winch CPU unsupported".into());
+    }
+    // SAFETY: the symbol is looked up in the verified, process-owned DLL.
+    let symbol = unsafe {
+        GetProcAddress(
+            api._library.0,
+            c"wasmtime_config_strategy_set".as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        return Err("Winch strategy API unavailable".into());
+    }
+    // SAFETY: the pinned C header declares wasm_config_t* and uint8_t.
+    let set_strategy = unsafe { std::mem::transmute::<P, unsafe extern "C" fn(P, u8)>(symbol) };
+    create_engine_configured(api, limits, |config| unsafe { set_strategy(config, 2) })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn create_winch_engine(_: &Api, _: &Limits) -> Result<P, String> {
+    Err("Winch architecture unsupported".into())
+}
+
+fn create_engine_configured(
+    api: &Api,
+    limits: &Limits,
+    configure: impl FnOnce(P),
+) -> Result<P, String> {
     // SAFETY: the fresh config is owned by this function until engine creation consumes it.
     unsafe {
         let config = (api.config_new)();
@@ -636,6 +719,7 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
         (api.fuel_enable)(config, limits.fuel.is_some());
         // WASMTIME_OPT_LEVEL_NONE (pinned config.h).
         (api.opt_level)(config, 0);
+        configure(config);
         let engine = (api.engine_new)(config);
         if engine.is_null() {
             return Err("engine unavailable".into());
@@ -647,7 +731,7 @@ fn create_engine(api: &Api, limits: &Limits) -> Result<P, String> {
 #[cfg(test)]
 mod compiled_module_probe;
 enum ModuleMode {
-    Jit,
+    Jit { acknowledge_preparation: bool },
     ResourceRanges,
     ResourceBuild,
     Compile,
@@ -759,6 +843,25 @@ fn run(
             .write_all(&artifact)
             .map_err(|_| "compiler pipe failed".into());
     }
+    // Prepare only the Module and Store. Instantiation can run guest start code
+    // and must wait for the Host-owned input.
+    let prepared_jit = if let ModuleMode::Jit {
+        acknowledge_preparation,
+    } = mode
+    {
+        let prepared = Runtime::prepare_jit(&api, &module, &limits, diagnostics)?;
+        if acknowledge_preparation {
+            use std::io::Write;
+            let mut output = std::io::stdout().lock();
+            output
+                .write_all(JIT_READY)
+                .and_then(|()| output.flush())
+                .map_err(|_| "JIT readiness pipe failed")?;
+        }
+        Some(prepared)
+    } else {
+        None
+    };
     let input_phase = diagnostics.map(|d| d.span(WorkerTracePhase::InputRead));
     let input = if args[2] == "-" {
         let mut bytes = Vec::new();
@@ -775,7 +878,14 @@ fn run(
     };
     drop(input_phase);
     let mut guest = match mode {
-        ModuleMode::Jit => Runtime::new(&api, &module, &limits, diagnostics)?,
+        ModuleMode::Jit { .. } => {
+            if input.is_empty() {
+                return Err("empty request before guest instantiation".into());
+            }
+            let mut guest = prepared_jit.expect("JIT module prepared before reading input");
+            guest.instantiate()?;
+            guest
+        }
         ModuleMode::Reuse(digest) => {
             compiled_module::load(&api, &limits, diagnostics, &module, &digest)?
         }
@@ -834,4 +944,277 @@ fn pinned_full_x64_c_layout() {
     assert_eq!(std::mem::size_of::<Extern>(), 32);
     assert_eq!(std::mem::size_of::<Val>(), 32);
     assert_eq!(std::mem::align_of::<Val>(), 8);
+}
+
+#[test]
+#[ignore = "requires the pinned Windows Wasmtime DLL"]
+fn real_jit_compiler_fallback() {
+    let dll = std::env::var_os("DIY_RANGE_RUNTIME_DLL").expect("pinned Wasmtime DLL");
+    let api = Api::load(Path::new(&dll)).expect("load pinned Wasmtime");
+    let limits = Limits {
+        fuel: Some(10_000),
+        memory: Some(1024 * 1024),
+        table_elements: None,
+        tables: None,
+        memories: None,
+    };
+    // (module (func $callee) (func return_call $callee))
+    let tail_call = b"\0asm\x01\0\0\0\x01\x04\x01\x60\0\0\x03\x03\x02\0\0\x0a\x09\x02\x02\0\x0b\x04\0\x12\0\x0b";
+    let load = |engine, result: &mut P| unsafe {
+        api.check(
+            (api.module_new)(engine, tail_call.as_ptr(), tail_call.len(), result),
+            ptr::null_mut(),
+        )
+    };
+    assert!(Runtime::prepare_module(&api, &limits, None, load).is_ok());
+    let winch = Runtime::prepare_module_using(
+        &api,
+        &limits,
+        None,
+        || create_winch_engine(&api, &limits),
+        load,
+    );
+    let error = winch
+        .err()
+        .expect("Winch must reject the tail-call fixture");
+    assert!(
+        error.contains("tail calls support is not enabled")
+            || matches!(
+                error.as_str(),
+                "Winch CPU unsupported" | "Winch architecture unsupported"
+            ),
+        "{error}"
+    );
+    let path =
+        std::env::temp_dir().join(format!("diyime-jit-fallback-{}.trace", std::process::id()));
+    let trace = Recorder::new(std::fs::File::create(&path).unwrap());
+    let result = Runtime::new(&api, tail_call, &limits, Some(&trace));
+    assert!(result.is_ok());
+    drop(result);
+    drop(trace);
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let intervals =
+        super::worker_trace::decode(&bytes).expect("fallback trace must remain readable");
+    for phase in [WorkerTracePhase::Compile, WorkerTracePhase::Instantiate] {
+        assert!(
+            intervals
+                .iter()
+                .any(|interval| interval.phase == phase && interval.end.is_some())
+        );
+    }
+    assert!(Runtime::new(&api, b"invalid", &limits, None).is_err());
+}
+
+#[test]
+#[ignore = "requires a real Windows AppContainer and pinned Wasmtime DLL"]
+fn real_jit_preparation_acknowledges_before_input() {
+    use super::pipe::{WorkerScope, execute_observed};
+    use super::{Cache, EndReason, Job, Outcome, Profile, RunControl};
+    use crate::execution_control::{ExecutionHost, ResourcePolicy, ResourceUsage};
+    use std::ffi::OsString;
+    use std::time::Duration;
+
+    let worker = std::env::var_os("DIY_RANGE_WORKER_BINARY").unwrap();
+    let dll = std::env::var_os("DIY_RANGE_RUNTIME_DLL").unwrap();
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/contracts/execution_control.json")).unwrap();
+    let policy =
+        ResourcePolicy::from_value(contract["resourceProfiles"]["bounded"].clone()).unwrap();
+    let host = ExecutionHost::new("prepared-jit-test", policy).unwrap();
+    let mut naming_profile = Profile::new().unwrap();
+    let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &naming_profile).unwrap();
+    let executable = cache.copy(Path::new(&worker), "worker.exe").unwrap();
+    let runtime = cache.copy(Path::new(&dll), "wasmtime.dll").unwrap();
+    let wat = br#"(module
+        (memory (export "memory") 1)
+        (data (i32.const 32) "{}")
+        (func (export "diyime_api_version") (result i32) i32.const 1)
+        (func (export "diyime_alloc") (param i32) (result i32) i32.const 16)
+        (func (export "diyime_call") (param i32 i32) (result i64) i64.const 8589934624)
+        (func (export "diyime_release_reply")))"#;
+    let module = cache.write("fixture.wat", wat).unwrap();
+    naming_profile.delete().unwrap();
+    let args = [
+        OsString::from("--prepare-jit-v1"),
+        runtime.into_os_string(),
+        module.into_os_string(),
+        wat.len().to_string().into(),
+        "10000".into(),
+        "1048576".into(),
+    ];
+    let repeats = if std::env::var_os("DIY_MEASURE_PREPARED_JIT").is_some() {
+        101
+    } else {
+        1
+    };
+    let mut samples = Vec::new();
+    for deliver in std::iter::once(false).chain(std::iter::repeat_n(true, repeats)) {
+        let slot = host
+            .try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..ResourceUsage::default()
+            })
+            .unwrap();
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let (ready, prepared) = std::sync::mpsc::sync_channel(1);
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let observed_host = host.clone();
+        let dispatch = std::thread::spawn(move || {
+            prepared.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(observed_host.usage().physical_jobs, 1);
+            let submitted = std::time::Instant::now();
+            send.send(b"{}".to_vec()).unwrap();
+            submitted
+        });
+        let control = RunControl {
+            walltime: Some(Duration::from_secs(10)),
+            ..RunControl::default()
+        };
+        let scope = WorkerScope::prepared(&profile, &job, &cache).with_jit_delivery(
+            move || {
+                ready.send(()).map_err(|error| error.to_string())?;
+                receive
+                    .recv_timeout(Duration::from_secs(5))
+                    .map(|bytes| super::pipe::JitDelivery {
+                        bytes,
+                        check: Some(Box::new(move || {
+                            deliver
+                                .then_some(())
+                                .ok_or_else(|| "test delivery denied".into())
+                        })),
+                    })
+                    .map_err(|error| error.to_string())
+            },
+            control.cancel.clone(),
+        );
+        let Outcome::Exited(receipt) =
+            execute_observed(scope, &executable, &args, vec![], &control).unwrap()
+        else {
+            panic!("the original JIT worker did not exit");
+        };
+        assert_eq!(receipt.reason(), EndReason::Exited);
+        let submitted = dispatch.join().unwrap();
+        if deliver {
+            assert_eq!(
+                receipt.exit_code(),
+                Some(0),
+                "{:?}",
+                receipt.output().map(String::from_utf8_lossy)
+            );
+            assert_eq!(receipt.output().unwrap(), b"{}");
+        } else {
+            assert_ne!(receipt.exit_code(), Some(0));
+            assert!(!receipt.input_delivered());
+            assert_eq!(receipt.output(), Err("test delivery denied"));
+        }
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+        if deliver {
+            samples.push([
+                receipt.signalled_at.duration_since(submitted).as_micros(),
+                submitted.elapsed().as_micros(),
+            ]);
+        }
+        assert_eq!(host.usage().physical_jobs, 1);
+        drop(slot);
+        assert_eq!(host.usage().physical_jobs, 0);
+    }
+    for file in ["worker.exe", "wasmtime.dll", "fixture.wat"] {
+        super::adapter::remove_asset(&cache.path().join(file)).unwrap();
+    }
+    std::fs::remove_dir(cache.path()).unwrap();
+    if repeats > 1 {
+        for (index, phase) in ["dispatch-to-exit-confirmed", "dispatch-to-recovered"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut times: Vec<_> = samples[1..].iter().map(|sample| sample[index]).collect();
+            times.sort_unstable();
+            println!(
+                "{phase}: p50={}us p95={}us p99={}us n={}",
+                times[49],
+                times[94],
+                times[98],
+                times.len()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned Windows Wasmtime DLL"]
+fn real_jit_traps_are_not_retried() {
+    let dll = std::env::var_os("DIY_RANGE_RUNTIME_DLL").expect("pinned Wasmtime DLL");
+    let api = Api::load(Path::new(&dll)).expect("load pinned Wasmtime");
+    let limits = Limits {
+        fuel: Some(10_000),
+        memory: Some(1024 * 1024),
+        table_elements: None,
+        tables: None,
+        memories: None,
+    };
+    let cases = [
+        ("(module (func $start unreachable) (start $start))", false),
+        (
+            r#"(module
+            (memory (export "memory") 1)
+            (func (export "diyime_api_version") (result i32) i32.const 1)
+            (func (export "diyime_alloc") (param i32) (result i32) i32.const 16)
+            (func (export "diyime_call") (param i32 i32) (result i64) unreachable))"#,
+            true,
+        ),
+    ];
+    for (wat, traps_on_call) in cases {
+        let mut binary = Bytes {
+            size: 0,
+            data: ptr::null_mut(),
+        };
+        // SAFETY: WAT lives through the conversion and Wasmtime owns the returned buffer.
+        let wasm = unsafe {
+            api.check(
+                (api.wat)(wat.as_ptr(), wat.len(), &mut binary),
+                ptr::null_mut(),
+            )
+            .unwrap();
+            let wasm = std::slice::from_raw_parts(binary.data, binary.size).to_vec();
+            (api.bytes_delete)(&mut binary);
+            wasm
+        };
+        let path =
+            std::env::temp_dir().join(format!("diyime-jit-trap-{}.trace", std::process::id()));
+        let trace = Recorder::new(std::fs::File::create(&path).unwrap());
+        let error = if traps_on_call {
+            Runtime::new(&api, &wasm, &limits, Some(&trace))
+                .expect("guest instantiates")
+                .invoke(b"{}")
+                .expect_err("guest call traps")
+        } else {
+            Runtime::new(&api, &wasm, &limits, Some(&trace))
+                .err()
+                .expect("guest start traps")
+        };
+        drop(trace);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(error.contains("unreachable"), "{error}");
+        let intervals =
+            super::worker_trace::decode(&bytes).expect("each phase occurs at most once");
+        for phase in [WorkerTracePhase::Compile, WorkerTracePhase::Instantiate] {
+            assert!(
+                intervals
+                    .iter()
+                    .any(|interval| interval.phase == phase && interval.end.is_some())
+            );
+        }
+        assert_eq!(
+            intervals
+                .iter()
+                .any(|interval| interval.phase == WorkerTracePhase::GuestCall),
+            traps_on_call
+        );
+    }
 }

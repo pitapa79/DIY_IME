@@ -13,9 +13,9 @@ const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
   Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
-  ['all', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
+  ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
   (scenario !== 'mixed' || alternateWasm),
-  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
+  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const tempParent = realpathSync(tmpdir());
@@ -172,6 +172,7 @@ async function measure(client, spec) {
     return { ...spec, prepareMs, pacing };
   }
   const records = [];
+  const paired = scenario === 'single-detailed';
   for (let revision = 1; revision <= samples + 2; revision++) {
     if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'begin', epochMs: Date.now() }));
@@ -179,7 +180,7 @@ async function measure(client, spec) {
     if (revision === samples + 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'end', epochMs: Date.now() }));
     }
-    if (revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
+    if (paired || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
     const text = spec.shape === 'dictionary' ? 'kousui' : `scaling-fixture-${revision}`;
     const start = performance.now();
     const key = await submit(text, revision);
@@ -199,7 +200,28 @@ async function measure(client, spec) {
     const status = await client.call({ method: 'status' });
     assert.equal(status.workerProcesses, 0);
     assert.equal(status.physical.physicalJobs, 0);
-    records.push({ admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start });
+    const record = { admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start };
+    if (paired && revision < samples + 2) {
+      const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
+      assert.equal(trace.dropped, 0);
+      assert(trace.events.length < 256, 'single-node trace exceeded one page');
+      const only = predicate => {
+        const matches = trace.events.filter(predicate);
+        assert.equal(matches.length, 1, 'ambiguous or missing single-node trace evidence');
+        return matches[0];
+      };
+      const accepted = only(event => event.event === 'run-accepted');
+      const sameRun = event => event.run === accepted.run && event.plan === accepted.plan && event.input === accepted.input;
+      const published = only(event => sameRun(event) && event.event === 'host-response-published');
+      const guest = only(event => sameRun(event) && event.worker?.phase === 'guest-call').worker;
+      assert(guest.finishedUs !== undefined, 'incomplete guest call');
+      const guestUs = Number(BigInt(guest.finishedUs) - BigInt(guest.startedUs));
+      const hostUs = Number(BigInt(published.atUs) - BigInt(accepted.atUs));
+      assert(guestUs >= 0 && hostUs >= guestUs);
+      Object.assign(record, { hostUs, guestUs, hostMinusGuestCallUs: hostUs - guestUs, trace });
+      await client.call({ method: 'traceStop' });
+    }
+    records.push(record);
   }
   const profiler = new PhaseProfiler('host-detailed');
   const tracePages = [];
@@ -215,6 +237,7 @@ async function measure(client, spec) {
   await client.call({ method: 'closeSession' });
   const diagnostic = records.pop();
   return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
+    ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
 let client;
@@ -260,6 +283,7 @@ try {
     { count: 4, shape: 'skip' },
   ];
   const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+    : scenario === 'single' || scenario === 'single-detailed' ? [{ count: 1, shape: 'serial' }]
     : scenario === 'mixed' ? [
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },

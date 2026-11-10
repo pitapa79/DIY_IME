@@ -50,6 +50,7 @@ impl Default for State {
 }
 #[derive(Clone, Default)]
 pub struct ExecutionGate(Arc<Mutex<State>>);
+#[derive(Clone)]
 pub(super) struct Lease {
     target: GrantTarget,
     key: RunKey,
