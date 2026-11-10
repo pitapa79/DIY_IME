@@ -872,9 +872,23 @@ impl WasmArtifact {
         drop(module_lease);
         runtime_lease.release()?;
         drop(runtime_lease);
+        let acl_us = (deferred_trace.is_some()
+            && trace_invocation.is_some_and(OwnedInvocation::host_trace_is_detailed))
+        .then(|| elapsed_micros(cleanup_started));
         profile
             .delete()
             .map_err(|_| fail("worker-cleanup", "Worker profile cleanup failed"))?;
+        let cleanup_us = elapsed_micros(cleanup_started);
+        if let Some(acl_us) = acl_us
+            && cleanup_us >= 20_000
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "prepared JIT cleanup: job_and_acl_us={acl_us} profile_delete_us={}",
+                cleanup_us.saturating_sub(acl_us)
+            );
+        }
         self.0.timings.staging.fetch_add(staged, Ordering::AcqRel);
         self.0
             .timings
@@ -883,7 +897,7 @@ impl WasmArtifact {
         self.0
             .timings
             .cleanup
-            .fetch_add(elapsed_micros(cleanup_started), Ordering::AcqRel);
+            .fetch_add(cleanup_us, Ordering::AcqRel);
         self.0.timings.calls.fetch_add(1, Ordering::AcqRel);
         let receipt = receipt.ok_or_else(|| fail("worker-cancelled", "Worker was not started"))?;
         if receipt.reason() != EndReason::Exited
