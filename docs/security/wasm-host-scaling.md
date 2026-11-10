@@ -155,3 +155,9 @@ python scripts/measure-windows-benchmark-job.py --command JOB_JSON NODE scripts/
 ```
 
 ローカルの Job 集計 `issue95-paced-job.json` の SHA-256 は `4a9567dccee83c506d3bf760a616a00e65286116133b2d571d4eb07b1622166a`、応答時間ログ `issue95-paced-job-timings.json` は `06137e24f5ccd062dd9beddca73bdc17747a5d515dbabb4c7627e3d1e35b1154`。
+
+### 未使用 AppContainer プロファイルの補充
+
+混合 Wasm の並列4段を物理4枠、ウォーム各20件で比較した。入力も ACL も未使用プロファイルには割り当てず、Worker の起動は要求後。Windows Job 内の変更前1個と上限4個の試作は、応答 P95 が117.42→92.42 ms、CPU 時間が11.94→10.91秒、ピークコミットが139.11→162.57 MiBだった。CPU とメモリはパッケージ導入・ドライバー込み。単段の試作では同一試行のゲスト呼び出しを差し引いた P95 が57.10 msで、単段目標には届いていない。
+
+上限を `min(物理枠, 4)` にした版では、同じ混合並列4段を物理1枠と4枠で各20件測定し、全件正答と実行後の物理枠ゼロを確認した。応答 P95/P99 は1枠で213.52/217.28 ms、4枠で96.88/120.85 ms。こちらは Windows Job による外側の資源計測なし。再現は上記スケーリングドライバーに `20 1 parallel` または `20 4 parallel` を渡す。

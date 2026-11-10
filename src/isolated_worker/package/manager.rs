@@ -61,7 +61,7 @@ impl ManagerConfig {
     }
     pub(super) fn prepare_assets(
         &self,
-        prepare_profiles: bool,
+        physical_slots: Option<u64>,
     ) -> Result<(Catalog, PackageVerifier), CoreError> {
         for path in [&self.data_root, &self.workspace] {
             fs::create_dir_all(path)
@@ -81,8 +81,8 @@ impl ManagerConfig {
             b"\0asm\x01\0\0\0".to_vec(),
             policy.clone(),
         )?;
-        let runtime = if prepare_profiles {
-            runtime.enable_profile_preparation()
+        let runtime = if let Some(physical_slots) = physical_slots {
+            runtime.enable_profile_preparation(physical_slots)
         } else {
             runtime
         };
@@ -370,7 +370,7 @@ pub(super) fn nonce() -> Result<String, CoreError> {
 /// Blocks on this Host process only. EOF/close cooperatively cancels the real
 /// Worker and waits for its actual process/IO termination before returning.
 pub fn run(config: ManagerConfig) -> Result<(), CoreError> {
-    let (catalog, verifier) = config.prepare_assets(false)?;
+    let (catalog, verifier) = config.prepare_assets(None)?;
     let output = Arc::new(Mutex::new(io::stdout()));
     let activity = Arc::new(Mutex::new(Activity::default()));
     let (sender, receiver) = mpsc::sync_channel(1);

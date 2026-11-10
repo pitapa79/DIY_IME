@@ -528,10 +528,10 @@ impl WasmArtifact {
             compiled: None,
         })))
     }
-    pub(super) fn enable_profile_preparation(mut self) -> Self {
+    pub(super) fn enable_profile_preparation(mut self, physical_slots: u64) -> Self {
         Arc::get_mut(&mut self.0)
             .expect("new Host runtime")
-            .profile_pool = profile_pool::ProfilePool::start().map(Arc::new);
+            .profile_pool = profile_pool::ProfilePool::start(physical_slots).map(Arc::new);
         self
     }
     pub(super) fn enable_official_compilation(mut self) -> Self {
@@ -1302,14 +1302,31 @@ mod tests {
                 .name("diyime-prepared-jit".into())
                 .spawn(move || {
                     let _slot = slot;
+                    let delivery_cancel = stop.clone();
                     artifact.call_worker(
                         WorkerRequest::Jit(Box::new(move || {
                             notify
                                 .send(())
                                 .map_err(|_| "prepared Worker owner closed")?;
-                            receive
-                                .recv_timeout(Duration::from_secs(5))
-                                .map_err(|error| error.to_string())
+                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                            loop {
+                                if delivery_cancel.is_cancelled() {
+                                    return Err("prepared JIT delivery cancelled".into());
+                                }
+                                let remaining =
+                                    deadline.saturating_duration_since(std::time::Instant::now());
+                                if remaining.is_zero() {
+                                    return Err("prepared JIT delivery expired".into());
+                                }
+                                match receive.recv_timeout(remaining.min(Duration::from_millis(10)))
+                                {
+                                    Ok(delivery) => return Ok(delivery),
+                                    Err(mpsc::RecvTimeoutError::Timeout) => (),
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                        return Err("prepared Worker owner closed".into());
+                                    }
+                                }
+                            }
                         })),
                         stop,
                         None,
@@ -1435,6 +1452,23 @@ mod tests {
         drop(owner);
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(artifact.timings().settled_calls, 3);
+        assert_eq!(host.usage().physical_jobs, 0);
+
+        let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(host.usage().physical_jobs, 1);
+        // Retain the sender to prove cancellation alone wakes the blocked reader.
+        owner.cancel.cancel();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !owner.worker.as_ref().unwrap().is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled Worker did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(owner.worker.take().unwrap().join().unwrap().is_err());
+        assert_eq!(artifact.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
     }
 
