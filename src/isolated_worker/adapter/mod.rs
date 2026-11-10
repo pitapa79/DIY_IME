@@ -1206,9 +1206,24 @@ impl WasmNode {
     fn take_prepared_jit(&self, id: &str) -> Option<PreparedJitOwner> {
         let slot = self.prepared_jit_slot(id)?;
         let mut owners = slot.owners.lock().unwrap_or_else(|p| p.into_inner());
-        let index = owners
+        let ready = owners
             .iter()
-            .position(|worker| worker.is_running() && worker.ready.try_recv().is_ok())?;
+            .position(|worker| worker.is_running() && worker.ready.try_recv().is_ok());
+        if let Some(index) = ready {
+            return Some(owners.remove(index));
+        }
+        if std::env::var_os("DIY_EXPERIMENT_PREPARED_JIT_WAIT").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return None;
+        }
+        // A short grace period can avoid a full cold launch when a replacement
+        // is already compiling. An unfinished owner remains available on timeout.
+        let index = owners.iter().position(PreparedJitOwner::is_running)?;
+        owners[index]
+            .ready
+            .recv_timeout(Duration::from_millis(3))
+            .ok()?;
         Some(owners.remove(index))
     }
 
