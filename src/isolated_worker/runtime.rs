@@ -697,7 +697,25 @@ fn create_winch_engine(api: &Api, limits: &Limits) -> Result<P, String> {
     }
     // SAFETY: the pinned C header declares wasm_config_t* and uint8_t.
     let set_strategy = unsafe { std::mem::transmute::<P, unsafe extern "C" fn(P, u8)>(symbol) };
-    create_engine_configured(api, limits, |config| unsafe { set_strategy(config, 2) })
+    #[cfg(feature = "winch-serial-probe")]
+    let set_parallel = {
+        // SAFETY: the pinned C API declares this setter with a C bool.
+        let symbol = unsafe {
+            GetProcAddress(
+                api._library.0,
+                c"wasmtime_config_parallel_compilation_set".as_ptr().cast(),
+            )
+        };
+        if symbol.is_null() {
+            return Err("Winch parallel compilation API unavailable".into());
+        }
+        unsafe { std::mem::transmute::<P, unsafe extern "C" fn(P, bool)>(symbol) }
+    };
+    create_engine_configured(api, limits, |config| unsafe {
+        set_strategy(config, 2);
+        #[cfg(feature = "winch-serial-probe")]
+        set_parallel(config, false);
+    })
 }
 
 #[cfg(not(target_arch = "x86_64"))]

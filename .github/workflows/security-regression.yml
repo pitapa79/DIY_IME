@@ -130,17 +130,28 @@ jobs:
           }
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
-      - name: Prepared JIT latency diagnostic
+      - name: Prepared JIT Winch compilation comparison
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
         run: |
-          $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
+          cargo build --locked --release --features winch-serial-probe --bin diy-ime2-wasm-worker
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $result | Set-Content target/windows-prepared-jit-latency.json -Encoding utf8
-          $report = $result | ConvertFrom-Json
-          $scenario = $report.scenarios[0]
-          if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
-          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
+          $workers = [ordered]@{
+            latency = 'target/windows-app/bin/diy-ime2-wasm-worker.exe'
+            'serial-winch' = 'target/release/diy-ime2-wasm-worker.exe'
+          }
+          foreach ($variant in $workers.Keys) {
+            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $workers[$variant] target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content "target/windows-prepared-jit-$variant.json" -Encoding utf8
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $workerHashes = foreach ($variant in $workers.Keys) {
+            $report = Get-Content "target/windows-prepared-jit-$variant.json" -Raw | ConvertFrom-Json
+            $scenario = $report.scenarios[0]
+            if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw "Incomplete Prepared JIT run ($variant)" }
+            Write-Host (@{variant=$variant;samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4)
+            $report.workerSha256
+          }
+          if ($workerHashes[0] -eq $workerHashes[1]) { throw 'Expected two different Worker builds' }
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
@@ -162,6 +173,7 @@ jobs:
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
+            target/windows-prepared-jit-serial-winch.json
             target/windows-prepared-jit-paced-*.json
           if-no-files-found: error
           retention-days: 30
