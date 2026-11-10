@@ -420,7 +420,15 @@ fn real_retained_module_loop() {
         assert!(exit.input_delivered());
         cache.revoke_read_execute(&profile).unwrap();
         profile.delete().unwrap();
-        std::fs::remove_dir_all(cache.path()).unwrap();
+        for asset in [
+            "worker.exe",
+            "wasmtime.dll",
+            "counter.wasm",
+            "consumer.wasm",
+        ] {
+            super::remove_asset(&cache.path().join(asset)).unwrap();
+        }
+        std::fs::remove_dir(cache.path()).unwrap();
         drop(retention);
         ended_send.send(exit.process_id()).unwrap();
     });
