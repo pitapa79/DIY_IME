@@ -238,6 +238,7 @@ async function measure(client, spec) {
   }
   const records = [];
   const paired = scenario === 'single-detailed';
+  const traceEachSample = paired || scenario === 'mixed';
   for (let revision = 1; revision <= samples + 2; revision++) {
     if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -248,7 +249,7 @@ async function measure(client, spec) {
     if (revision === samples + 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'end', epochMs: Date.now() }));
     }
-    if (paired || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
+    if (traceEachSample || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
     const text = spec.shape === 'dictionary' ? 'kousui' : `scaling-fixture-${revision}`;
     const start = performance.now();
     const key = await submit(text, revision);
@@ -296,6 +297,20 @@ async function measure(client, spec) {
         assert(BigInt(physicalEnded.sequence) < BigInt(published.sequence), 'result preceded physical end');
         record.workerCleanupUs = Number(BigInt(cleanupFinished.atUs) - BigInt(cleanupStarted.atUs));
       }
+      await client.call({ method: 'traceStop' });
+    } else if (traceEachSample && revision < samples + 2) {
+      const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
+      const complete = trace.dropped === 0 && trace.events.length < 256;
+      const nodes = trace.events.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
+      if (complete) assert.equal(nodes.length, nodeCount, 'mixed graph did not execute every Wasm node');
+      let cold = 0, prepared = 0;
+      for (const { node } of nodes) {
+        const events = trace.events.filter(event => event.node === node);
+        if (events.some(event => event.event === 'worker-process-started')) cold++;
+        else if (complete && events.some(event => event.worker?.phase === 'guest-call')) prepared++;
+      }
+      record.workerRoutes = { cold, prepared, unknown: nodeCount - cold - prepared };
+      record.trace = trace;
       await client.call({ method: 'traceStop' });
     }
     records.push(record);
