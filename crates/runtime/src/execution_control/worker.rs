@@ -787,6 +787,59 @@ mod tests {
         }
     }
     struct HeldFixtureProducer(std::sync::mpsc::Sender<CompletionPermit>);
+
+    #[test]
+    fn prepared_worker_pin_shares_only_a_live_reservation_from_the_same_host() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/contracts/execution_control.json"
+        ))
+        .unwrap();
+        let policy =
+            ResourcePolicy::from_value(fixture["resourceProfiles"]["bounded"].clone()).unwrap();
+        let host = ExecutionHost::new("prepared-pin-test", policy.clone()).unwrap();
+        let foreign = ExecutionHost::new("prepared-pin-foreign", policy).unwrap();
+        let dispatcher = WorkerDispatcher::new(host.clone());
+        let key: RunKey = serde_json::from_value(json!({
+            "sessionEpoch":"11111111111111111111111111111111",
+            "planVersion":"1", "runId":"1", "deliveryGeneration":"1"
+        }))
+        .unwrap();
+        let lease = host
+            .try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        let permit = CompletionPermit {
+            state: Arc::new(PermitState {
+                stamp: JobStamp {
+                    key,
+                    job_id: issue_job_id().unwrap(),
+                },
+                authority: Arc::new(()),
+                sender: dispatcher.sender.clone(),
+                finished: AtomicBool::new(false),
+                host_cancelled: AtomicBool::new(false),
+                lease: Mutex::new(Some(lease)),
+                invocation: Mutex::new(None),
+            }),
+        };
+        assert_eq!(
+            permit.pin_physical_reservation(&foreign).unwrap_err().code,
+            "invalid-reservation"
+        );
+        let pin = permit.pin_physical_reservation(&host).unwrap();
+        assert_eq!(host.usage().physical_jobs, 1);
+        assert!(permit.complete(Err(CoreError::new("fixture", "test completion"))));
+        assert_eq!(
+            permit.pin_physical_reservation(&host).unwrap_err().code,
+            "invalid-reservation"
+        );
+        assert_eq!(host.usage().physical_jobs, 1);
+        drop(pin);
+        assert_eq!(host.usage().physical_jobs, 0);
+    }
+
     impl crate::execution_control::DeferredNode for HeldFixtureProducer {
         fn definition(&self) -> crate::node::NodeDefinition {
             crate::node::NodeDefinition::new(
