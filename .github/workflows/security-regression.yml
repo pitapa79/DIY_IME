@@ -154,6 +154,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-inherited-acl.json -Encoding utf8
           exit $LASTEXITCODE
+      - name: Prepared JIT DLL image section comparison
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+          DIY_EXPERIMENT_WASMTIME_IMAGE_SECTION: '1'
+        run: |
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-image-section.json -Encoding utf8
+          exit $LASTEXITCODE
       - name: Prepared JIT spare capacity comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
@@ -208,6 +215,7 @@ jobs:
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
             target/windows-prepared-jit-inherited-acl.json
+            target/windows-prepared-jit-image-section.json
             target/windows-prepared-jit-spares-*.json
             target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json
