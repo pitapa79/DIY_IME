@@ -956,13 +956,24 @@ impl Runner {
                     })
                     .transpose()?
                     .flatten();
+                let refill_controller = (std::env::var_os("DIY_EXPERIMENT_REFILL_AFTER_GRAPH")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1")))
+                .then(|| session.controller().clone());
                 let new = ActivePlan {
                     session,
                     evidence: pending.evidence,
                     retained,
                     _prepared_jit: jit_candidates
                         .into_iter()
-                        .filter_map(|(id, node)| node.prepare_jit_slot(&self.host, id, jit_limit))
+                        .filter_map(|(id, node)| {
+                            node.prepare_jit_slot(
+                                &self.host,
+                                id,
+                                jit_limit,
+                                refill_controller.clone(),
+                            )
+                        })
                         .collect(),
                 };
                 if transactional {

@@ -1278,6 +1278,7 @@ impl WasmNode {
         host: &ExecutionHost,
         id: String,
         limit: usize,
+        refill_controller: Option<GuardedController>,
     ) -> Option<Arc<PreparedJitSlot>> {
         if !self.can_prepare_jit() || host.policy().max_physical_jobs < 2 {
             return None;
@@ -1287,6 +1288,7 @@ impl WasmNode {
             owners: std::sync::Mutex::new(Vec::new()),
             capacity: limit.min(host.policy().max_physical_jobs.saturating_sub(1) as usize),
             host: host.clone(),
+            refill_controller,
         });
         slot.refill(&self.artifact);
         self.prepared_jit
@@ -1339,6 +1341,7 @@ impl WasmNode {
         std::thread::Builder::new()
             .name("diyime2-wasm-invocation".into())
             .spawn(move || {
+                let mut deferred_refill = None;
                 let run = || -> Result<(), CoreError> {
                     let request_phase = invocation.trace_host_phase(HostTracePhase::Request);
                     node.validate_config(invocation.config())?;
@@ -1422,7 +1425,11 @@ impl WasmNode {
                             && let Some(slot) = node.prepared_jit_slot(invocation.context().node_id)
                             && node.gate.publish(&lease, key, || ()).is_ok()
                         {
-                            slot.refill(&node.artifact);
+                            if let Some(controller) = &slot.refill_controller {
+                                deferred_refill = Some((Arc::downgrade(&slot), controller.clone(), lease.clone()));
+                            } else {
+                                slot.refill(&node.artifact);
+                            }
                         }
                         let bytes = response?;
                         check()?;
@@ -1472,6 +1479,15 @@ impl WasmNode {
                         }
                     }
                 }
+                if let Some((slot, controller, lease)) = deferred_refill {
+                    let key = invocation.key();
+                    if PreparedJitSlot::wait_for_graph_cleanup(&controller, key)
+                        && node.gate.publish(&lease, key, || ()).is_ok()
+                        && let Some(slot) = slot.upgrade()
+                    {
+                        slot.refill(&node.artifact);
+                    }
+                }
             })
             .map_err(|_| fail("worker-thread", "Host execution thread unavailable"))?;
         Ok(())
@@ -1482,9 +1498,30 @@ pub(in crate::isolated_worker) struct PreparedJitSlot {
     owners: std::sync::Mutex<Vec<PreparedJitOwner>>,
     capacity: usize,
     host: ExecutionHost,
+    refill_controller: Option<GuardedController>,
 }
 
 impl PreparedJitSlot {
+    fn wait_for_graph_cleanup(
+        controller: &GuardedController,
+        key: &crate::execution_control::RunKey,
+    ) -> bool {
+        use crate::execution_control::{PhysicalCounts, RunPhase};
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(5)
+            && let Ok(snapshot) = controller.wait_run(key)
+        {
+            if snapshot.state == RunPhase::Terminal
+                && snapshot.physical == PhysicalCounts::default()
+            {
+                return true;
+            }
+            // A superseded run can return immediately while physical owners drain.
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
     fn refill(&self, artifact: &WasmArtifact) {
         let mut owners = self.owners.lock().unwrap_or_else(|p| p.into_inner());
         owners.retain(PreparedJitOwner::is_running);

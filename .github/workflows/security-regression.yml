@@ -195,9 +195,10 @@ jobs:
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
-          foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-independent', 'all-stream-acl-overlap-independent')) {
+          foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-independent', 'all-stream-acl-overlap-independent', 'all-stream-acl-overlap-after-graph-independent')) {
             $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = if ($mode -like '*-independent') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like '*-overlap-*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_REFILL_AFTER_GRAPH = if ($mode -like '*-after-graph*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
             $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '1') { '1' } else { 'all' }
@@ -212,9 +213,10 @@ jobs:
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-fresh', 'all-stream-acl-overlap-fresh-no-refill', 'all-stream-acl-overlap-wide-capacity')) {
+          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-fresh', 'all-stream-acl-overlap-fresh-no-refill', 'all-stream-acl-overlap-wide-capacity', 'all-stream-acl-overlap-after-graph')) {
             $env:DIY_WASM_SCALING_FRESH_GRAPH = if ($mode -like '*-fresh*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_NO_JIT_REFILL = if ($mode -eq 'all-stream-acl-overlap-fresh-no-refill') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_REFILL_AFTER_GRAPH = if ($mode -like '*-after-graph*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_WIDE_GRAPHS = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
             $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like 'all-stream-acl-overlap*') { '1' } else { '0' }
