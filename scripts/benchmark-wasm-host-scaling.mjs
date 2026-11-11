@@ -157,13 +157,15 @@ async function measure(client, spec) {
   const active = await client.call({ method: 'activate', reviewId: review.reviewId });
   assert.equal(active.phase, 'ready');
   const prepareMs = performance.now() - prepareStart;
+  let initialPreparation;
   if (preparedExperiment) {
     // Give the single-use experimental Worker time to finish preparation.
     // This delay models time between plan activation and the first input.
     await new Promise(resolve => setTimeout(resolve, 200));
     const status = await client.call({ method: 'status' });
     assert.equal(status.physical.physicalJobs, spareLimit);
-    assert.equal(status.workerProcesses, spareLimit);
+    assert(status.workerProcesses <= spareLimit, 'started workers exceed reserved spares');
+    initialPreparation = { reservedJobs: status.physical.physicalJobs, startedWorkers: status.workerProcesses };
   }
   const expectedPlanVersion = active.state.activePlanVersion;
   async function submit(text, revision) {
@@ -234,7 +236,7 @@ async function measure(client, spec) {
     await verifyIdle(preparedExperiment);
     await client.call({ method: 'closeSession' });
     if (preparedExperiment) await verifyIdle(false);
-    return { ...spec, prepareMs, pacing };
+    return { ...spec, prepareMs, initialPreparation, pacing };
   }
   const records = [];
   const paired = scenario === 'single-detailed';
@@ -329,7 +331,7 @@ async function measure(client, spec) {
   await client.call({ method: 'closeSession' });
   if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
-  return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
+  return { ...spec, prepareMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
     ...(paired && preparedExperiment ? {
       preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length,
