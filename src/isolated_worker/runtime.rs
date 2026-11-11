@@ -1181,7 +1181,13 @@ fn real_jit_preparation_acknowledges_before_input() {
         };
         assert_eq!(receipt.reason(), EndReason::Exited);
         assert!(receipt.exit_code().is_some_and(|code| code != 0));
-        assert_eq!(receipt.output().unwrap(), b"");
+        let output = receipt.output().unwrap();
+        assert!(output.starts_with(b"wasm-worker: "), "{output:?}");
+        assert!(
+            !output
+                .windows(JIT_READY.len())
+                .any(|frame| frame == JIT_READY)
+        );
         drop(job);
         cache.revoke_read_execute(&profile).unwrap();
         profile.delete().unwrap();
