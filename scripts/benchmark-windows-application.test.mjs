@@ -26,6 +26,38 @@ test('Host input counts bad results and refuses stale payloads after a newer rev
  }
  await assert.rejects(measure(true), /stale-host-result/);
 });
+test('fixed cadence submits the next revision during an outstanding result read', {timeout: 3000}, async () => {
+ let round = 0, latest = 0, heldKey, reading = false;
+ const heldRead = Promise.withResolvers();
+ const scenarios = await measureHostInput({
+  steps: [{id:'a',text:'a',expected:'a'}, {id:'b',text:'b',expected:'b'}],
+  beginRound: () => { round++; },
+  submit: async text => {
+   const key = ++latest;
+   if (round === 3 && text === 'a') heldKey = key;
+   if (round === 3 && text === 'b') {
+    assert.equal(reading, true);
+    heldRead.resolve();
+   }
+   return key;
+  },
+  read: async key => {
+   assert.equal(reading, false);
+   if (key === heldKey && latest === heldKey) {
+    reading = true;
+    await heldRead.promise;
+    reading = false;
+   }
+   return {current: key === latest, result: key === latest ? {key} : null};
+  },
+  ended: () => true,
+  verify: () => {},
+  summarize, pollMs: 5, rounds: 1, independentInput: true,
+ });
+ assert.equal(scenarios[2].correct, 1);
+ assert.equal(scenarios[2].superseded, 1);
+ assert.equal(scenarios[2].failed, 0);
+});
 test('synthetic dictionary preserves the ranked seed and fits the actual broker limits', () => {
  const seed = Buffer.from('reading\tsurface\tweight\r\nこうすい\t降水\t90\r\nこうすい\t香水\t30\r\nこうすい\t洪水\t90\r\n');
  const config = benchmarkOptions(['bundle', '--synthetic-rows', '10000']);

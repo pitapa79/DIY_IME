@@ -221,6 +221,7 @@ async function measure(client, spec) {
   }
   if (scenario === 'paced') {
     let revision = 0;
+    const independentInput = process.env.DIY_WASM_SCALING_INDEPENDENT_INPUT === '1';
     const routeCounts = new Map();
     const countRoutes = async (interval, pending) => {
       const events = [];
@@ -263,7 +264,7 @@ async function measure(client, spec) {
     const pacing = await measureHostInput({ steps, submit: text => submit(text, ++revision),
       read, ended, verify: (snapshot, text) => verify(snapshot, targets, text),
       summarize: distribution, pollMs: 5, rounds: samples,
-      independentInput: process.env.DIY_WASM_SCALING_INDEPENDENT_INPUT === '1',
+      independentInput,
       ...(preparedExperiment ? { beginRound: () => client.call({ method: 'traceStartDetailed' }), finishRound: countRoutes } : {}) });
     if (preparedExperiment) {
       for (const result of pacing) result.workerRoutes = routeCounts.get(result.intervalMs);
@@ -271,7 +272,7 @@ async function measure(client, spec) {
     await verifyIdle(preparedExperiment);
     await client.call({ method: 'closeSession' });
     if (preparedExperiment) await verifyIdle(false);
-    return { ...spec, prepareMs, initialPreparation, pacing };
+    return { ...spec, prepareMs, initialPreparation, independentInput, pacing };
   }
   const records = [];
   const paired = scenario === 'single-detailed';
