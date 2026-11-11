@@ -104,11 +104,18 @@ impl Profile {
         })
     }
     pub fn delete(&mut self) -> Result<(), String> {
-        let hr = unsafe { DeleteAppContainerProfile(self.name.as_ptr()) };
+        Self::delete_named(&self.name)?;
+        self.deleted = true;
+        Ok(())
+    }
+    fn delete_named(name: &[u16]) -> Result<(), String> {
+        if name.last() != Some(&0) {
+            return Err("profile name is not terminated".into());
+        }
+        let hr = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
         if hr < 0 {
             return Err(format!("profile cleanup failed {hr:#x}"));
         }
-        self.deleted = true;
         Ok(())
     }
     pub fn name(&self) -> String {

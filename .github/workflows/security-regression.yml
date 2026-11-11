@@ -164,8 +164,13 @@ jobs:
           $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
           cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($mode in @('streamed-module', 'streamed-module-inherited-acl')) {
-            $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = if ($mode -eq 'streamed-module-inherited-acl') { '1' } else { '0' }
+          foreach ($mode in @('streamed-module', 'streamed-module-inherited-acl', 'streamed-module-overlap-cleanup')) {
+            $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = if ($mode -eq 'streamed-module') { '0' } else { '1' }
+            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -eq 'streamed-module-overlap-cleanup') { '1' } else { '0' }
+            if ($env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP -eq '1') {
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
             $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $result | Set-Content "target/windows-prepared-jit-$mode.json" -Encoding utf8

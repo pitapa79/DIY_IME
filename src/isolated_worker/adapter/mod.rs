@@ -913,25 +913,59 @@ impl WasmArtifact {
         let cleanup_started = std::time::Instant::now();
         drop(job);
         let job_close_us = measure_cleanup.then(|| elapsed_micros(cleanup_started));
-        if let Some(mut lease) = module_lease.take() {
-            lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
-        }
-        drop(module_lease);
-        runtime_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
-        drop(runtime_lease);
-        let acl_us = measure_cleanup.then(|| elapsed_micros(cleanup_started));
-        profile
-            .delete()
-            .map_err(|_| fail("worker-cleanup", "Worker profile cleanup failed"))?;
+        let mut release_acls = || -> Result<(), CoreError> {
+            if let Some(mut lease) = module_lease.take() {
+                lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
+            }
+            runtime_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))
+        };
+        let overlap_cleanup = deferred_trace.is_some()
+            && std::env::var_os("DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+        let (acl_us, profile_delete_us) = if overlap_cleanup {
+            let name = &profile.name;
+            // The original process and IO owners have settled and the Job is closed.
+            // The code ACL uses the retained SID and only touches the code cache.
+            let (acl_result, acl_us, deletion) = std::thread::scope(|scope| {
+                let remove_profile = || {
+                    let started = std::time::Instant::now();
+                    (Profile::delete_named(name), elapsed_micros(started))
+                };
+                let deletion = std::thread::Builder::new().spawn_scoped(scope, remove_profile);
+                let acl_result = release_acls();
+                let acl_us = elapsed_micros(cleanup_started);
+                let deletion = deletion.map_or_else(|_| Ok(remove_profile()), |task| task.join());
+                (acl_result, acl_us, deletion)
+            });
+            drop(module_lease);
+            drop(runtime_lease);
+            let (result, duration) = deletion
+                .map_err(|_| fail("worker-cleanup", "Worker profile cleanup thread failed"))?;
+            profile.deleted = result.is_ok();
+            acl_result?;
+            result.map_err(|_| fail("worker-cleanup", "Worker profile cleanup failed"))?;
+            (acl_us, duration)
+        } else {
+            release_acls()?;
+            drop(module_lease);
+            drop(runtime_lease);
+            let acl_us = elapsed_micros(cleanup_started);
+            profile
+                .delete()
+                .map_err(|_| fail("worker-cleanup", "Worker profile cleanup failed"))?;
+            (
+                acl_us,
+                elapsed_micros(cleanup_started).saturating_sub(acl_us),
+            )
+        };
         let cleanup_us = elapsed_micros(cleanup_started);
-        if let (Some(job_close_us), Some(acl_us)) = (job_close_us, acl_us)
+        if let Some(job_close_us) = job_close_us
             && cleanup_us >= 20_000
         {
             use std::io::Write;
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "prepared JIT cleanup: job_close_us={job_close_us} acl_lock_wait_us={lock_wait_us} job_and_acl_us={acl_us} profile_delete_us={}",
-                cleanup_us.saturating_sub(acl_us)
+                "prepared JIT cleanup: job_close_us={job_close_us} acl_lock_wait_us={lock_wait_us} job_and_acl_us={acl_us} profile_delete_us={profile_delete_us} overlap={overlap_cleanup}"
             );
         }
         self.0.timings.staging.fetch_add(staged, Ordering::AcqRel);
@@ -1905,8 +1939,7 @@ mod tests {
                 let remove_profile = || {
                     let started = std::time::Instant::now();
                     // This probe creates the profile but never starts a process.
-                    let result = unsafe { super::super::DeleteAppContainerProfile(name.as_ptr()) };
-                    assert!(result >= 0, "profile cleanup failed: {result:#x}");
+                    Profile::delete_named(&name).unwrap();
                     started.elapsed().as_micros()
                 };
                 let mut remove_acls = || {
