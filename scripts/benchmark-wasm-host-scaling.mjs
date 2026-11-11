@@ -263,6 +263,7 @@ async function measure(client, spec) {
     const pacing = await measureHostInput({ steps, submit: text => submit(text, ++revision),
       read, ended, verify: (snapshot, text) => verify(snapshot, targets, text),
       summarize: distribution, pollMs: 5, rounds: samples,
+      independentInput: process.env.DIY_WASM_SCALING_INDEPENDENT_INPUT === '1',
       ...(preparedExperiment ? { beginRound: () => client.call({ method: 'traceStartDetailed' }), finishRound: countRoutes } : {}) });
     if (preparedExperiment) {
       for (const result of pacing) result.workerRoutes = routeCounts.get(result.intervalMs);

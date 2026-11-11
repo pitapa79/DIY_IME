@@ -10,7 +10,7 @@ const defaultSteps = [
   {id: 'dictionary-hit', text: 'kousui', expected: '降水'},
 ];
 
-export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound}) {
+export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound, independentInput = false}) {
   const scenarios = [];
   for (const intervalMs of [null, 100, 20]) {
     const records = [];
@@ -22,6 +22,28 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
       const due = () => intervalMs === null
         ? (pending.some(record => record.endedMs === null) ? Infinity : performance.now())
         : origin + index * intervalMs;
+      let observing;
+      async function observe(record) {
+        const snapshot = await read(record.key);
+        const observed = performance.now() - record.issued;
+        if (!snapshot.current) {
+          if (snapshot.current !== false || snapshot.result != null) throw new Error('stale-host-result');
+          record.outcome ??= 'superseded';
+        } else if (snapshot.result && record.outcome === null) {
+          try {
+            verify(snapshot, record.step.expected);
+            record.responseMs = observed;
+            record.outcome = 'correct';
+          } catch {
+            const {reason} = snapshot.result;
+            record.outcome = ['expired', 'cancelled'].includes(reason) ? reason : 'failed';
+          }
+        }
+        if (ended(snapshot)) {
+          record.endedMs = observed;
+          record.outcome ??= 'failed';
+        }
+      }
       while (index < steps.length || pending.some(record => record.endedMs === null)) {
         if (performance.now() - origin > 240_000) throw new Error('host-input-drain-timeout');
         const scheduled = due();
@@ -33,28 +55,27 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
             responseMs: null, endedMs: null, outcome: null});
           continue;
         }
+        if (independentInput && intervalMs !== null) {
+          // The Host permits one result read alongside an input operation.
+          // Keep the next input deadline independent of that outstanding read.
+          if (!observing) {
+            const newest = pending.findLast(record => record.endedMs === null);
+            if (newest) observing = observe(newest).then(() => ({}), error => ({error}));
+          }
+          const remaining = index < steps.length ? due() - performance.now() : Infinity;
+          if (remaining <= 0) continue;
+          const tick = delay(Math.min(pollMs, remaining));
+          const settled = observing ? await Promise.race([observing, tick]) : await tick;
+          if (settled) {
+            observing = undefined;
+            if (settled.error) throw settled.error;
+          }
+          continue;
+        }
         for (const record of pending) {
           if (index < steps.length && performance.now() >= due()) break;
           if (record.endedMs !== null) continue;
-          const snapshot = await read(record.key);
-          const observed = performance.now() - record.issued;
-          if (!snapshot.current) {
-            if (snapshot.current !== false || snapshot.result != null) throw new Error('stale-host-result');
-            record.outcome ??= 'superseded';
-          } else if (snapshot.result && record.outcome === null) {
-            try {
-              verify(snapshot, record.step.expected);
-              record.responseMs = observed;
-              record.outcome = 'correct';
-            } catch {
-              const {reason} = snapshot.result;
-              record.outcome = ['expired', 'cancelled'].includes(reason) ? reason : 'failed';
-            }
-          }
-          if (ended(snapshot)) {
-            record.endedMs = observed;
-            record.outcome ??= 'failed';
-          }
+          await observe(record);
         }
         if (index < steps.length || pending.some(record => record.endedMs === null)) {
           const remaining = index < steps.length ? due() - performance.now() : Infinity;

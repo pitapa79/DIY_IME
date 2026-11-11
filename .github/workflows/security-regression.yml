@@ -194,8 +194,9 @@ jobs:
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
-          foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-early-refill')) {
-            $env:DIY_EXPERIMENT_EARLY_JIT_REFILL = if ($mode -eq 'all-stream-acl-early-refill') { '1' } else { '0' }
+          foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-early-refill', 'all-stream-acl-independent', 'all-stream-acl-early-refill-independent')) {
+            $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = if ($mode -like '*-independent') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_EARLY_JIT_REFILL = if ($mode -like '*-early-refill*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
             $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '1') { '1' } else { 'all' }
