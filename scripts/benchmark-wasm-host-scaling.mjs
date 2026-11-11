@@ -346,7 +346,12 @@ async function measure(client, spec) {
         else if (complete && events.some(event => event.worker?.phase === 'guest-call')) prepared++;
       }
       record.workerRoutes = { cold, prepared, unknown: nodeCount - cold - prepared };
-      if (complete) record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
+      // A missing unrelated event does not invalidate the timing anchors. Each
+      // fixture node has one invocation and every expected node must be present.
+      if (trace.events.length < 256 && new Set(nodes.map(node => node.node)).size === nodeCount
+          && nodes.length === nodeCount) {
+        record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
+      }
       record.trace = trace;
       await client.call({ method: 'traceStop' });
     }
@@ -366,7 +371,8 @@ async function measure(client, spec) {
   await client.call({ method: 'closeSession' });
   if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
-  const graphSamples = records.slice(1).flatMap(record => record.graphOverhead ? [record.graphOverhead] : []);
+  const measuredGraphs = records.slice(1).filter(record => record.graphOverhead);
+  const graphSamples = measuredGraphs.map(record => record.graphOverhead);
   return { ...spec, prepareMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
     ...(paired && preparedExperiment ? {
@@ -385,6 +391,7 @@ async function measure(client, spec) {
     ...(scenario === 'mixed' ? {
       graphOverhead: {
         measured: graphSamples.length,
+        withDroppedTraceEvents: measuredGraphs.filter(record => record.trace.dropped > 0).length,
         ...(graphSamples.length ? {
           lowerUs: distribution(graphSamples.map(sample => sample.lowerUs)),
           upperUs: distribution(graphSamples.map(sample => sample.upperUs)),
