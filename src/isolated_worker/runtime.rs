@@ -1145,6 +1145,49 @@ fn real_jit_preparation_acknowledges_before_input() {
         drop(slot);
         assert_eq!(host.usage().physical_jobs, 0);
     }
+    // These prefixes cannot reach READY or guest instantiation.
+    let malformed: &[(usize, &[u8])] = &[
+        (9, b"\0asm\x01\0\0\0"),
+        (8, b"bad wasm"),
+        (MAX_STREAMED_MODULE_BYTES + 1, b""),
+    ];
+    for &(declared, prefix) in malformed {
+        let slot = host
+            .try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..ResourceUsage::default()
+            })
+            .unwrap();
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let args = [
+            OsString::from("--prepare-jit-pipe-v1"),
+            args[1].clone(),
+            "-".into(),
+            declared.to_string().into(),
+            "10000".into(),
+            "1048576".into(),
+        ];
+        let scope = WorkerScope::observed(&profile, &job, &cache, Default::default());
+        let control = RunControl {
+            walltime: Some(Duration::from_secs(10)),
+            ..RunControl::default()
+        };
+        let Outcome::Exited(receipt) =
+            execute_observed(scope, &executable, &args, prefix.to_vec(), &control).unwrap()
+        else {
+            panic!("Worker receiving an invalid module did not exit");
+        };
+        assert_eq!(receipt.reason(), EndReason::Exited);
+        assert!(receipt.exit_code().is_some_and(|code| code != 0));
+        assert_eq!(receipt.output().unwrap(), b"");
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+        drop(slot);
+        assert_eq!(host.usage().physical_jobs, 0);
+    }
     for file in ["worker.exe", "wasmtime.dll", "fixture.wat"] {
         super::adapter::remove_asset(&cache.path().join(file)).unwrap();
     }
