@@ -154,6 +154,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-inherited-acl.json -Encoding utf8
           exit $LASTEXITCODE
+      - name: Prepared JIT spare capacity comparison
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          foreach ($spares in @('1', '2')) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT = $spares
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-spares-$spares.json"
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-spares-$spares.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 4 single-detailed
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $report = Get-Content -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH -Raw | ConvertFrom-Json
+            $scenario = $report.scenarios[0]
+            if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw "Incomplete spare capacity run ($spares)" }
+            @{spares=$spares;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs} | ConvertTo-Json -Depth 4
+          }
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
@@ -195,6 +208,7 @@ jobs:
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
             target/windows-prepared-jit-inherited-acl.json
+            target/windows-prepared-jit-spares-*.json
             target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
