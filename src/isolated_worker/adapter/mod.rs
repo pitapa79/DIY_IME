@@ -276,7 +276,6 @@ impl Drop for CodeReservation {
 struct CodeFiles {
     reservation: Option<CodeReservation>,
     locks: Vec<std::fs::File>,
-    image_section: Option<std::os::windows::io::OwnedHandle>,
     cache: ScopedCache,
     healthy: std::sync::Mutex<bool>,
     inherited_acl: bool,
@@ -303,7 +302,6 @@ impl CodeFiles {
         let mut files = Self {
             reservation: Some(reservation),
             locks: Vec::new(),
-            image_section: None,
             cache: ScopedCache(
                 Cache::new(workspace, &naming)
                     .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
@@ -328,32 +326,6 @@ impl CodeFiles {
                     .open(files.cache.path().join(name))
                     .map_err(|_| fail("worker-asset", "code snapshot lock unavailable"))?,
             );
-        }
-        if std::env::var_os("DIY_EXPERIMENT_WASMTIME_IMAGE_SECTION").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-            && let Some(index) = assets.iter().position(|(name, _)| *name == "wasmtime.dll")
-        {
-            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-            use windows_sys::Win32::System::Memory::{
-                CreateFileMappingW, PAGE_READONLY, SEC_IMAGE,
-            };
-
-            // Keep the section for the locked, verified DLL alive. The Host
-            // does not map a view, run the DLL, or inherit the handle to a Worker.
-            let section = unsafe {
-                CreateFileMappingW(
-                    files.locks[index].as_raw_handle(),
-                    std::ptr::null(),
-                    PAGE_READONLY | SEC_IMAGE,
-                    0,
-                    0,
-                    std::ptr::null(),
-                )
-            };
-            if section.is_null() {
-                return Err(fail("worker-asset", "Wasmtime image section unavailable"));
-            }
-            files.image_section = Some(unsafe { OwnedHandle::from_raw_handle(section) });
         }
         naming
             .delete()
@@ -397,7 +369,6 @@ impl CodeFiles {
 }
 impl Drop for CodeFiles {
     fn drop(&mut self) {
-        drop(self.image_section.take());
         self.locks.clear();
         if cleanup(&self.cache).is_err() {
             // Keep failed cleanup charged for the rest of this Host lifetime.
