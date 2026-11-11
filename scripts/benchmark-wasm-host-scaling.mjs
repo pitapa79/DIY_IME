@@ -172,7 +172,9 @@ async function measure(client, spec) {
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
     && physicalSlots >= 2 && ['single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
-  const spareLimit = Math.min(allNodes ? nodeCount : requestedSpares, physicalSlots - 1);
+  const eligibleNodes = nodeCount + (spec.unused ?? 0);
+  // Activation has no run targets yet, so unused eligible nodes can reserve spares.
+  const spareLimit = Math.min(allNodes ? eligibleNodes : requestedSpares, physicalSlots - 1);
   const { graph, targets } = graphFor(spec);
   const prepareStart = performance.now();
   let review = await client.call({ method: 'prepare', graph });
@@ -200,7 +202,8 @@ async function measure(client, spec) {
     const status = await client.call({ method: 'status' });
     assert.equal(status.physical.physicalJobs, spareLimit);
     assert(status.workerProcesses <= spareLimit, 'started workers exceed reserved spares');
-    initialPreparation = { reservedJobs: status.physical.physicalJobs, startedWorkers: status.workerProcesses };
+    initialPreparation = { eligibleNodes, reservedJobs: status.physical.physicalJobs,
+      startedWorkers: status.workerProcesses };
   }
   const expectedPlanVersion = active.state.activePlanVersion;
   async function submit(text, revision) {
