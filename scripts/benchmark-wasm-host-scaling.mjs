@@ -12,7 +12,7 @@ const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario
 const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
-  Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
+  Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 18 &&
   ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
   (scenario !== 'mixed' || alternateWasm),
   'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
