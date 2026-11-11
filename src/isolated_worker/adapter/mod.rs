@@ -1894,38 +1894,53 @@ mod tests {
         )
         .unwrap();
         let module = CodeFiles::new(root, &[("node.wasm", b"module")], &budget).unwrap();
-        let mut samples = Vec::new();
-        for _ in 0..101 {
-            let mut profile = Profile::new().unwrap();
-            let mut module_lease = module.lease(&profile).unwrap();
-            let mut runtime_lease = runtime.lease(&profile).unwrap();
-            let start = std::time::Instant::now();
-            module_lease.release().unwrap();
-            drop(module_lease);
-            runtime_lease.release().unwrap();
-            drop(runtime_lease);
-            let acl_us = start.elapsed().as_micros();
-            let profile_start = std::time::Instant::now();
-            profile.delete().unwrap();
-            samples.push([
-                acl_us,
-                profile_start.elapsed().as_micros(),
-                start.elapsed().as_micros(),
-            ]);
-        }
-        for (index, phase) in ["code-acls", "profile-delete", "combined"]
-            .into_iter()
-            .enumerate()
-        {
-            let mut times: Vec<_> = samples[1..].iter().map(|sample| sample[index]).collect();
-            times.sort_unstable();
-            println!(
-                "{phase}: p50={}us p95={}us p99={}us n={}",
-                times[49],
-                times[94],
-                times[98],
-                times.len()
-            );
+        for parallel in [false, true] {
+            let mut samples = Vec::new();
+            for _ in 0..101 {
+                let mut profile = Profile::new().unwrap();
+                let mut module_lease = module.lease(&profile).unwrap();
+                let mut runtime_lease = runtime.lease(&profile).unwrap();
+                let name = profile.name.clone();
+                let start = std::time::Instant::now();
+                let remove_profile = || {
+                    let started = std::time::Instant::now();
+                    // This probe creates the profile but never starts a process.
+                    let result = unsafe { super::super::DeleteAppContainerProfile(name.as_ptr()) };
+                    assert!(result >= 0, "profile cleanup failed: {result:#x}");
+                    started.elapsed().as_micros()
+                };
+                let mut remove_acls = || {
+                    module_lease.release().unwrap();
+                    runtime_lease.release().unwrap();
+                    start.elapsed().as_micros()
+                };
+                let (acl_us, profile_us) = if parallel {
+                    std::thread::scope(|scope| {
+                        let deletion = scope.spawn(remove_profile);
+                        (remove_acls(), deletion.join().unwrap())
+                    })
+                } else {
+                    (remove_acls(), remove_profile())
+                };
+                samples.push([acl_us, profile_us, start.elapsed().as_micros()]);
+                drop(module_lease);
+                drop(runtime_lease);
+                profile.deleted = true;
+            }
+            for (index, phase) in ["code-acls", "profile-delete", "combined"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut times: Vec<_> = samples[1..].iter().map(|sample| sample[index]).collect();
+                times.sort_unstable();
+                println!(
+                    "parallel={parallel} {phase}: p50={}us p95={}us p99={}us n={}",
+                    times[49],
+                    times[94],
+                    times[98],
+                    times.len()
+                );
+            }
         }
     }
 
