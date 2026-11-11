@@ -168,6 +168,14 @@ jobs:
             node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm | Set-Content "target/windows-prepared-jit-mixed-$mode.json" -Encoding utf8
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Preserve partial Wasm benchmark reports on failure
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: wasm-benchmark-failure-${{ github.sha }}
+          path: target/windows-prepared-jit-*.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
