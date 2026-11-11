@@ -51,8 +51,11 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
           const step = steps[index++];
           const issued = performance.now();
           const key = await submit(step.text);
+          const admitted = performance.now();
+          const previous = pending.at(-1);
           pending.push({step, key, issued, schedulingMs: issued - scheduled,
-            responseMs: null, endedMs: null, outcome: null});
+            inputIntervalMs: previous ? issued - previous.issued : null,
+            admissionMs: admitted - issued, responseMs: null, endedMs: null, outcome: null});
           continue;
         }
         if (independentInput && intervalMs !== null) {
@@ -103,6 +106,8 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         failed: group.filter(record => record.outcome === 'failed').length,
         over50Ms: correct.filter(record => record.responseMs > 50).length,
         schedulingDelay: stats(group.map(record => record.schedulingMs)),
+        inputInterval: stats(group.flatMap(record => record.inputIntervalMs === null ? [] : [record.inputIntervalMs])),
+        admissionDelay: stats(group.map(record => record.admissionMs)),
         firstCorrectResponse: stats(correct.map(record => record.responseMs)),
         physicalEnd: stats(group.map(record => record.endedMs)),
       };
