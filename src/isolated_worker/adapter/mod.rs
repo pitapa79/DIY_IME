@@ -278,6 +278,7 @@ struct CodeFiles {
     locks: Vec<std::fs::File>,
     cache: ScopedCache,
     healthy: std::sync::Mutex<bool>,
+    inherited_acl: bool,
 }
 impl CodeFiles {
     fn new(
@@ -306,6 +307,8 @@ impl CodeFiles {
                     .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
             ),
             healthy: std::sync::Mutex::new(true),
+            inherited_acl: std::env::var_os("DIY_EXPERIMENT_INHERITED_CODE_ACL").as_deref()
+                == Some(std::ffi::OsStr::new("1")),
         };
         for (name, bytes) in assets {
             files
@@ -329,6 +332,16 @@ impl CodeFiles {
             .map_err(|_| fail("worker-cleanup", "runtime naming profile cleanup failed"))?;
         Ok(files)
     }
+    fn change_access(&self, profile: &Profile, allow: bool) -> Result<(), String> {
+        if self.inherited_acl {
+            self.cache
+                .change_inherited_code_access(profile, self.locks.len(), allow)
+        } else if allow {
+            self.cache.allow_read_execute(profile)
+        } else {
+            self.cache.revoke_read_execute(profile)
+        }
+    }
     fn lease<'a>(&'a self, profile: &'a Profile) -> Result<CodeLease<'a>, CoreError> {
         let mut healthy = self
             .healthy
@@ -340,7 +353,7 @@ impl CodeFiles {
                 "runtime snapshot permissions unavailable",
             ));
         }
-        if self.cache.allow_read_execute(profile).is_err() {
+        if self.change_access(profile, true).is_err() {
             *healthy = false;
             return Err(fail(
                 "worker-isolation",
@@ -389,7 +402,7 @@ impl CodeLease<'_> {
         if let Some((waiting, total)) = waiting.zip(lock_wait_us) {
             *total = total.saturating_add(elapsed_micros(waiting));
         }
-        if self.files.cache.revoke_read_execute(self.profile).is_err() {
+        if self.files.change_access(self.profile, false).is_err() {
             *healthy = false;
             return Err(fail(
                 "worker-cleanup",
@@ -1989,6 +2002,27 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         assert!(code.lease(&profile).is_err());
         std::fs::remove_dir(&path).unwrap();
+        assert!(code.lease(&profile).is_err());
+        profile.delete().unwrap();
+    }
+    #[test]
+    fn inherited_code_cache_refuses_an_extra_file() {
+        let mut code = CodeFiles::new(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            &[("node.wasm", b"synthetic code")],
+            &Arc::new(CodeBudget::default()),
+        )
+        .unwrap();
+        code.inherited_acl = true;
+        let mut profile = Profile::new().unwrap();
+        let mut lease = code.lease(&profile).unwrap();
+        lease.release().unwrap();
+        drop(lease);
+
+        let extra = code.cache.write("worker.exe", b"uncaptured file").unwrap();
+        let rejected = code.lease(&profile).is_err();
+        std::fs::remove_file(extra).unwrap();
+        assert!(rejected);
         assert!(code.lease(&profile).is_err());
         profile.delete().unwrap();
     }

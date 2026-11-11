@@ -145,6 +145,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
+      - name: Prepared JIT inherited code ACL comparison
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+          DIY_EXPERIMENT_INHERITED_CODE_ACL: '1'
+        run: |
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::code_grants_are_specific_to_each_fresh_profile_and_revocation_preserves_the_other -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-inherited-acl.json -Encoding utf8
+          exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
@@ -185,6 +194,7 @@ jobs:
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
+            target/windows-prepared-jit-inherited-acl.json
             target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json

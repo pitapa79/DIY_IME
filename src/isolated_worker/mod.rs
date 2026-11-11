@@ -206,6 +206,33 @@ impl Cache {
         private_acl(&path)?;
         Ok(path)
     }
+    fn change_inherited_code_access(
+        &self,
+        profile: &Profile,
+        expected_files: usize,
+        allow: bool,
+    ) -> Result<(), String> {
+        use std::os::windows::fs::MetadataExt;
+
+        // The caller owns read locks on every captured asset. Reject other
+        // entries before propagating the SID to existing child files.
+        let mut count = 0;
+        for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
+            let metadata = entry
+                .and_then(|entry| entry.metadata())
+                .map_err(|e| e.to_string())?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err("unexpected immutable code cache object".into());
+            }
+            count += 1;
+        }
+        if count != expected_files {
+            return Err("unexpected immutable code cache file count".into());
+        }
+        let mode = if allow { GRANT_ACCESS } else { REVOKE_ACCESS };
+        change_access_with_inheritance(&self.root, profile.sid, mode, OBJECT_INHERIT_ACE)
+    }
     /// Remove only this invocation's unique SID after its actual process ending.
     pub fn revoke_read_execute(&self, profile: &Profile) -> Result<(), String> {
         for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
@@ -322,6 +349,14 @@ fn revoke(path: &Path, sid: PSID) -> Result<(), String> {
     change_access(path, sid, REVOKE_ACCESS)
 }
 fn change_access(path: &Path, sid: PSID, mode: ACCESS_MODE) -> Result<(), String> {
+    change_access_with_inheritance(path, sid, mode, 0)
+}
+fn change_access_with_inheritance(
+    path: &Path,
+    sid: PSID,
+    mode: ACCESS_MODE,
+    inheritance: u32,
+) -> Result<(), String> {
     let name = wide(path.as_os_str());
     let mut old = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
@@ -352,7 +387,7 @@ fn change_access(path: &Path, sid: PSID, mode: ACCESS_MODE) -> Result<(), String
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         grfAccessMode: mode,
-        grfInheritance: 0,
+        grfInheritance: inheritance,
         Trustee: trustee,
     };
     let mut acl = ptr::null_mut();
