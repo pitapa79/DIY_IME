@@ -336,6 +336,15 @@ async function measure(client, spec) {
     ...(paired && preparedExperiment ? {
       preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length,
       workerCleanupUs: distribution(records.slice(1).map(r => r.workerCleanupUs)),
+      hostMinusGuestCallAndCleanupUs: distribution(records.slice(1)
+        .map(r => r.hostMinusGuestCallUs - r.workerCleanupUs)),
+      byWorkerRoute: Object.fromEntries(['prepared', 'cold'].map(route => {
+        const samples = records.slice(1).filter(r => r.preparedWorker === (route === 'prepared'));
+        return [route, {
+          count: samples.length,
+          ...(samples.length ? { hostMinusGuestCallUs: distribution(samples.map(r => r.hostMinusGuestCallUs)) } : {}),
+        }];
+      })),
     } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
