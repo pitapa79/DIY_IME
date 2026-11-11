@@ -117,6 +117,40 @@ function distribution(values) {
   const rank = p => sorted[Math.ceil(sorted.length * p) - 1];
   return { p50: rank(0.5), p95: rank(0.95), p99: rank(0.99), max: sorted.at(-1) };
 }
+function graphOverhead(trace, nodes, shape) {
+  const only = predicate => {
+    const matches = trace.events.filter(predicate);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const accepted = only(event => event.event === 'run-accepted');
+  if (!accepted) return undefined;
+  const sameRun = event => event.run === accepted.run && event.plan === accepted.plan && event.input === accepted.input;
+  const published = only(event => sameRun(event) && event.event === 'host-response-published');
+  if (!published) return undefined;
+
+  const calls = [];
+  for (const node of nodes) {
+    const ended = only(event => sameRun(event) && event.node === node.node && event.event === 'call-ended');
+    const guest = only(event => sameRun(event) && event.node === node.node && event.worker?.phase === 'guest-call')?.worker;
+    if (!ended || guest?.finishedUs === undefined) return undefined;
+    const callUs = Number(BigInt(guest.finishedUs) - BigInt(guest.startedUs));
+    const nodeUs = Number(BigInt(ended.atUs) - BigInt(node.atUs));
+    if (callUs < 0 || callUs > nodeUs) return undefined;
+    calls.push({ callUs, nodeMinusGuestCallUs: nodeUs - callUs });
+  }
+
+  const hostUs = Number(BigInt(published.atUs) - BigInt(accepted.atUs));
+  const totalGuestUs = calls.reduce((sum, call) => sum + call.callUs, 0);
+  const longestGuestUs = Math.max(...calls.map(call => call.callUs));
+  // Worker timestamps are process-local. In parallel graphs, the wall time
+  // occupied by guest calls lies between the longest call and their sum.
+  return {
+    hostUs,
+    lowerUs: Math.max(0, hostUs - totalGuestUs),
+    upperUs: hostUs - (shape === 'serial' ? totalGuestUs : longestGuestUs),
+    nodes: calls.map(call => call.nodeMinusGuestCallUs),
+  };
+}
 function ended(snapshot) {
   return snapshot.state === 'terminal' && Object.values(snapshot.physical).every(count => count === 0);
 }
@@ -312,6 +346,7 @@ async function measure(client, spec) {
         else if (complete && events.some(event => event.worker?.phase === 'guest-call')) prepared++;
       }
       record.workerRoutes = { cold, prepared, unknown: nodeCount - cold - prepared };
+      if (complete) record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
       record.trace = trace;
       await client.call({ method: 'traceStop' });
     }
@@ -331,6 +366,7 @@ async function measure(client, spec) {
   await client.call({ method: 'closeSession' });
   if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
+  const graphSamples = records.slice(1).flatMap(record => record.graphOverhead ? [record.graphOverhead] : []);
   return { ...spec, prepareMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
     ...(paired && preparedExperiment ? {
@@ -345,6 +381,16 @@ async function measure(client, spec) {
           ...(samples.length ? { hostMinusGuestCallUs: distribution(samples.map(r => r.hostMinusGuestCallUs)) } : {}),
         }];
       })),
+    } : {}),
+    ...(scenario === 'mixed' ? {
+      graphOverhead: {
+        measured: graphSamples.length,
+        ...(graphSamples.length ? {
+          lowerUs: distribution(graphSamples.map(sample => sample.lowerUs)),
+          upperUs: distribution(graphSamples.map(sample => sample.upperUs)),
+          nodeMinusGuestCallUs: distribution(graphSamples.flatMap(sample => sample.nodes)),
+        } : {}),
+      },
     } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
