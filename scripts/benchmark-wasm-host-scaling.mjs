@@ -23,6 +23,7 @@ const root = mkdtempSync(join(tempParent, 'diyime-wasm-scaling-'));
 const dataRoot = join(root, 'data'), configPath = join(root, 'host.json');
 const dictionaryBytes = Buffer.from('reading\tsurface\tweight\nこうすい\t降水\t90\n');
 const usesOfficial = scenario === 'official' || scenario === 'dictionary';
+const freshGraph = scenario === 'mixed' && process.env.DIY_WASM_SCALING_FRESH_GRAPH === '1';
 const first = readFileSync(wasm);
 const second = alternateWasm ? readFileSync(alternateWasm) : Buffer.concat([first, Buffer.from([0, 2, 1, 120])]);
 assert(!first.equals(second), 'alternate fixture must have a distinct module digest');
@@ -281,7 +282,8 @@ async function measure(client, spec) {
   const records = [];
   const paired = scenario === 'single-detailed';
   const traceEachSample = paired || scenario === 'mixed';
-  for (let revision = 1; revision <= samples + 2; revision++) {
+  const lastRevision = freshGraph ? 1 : samples + 2;
+  for (let revision = 1; revision <= lastRevision; revision++) {
     if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -372,6 +374,11 @@ async function measure(client, spec) {
     }
     records.push(record);
   }
+  if (freshGraph) {
+    await client.call({ method: 'closeSession' });
+    if (preparedExperiment) await verifyIdle(false);
+    return { ...spec, prepareMs, initialPreparation, first: records[0] };
+  }
   const profiler = new PhaseProfiler('host-detailed');
   const tracePages = [];
   let cursor = '0';
@@ -460,6 +467,7 @@ try {
   ];
   const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
     : scenario === 'single' || scenario === 'single-detailed' ? [{ count: 1, shape: 'serial' }]
+    : freshGraph ? Array.from({ length: samples }, () => ({ count: 4, shape: 'serial', mixed: true }))
     : scenario === 'mixed' ? [
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
@@ -476,9 +484,21 @@ try {
   for (const spec of selected) {
     const result = await measure(client, spec);
     scenarios.push(result);
-    console.error(JSON.stringify({ ...spec, summaryMs: result.summaryMs }));
+    console.error(JSON.stringify({ ...spec, ...(freshGraph ? { firstMs: result.first.resultMs, workerRoutes: result.first.workerRoutes } : { summaryMs: result.summaryMs }) }));
+  }
+  let freshGraphSummary;
+  if (freshGraph) {
+    const allPrepared = scenarios.filter(s => s.first.workerRoutes.prepared === s.count);
+    freshGraphSummary = {
+      attempts: scenarios.length,
+      allPrepared: allPrepared.length,
+      allInputsMs: distribution(scenarios.map(s => s.first.resultMs)),
+      ...(allPrepared.length ? { allPreparedMs: distribution(allPrepared.map(s => s.first.resultMs)) } : {}),
+    };
+    console.error(JSON.stringify({ freshGraphSummary }));
   }
   const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
+    ...(freshGraphSummary ? { freshGraphSummary } : {}),
     physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
     alternateFixtureSupplied: Boolean(alternateWasm),
     ...(usesOfficial ? { officialModuleSha256: sha(readFileSync(join(officialRoot, 'official.wasm'))) } : {}),

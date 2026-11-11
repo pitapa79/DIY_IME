@@ -212,7 +212,9 @@ jobs:
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-wide-capacity')) {
+          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-wide-capacity', 'all-stream-acl-overlap-fresh', 'all-stream-acl-overlap-fresh-no-refill')) {
+            $env:DIY_WASM_SCALING_FRESH_GRAPH = if ($mode -like '*-fresh*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_NO_JIT_REFILL = if ($mode -eq 'all-stream-acl-overlap-fresh-no-refill') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_WIDE_GRAPHS = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
             $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like 'all-stream-acl-overlap*') { '1' } else { '0' }

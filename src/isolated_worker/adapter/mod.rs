@@ -1416,7 +1416,9 @@ impl WasmNode {
                         };
                         // An input replacement cancels this invocation without withdrawing
                         // the plan grant. Refill only after its Worker has settled.
-                        if (response.is_ok() || cancel.is_cancelled())
+                        if std::env::var_os("DIY_EXPERIMENT_NO_JIT_REFILL").as_deref()
+                            != Some(std::ffi::OsStr::new("1"))
+                            && (response.is_ok() || cancel.is_cancelled())
                             && let Some(slot) = node.prepared_jit_slot(invocation.context().node_id)
                             && node.gate.publish(&lease, key, || ()).is_ok()
                         {
