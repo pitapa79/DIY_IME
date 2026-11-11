@@ -370,12 +370,18 @@ pub(super) struct JitDelivery {
 impl<'a> WorkerScope<'a> {
     pub(super) fn with_jit_delivery(
         mut self,
+        module: Option<Arc<[u8]>>,
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
     ) -> Self {
         let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
         self.jit_run_cancel = Some(run_cancellation.clone());
         self.exchange = Some(Box::new(move |mut output, mut input| {
+            if let Some(module) = module {
+                input
+                    .write_all(&module)
+                    .map_err(|_| "JIT module pipe closed")?;
+            }
             let mut ready = [0; super::runtime::JIT_READY.len()];
             output
                 .read_exact(&mut ready)

@@ -161,6 +161,22 @@ jobs:
         run: |
           node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-image-section.json -Encoding utf8
           exit $LASTEXITCODE
+      - name: Prepared JIT streamed module comparison
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+          DIY_EXPERIMENT_JIT_STREAM_MODULE: '1'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result | Set-Content target/windows-prepared-jit-streamed-module.json -Encoding utf8
+          $scenario = ($result | ConvertFrom-Json).scenarios[0]
+          if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Streamed JIT module run incomplete' }
+          @{preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
       - name: Prepared JIT spare capacity comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
@@ -216,6 +232,7 @@ jobs:
             target/windows-prepared-jit-latency.json
             target/windows-prepared-jit-inherited-acl.json
             target/windows-prepared-jit-image-section.json
+            target/windows-prepared-jit-streamed-module.json
             target/windows-prepared-jit-spares-*.json
             target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json

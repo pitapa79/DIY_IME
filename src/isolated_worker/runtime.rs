@@ -1,6 +1,7 @@
 //! Pinned Wasmtime50.0.1 full x64 C API. Host worker and developer probe entrypoints.
 use super::worker_trace::Recorder;
 use crate::execution_control::WorkerTracePhase;
+pub(super) const MAX_STREAMED_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
 #[derive(Clone)]
 struct Limits {
@@ -75,6 +76,8 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
         let mode = if flag == "--compile-official" {
             ModuleMode::Compile
+        } else if flag == "--prepare-jit-pipe-v1" {
+            ModuleMode::JitPipe
         } else if flag == "--resource-ranges-v1" {
             ModuleMode::ResourceRanges
         } else if flag == "--build-resources-v1" {
@@ -732,6 +735,7 @@ fn create_engine_configured(
 mod compiled_module_probe;
 enum ModuleMode {
     Jit { acknowledge_preparation: bool },
+    JitPipe,
     ResourceRanges,
     ResourceBuild,
     Compile,
@@ -767,16 +771,30 @@ fn run(
     drop(dll_phase);
     let module_phase = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
     let limit = expected_module.unwrap_or(64 * 1024 * 1024);
-    let mut module = Vec::new();
-    std::fs::File::open(&args[1])
-        .map_err(|e| format!("module open: {e}"))?
-        .take((limit as u64).saturating_add(1))
-        .read_to_end(&mut module)
-        .map_err(|_| "module read failed")?;
+    let streamed = matches!(mode, ModuleMode::JitPipe);
+    let mut module = if streamed {
+        let length = expected_module
+            .filter(|&n| (1..=MAX_STREAMED_MODULE_BYTES).contains(&n))
+            .ok_or("invalid streamed module length")?;
+        let mut bytes = vec![0; length];
+        std::io::stdin()
+            .lock()
+            .read_exact(&mut bytes)
+            .map_err(|_| "module pipe closed before full payload")?;
+        bytes
+    } else {
+        let mut bytes = Vec::new();
+        std::fs::File::open(&args[1])
+            .map_err(|e| format!("module open: {e}"))?
+            .take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|_| "module read failed")?;
+        bytes
+    };
     if module.len() > limit || expected_module.is_some_and(|n| n != module.len()) {
         return Err("module size mismatch".into());
     }
-    if Path::new(&args[1]).extension().is_some_and(|e| e == "wat") {
+    if !streamed && Path::new(&args[1]).extension().is_some_and(|e| e == "wat") {
         let mut bytes = Bytes {
             size: 0,
             data: ptr::null_mut(),
@@ -845,12 +863,14 @@ fn run(
     }
     // Prepare only the Module and Store. Instantiation can run guest start code
     // and must wait for the Host-owned input.
-    let prepared_jit = if let ModuleMode::Jit {
-        acknowledge_preparation,
-    } = mode
-    {
+    let prepared_jit = if matches!(mode, ModuleMode::Jit { .. } | ModuleMode::JitPipe) {
         let prepared = Runtime::prepare_jit(&api, &module, &limits, diagnostics)?;
-        if acknowledge_preparation {
+        if matches!(
+            mode,
+            ModuleMode::Jit {
+                acknowledge_preparation: true
+            } | ModuleMode::JitPipe
+        ) {
             use std::io::Write;
             let mut output = std::io::stdout().lock();
             output
@@ -878,7 +898,7 @@ fn run(
     };
     drop(input_phase);
     let mut guest = match mode {
-        ModuleMode::Jit { .. } => {
+        ModuleMode::Jit { .. } | ModuleMode::JitPipe => {
             if input.is_empty() {
                 return Err("empty request before guest instantiation".into());
             }
@@ -1074,6 +1094,7 @@ fn real_jit_preparation_acknowledges_before_input() {
             ..RunControl::default()
         };
         let scope = WorkerScope::prepared(&profile, &job, &cache).with_jit_delivery(
+            None,
             move || {
                 ready.send(()).map_err(|error| error.to_string())?;
                 receive

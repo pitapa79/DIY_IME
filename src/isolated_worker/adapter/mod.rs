@@ -819,28 +819,44 @@ impl WasmArtifact {
                 "Worker image and request transport differ",
             ));
         }
+        let stream_module = matches!(image, WorkerImage::Jit)
+            && (1..=super::runtime::MAX_STREAMED_MODULE_BYTES).contains(&self.0.module.len())
+            && std::env::var_os("DIY_EXPERIMENT_JIT_STREAM_MODULE").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
+            WorkerImage::Jit if stream_module => (
+                None,
+                "-",
+                self.0.module.len(),
+                Some("--prepare-jit-pipe-v1".into()),
+            ),
             WorkerImage::Jit => (
-                self.module_code_files()?,
+                Some(self.module_code_files()?),
                 "node.wasm",
                 self.0.module.len(),
                 Some("--prepare-jit-v1".into()),
             ),
             WorkerImage::Compile => (
-                self.module_code_files()?,
+                Some(self.module_code_files()?),
                 "node.wasm",
                 self.0.module.len(),
                 Some("--compile-official".into()),
             ),
             WorkerImage::Reuse(files, len, digest) => (
-                files,
+                Some(files),
                 "node.cwasm",
                 len,
                 Some(format!("--compiled-official={digest}")),
             ),
         };
-        let mut module_lease = module_files.lease(&profile)?;
-        let module = module_files.cache.path().join(module_name);
+        let mut module_lease = module_files
+            .as_ref()
+            .map(|files| files.lease(&profile))
+            .transpose()?;
+        let module = module_files.as_ref().map_or_else(
+            || OsString::from(module_name),
+            |files| files.cache.path().join(module_name).into_os_string(),
+        );
         let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
             .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
         let option =
@@ -850,7 +866,7 @@ impl WasmArtifact {
             .map(OsString::from)
             .chain([
                 dll.into_os_string(),
-                module.into_os_string(),
+                module,
                 OsString::from(module_len.to_string()),
                 option(self.0.policy.fuel_per_call),
                 option(self.0.policy.wasm_memory_bytes),
@@ -880,7 +896,11 @@ impl WasmArtifact {
         );
         let (scope, bytes) = match request {
             WorkerRequest::Jit { request, .. } => (
-                scope.with_jit_delivery(request, control.cancel.clone()),
+                scope.with_jit_delivery(
+                    stream_module.then(|| self.0.module.clone()),
+                    request,
+                    control.cancel.clone(),
+                ),
                 Vec::new(),
             ),
             WorkerRequest::Immediate(bytes) => (scope, bytes),
@@ -922,7 +942,9 @@ impl WasmArtifact {
         let cleanup_started = std::time::Instant::now();
         drop(job);
         let job_close_us = measure_cleanup.then(|| elapsed_micros(cleanup_started));
-        module_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
+        if let Some(mut lease) = module_lease.take() {
+            lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
+        }
         drop(module_lease);
         runtime_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
         drop(runtime_lease);
