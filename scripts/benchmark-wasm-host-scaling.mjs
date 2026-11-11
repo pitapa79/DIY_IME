@@ -390,6 +390,36 @@ async function measure(client, spec) {
     cursor = page.events.at(-1).sequence;
   }
   await client.call({ method: 'traceStop' });
+  let refillWithoutResultRead;
+  if (paired && preparedExperiment && process.env.DIY_EXPERIMENT_REFILL_AFTER_GRAPH === '1') {
+    // Keep this probe outside the measured samples. No getRun is issued until
+    // the previous physical owner ended and a new spare has started.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await client.call({ method: 'traceStartDetailed' });
+    const text = 'refill-without-result-read';
+    const key = await submit(text, lastRevision + 1);
+    const deadline = performance.now() + 5000;
+    for (;;) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
+      assert(!trace.events.some(event => event.event === 'host-response-published'));
+      if (trace.events.some(event => event.event === 'physical-ended')) {
+        assert.equal(trace.dropped, 0, 'refill probe trace lost events');
+        assert(!trace.events.some(event => event.event === 'worker-process-started'),
+          'refill probe must consume the previously prepared Worker');
+        const status = await client.call({ method: 'status' });
+        if (status.workerProcesses > 0 && status.physical.physicalJobs > 0) {
+          refillWithoutResultRead = true;
+          break;
+        }
+      }
+      assert(performance.now() < deadline, 'prepared Worker was not refilled without getRun');
+    }
+    const snapshot = await read(key);
+    assert(ended(snapshot));
+    verify(snapshot, targets, text);
+    await client.call({ method: 'traceStop' });
+  }
   await client.call({ method: 'closeSession' });
   if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
@@ -421,7 +451,8 @@ async function measure(client, spec) {
         } : {}),
       },
     } : {}),
-    records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
+    records, diagnostic, phases: profiler.summary, tracePages, refillWithoutResultRead,
+    ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
 let client;
 try {
