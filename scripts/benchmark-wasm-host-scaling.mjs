@@ -190,12 +190,13 @@ async function measure(client, spec) {
   }
   const active = await client.call({ method: 'activate', reviewId: review.reviewId });
   assert.equal(active.phase, 'ready');
-  const prepareMs = performance.now() - prepareStart;
+  const activatedAt = performance.now();
+  const prepareMs = activatedAt - prepareStart;
+  const firstInputDelayMs = process.env.DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE === '1' ? 0 : 200;
   let initialPreparation;
-  if (preparedExperiment) {
-    // Give the single-use experimental Worker time to finish preparation.
-    // This delay models time between plan activation and the first input.
-    await new Promise(resolve => setTimeout(resolve, 200));
+  if (preparedExperiment && firstInputDelayMs > 0) {
+    // Model a delay between plan activation and the first input.
+    await new Promise(resolve => setTimeout(resolve, firstInputDelayMs));
     const status = await client.call({ method: 'status' });
     assert.equal(status.physical.physicalJobs, spareLimit);
     assert(status.workerProcesses <= spareLimit, 'started workers exceed reserved spares');
@@ -306,6 +307,7 @@ async function measure(client, spec) {
     verify(snapshot, targets, expected);
     await verifyIdle(preparedExperiment);
     const record = { admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start };
+    if (revision === 1) record.activationToInputMs = start - activatedAt;
     if (paired && revision < samples + 2) {
       const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
       assert.equal(trace.dropped, 0);

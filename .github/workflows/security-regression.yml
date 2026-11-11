@@ -140,7 +140,7 @@ jobs:
           $report = $result | ConvertFrom-Json
           $scenario = $report.scenarios[0]
           if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
-          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
+          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs;firstInput=@{activationToInputMs=$scenario.first.activationToInputMs;preparedWorker=$scenario.first.preparedWorker;hostMinusGuestCallUs=$scenario.first.hostMinusGuestCallUs}} | ConvertTo-Json -Depth 4
           node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single | Set-Content target/windows-prepared-jit-response.json -Encoding utf8
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
@@ -167,6 +167,7 @@ jobs:
           foreach ($mode in @('streamed-module', 'streamed-module-inherited-acl', 'streamed-module-overlap-cleanup')) {
             $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = if ($mode -eq 'streamed-module') { '0' } else { '1' }
             $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -eq 'streamed-module-overlap-cleanup') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE = $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP
             if ($env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP -eq '1') {
               cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -176,7 +177,7 @@ jobs:
             $result | Set-Content "target/windows-prepared-jit-$mode.json" -Encoding utf8
             $scenario = ($result | ConvertFrom-Json).scenarios[0]
             if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Streamed JIT module run incomplete' }
-            @{mode=$mode;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
+            @{mode=$mode;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs;firstInput=@{activationToInputMs=$scenario.first.activationToInputMs;preparedWorker=$scenario.first.preparedWorker;hostMinusGuestCallUs=$scenario.first.hostMinusGuestCallUs}} | ConvertTo-Json -Depth 4
           }
       - name: Prepared JIT spare capacity comparison
         run: |
