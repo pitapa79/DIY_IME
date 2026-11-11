@@ -1402,6 +1402,17 @@ impl WasmNode {
                             match prepared.try_dispatch(
                                 JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()) },
                                 Some((&invocation, &completion)),
+                                || {
+                                    if std::env::var_os("DIY_EXPERIMENT_EARLY_JIT_REFILL").as_deref()
+                                        == Some(std::ffi::OsStr::new("1"))
+                                        && let Some(slot) = node.prepared_jit_slot(invocation.context().node_id)
+                                        && node.gate.publish(&lease, key, || ()).is_ok()
+                                    {
+                                        // Dispatch already transferred the active reservation.
+                                        // Refill must acquire its own bounded physical slot.
+                                        slot.refill(&node.artifact);
+                                    }
+                                },
                             ) {
                                 PreparedDispatch::Settled(result) => {
                                     node.artifact.0.requests.fetch_add(1, Ordering::AcqRel);
@@ -1585,6 +1596,7 @@ impl PreparedJitOwner {
         mut self,
         delivery: JitDelivery,
         execution: Option<(&OwnedInvocation, &CompletionPermit)>,
+        after_dispatch: impl FnOnce(),
     ) -> PreparedDispatch {
         if let Some((invocation, completion)) = execution {
             if completion.key() != invocation.key() {
@@ -1610,6 +1622,7 @@ impl PreparedJitOwner {
         if let Err(error) = self.input.take().unwrap().send(delivery) {
             return PreparedDispatch::Undelivered(error.0);
         }
+        after_dispatch();
         PreparedDispatch::Settled(
             self.worker
                 .take()
@@ -1625,7 +1638,7 @@ impl PreparedJitOwner {
         delivery: JitDelivery,
         execution: Option<(&OwnedInvocation, &CompletionPermit)>,
     ) -> Result<Vec<u8>, CoreError> {
-        match self.try_dispatch(delivery, execution) {
+        match self.try_dispatch(delivery, execution, || ()) {
             PreparedDispatch::Settled(result) => result,
             PreparedDispatch::Undelivered(_) => Err(fail(
                 "worker-request",
@@ -1777,6 +1790,7 @@ mod tests {
                 run_cancel: None,
             },
             None,
+            || panic!("undelivered input cannot trigger refill"),
         );
         let PreparedDispatch::Undelivered(unsent) = unsent else {
             panic!("an ended Worker cannot accept input");
