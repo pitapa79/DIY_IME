@@ -212,15 +212,16 @@ jobs:
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap')) {
+          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-wide-capacity')) {
             $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_WIDE_GRAPHS = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
-            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -eq 'all-stream-acl-overlap') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like 'all-stream-acl-overlap*') { '1' } else { '0' }
+            $physicalSlots = if ($mode -eq 'all-stream-acl-overlap-wide-capacity') { 18 } else { 6 }
             $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
             $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '0') { '0' } else { 'all' }
             $env:DIY_EXPERIMENT_PREPARED_JIT_WAIT = if ($mode -eq 'all-wait') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-mixed-$mode.json"
-            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-mixed-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-mixed-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 $physicalSlots mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing mixed graph report ($mode)" }
           }
