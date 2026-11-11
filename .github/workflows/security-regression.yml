@@ -134,31 +134,22 @@ jobs:
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
         run: |
-          cargo build --locked --release --features worker-exit-probe --bin diy-ime2-wasm-worker
+          $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $workers = [ordered]@{
-            'worker-exit' = 'target/release/diy-ime2-wasm-worker.exe'
-            latency = 'target/windows-app/bin/diy-ime2-wasm-worker.exe'
-            'deferred-refill' = 'target/windows-app/bin/diy-ime2-wasm-worker.exe'
-          }
-          foreach ($variant in $workers.Keys) {
-            $env:DIY_EXPERIMENT_PREPARED_JIT_DEFER_REFILL = if ($variant -eq 'deferred-refill') { '1' } else { '0' }
-            $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $workers[$variant] target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $result | Set-Content "target/windows-prepared-jit-$variant.json" -Encoding utf8
-            $report = $result | ConvertFrom-Json
-            $scenario = $report.scenarios[0]
-            if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw "Incomplete Prepared JIT run ($variant)" }
-            @{variant=$variant;samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
-          }
+          $result | Set-Content target/windows-prepared-jit-latency.json -Encoding utf8
+          $report = $result | ConvertFrom-Json
+          $scenario = $report.scenarios[0]
+          if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
+          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs} | ConvertTo-Json -Depth 4
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single | Set-Content target/windows-prepared-jit-response.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
       - name: Prepared JIT fixed-cadence comparison
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
-          foreach ($mode in @('1', 'all', 'all-deferred-refill', 'all-private-runtime')) {
+          foreach ($mode in @('1', 'all', 'all-private-runtime')) {
             $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '1') { '1' } else { 'all' }
-            $env:DIY_EXPERIMENT_PREPARED_JIT_DEFER_REFILL = if ($mode -eq 'all-deferred-refill') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_PREPARED_JIT_PRIVATE_RUNTIME = if ($mode -eq 'all-private-runtime') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-paced-$mode.json"
             python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-paced-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
@@ -170,12 +161,11 @@ jobs:
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($mode in @('0', 'all', 'all-wait', 'all-eight-slots', 'all-private-runtime')) {
+          foreach ($mode in @('0', 'all', 'all-wait', 'all-private-runtime')) {
             $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '0') { '0' } else { 'all' }
             $env:DIY_EXPERIMENT_PREPARED_JIT_WAIT = if ($mode -eq 'all-wait') { '1' } else { '0' }
             $env:DIY_EXPERIMENT_PREPARED_JIT_PRIVATE_RUNTIME = if ($mode -eq 'all-private-runtime') { '1' } else { '0' }
-            $slots = if ($mode -eq 'all-eight-slots') { 8 } else { 6 }
-            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 $slots mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm | Set-Content "target/windows-prepared-jit-mixed-$mode.json" -Encoding utf8
+            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm | Set-Content "target/windows-prepared-jit-mixed-$mode.json" -Encoding utf8
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Preserve verified Windows application
@@ -189,8 +179,7 @@ jobs:
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
             target/windows-prepared-jit-latency.json
-            target/windows-prepared-jit-worker-exit.json
-            target/windows-prepared-jit-deferred-refill.json
+            target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
           if-no-files-found: error

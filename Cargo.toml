@@ -9,7 +9,6 @@ description = "DIY_IME2 の文章候補データと変換エンジン"
 [features]
 # Matched control builds for the local Windows distribution comparison.
 compiled-module-jit-baseline = []
-worker-exit-probe = []
 resource-integration-probe = []
 
 [[example]]
