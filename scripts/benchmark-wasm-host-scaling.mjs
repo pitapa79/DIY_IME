@@ -338,7 +338,15 @@ async function measure(client, spec) {
       await client.call({ method: 'traceStop' });
     } else if (traceEachSample && revision < samples + 2) {
       const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
-      const complete = trace.dropped === 0 && trace.events.length < 256;
+      let page = trace;
+      while (page.events.length === 256) {
+        const after = page.events.at(-1).sequence;
+        ({ trace: page } = await client.call({ method: 'traceRead', after, limit: 256 }));
+        assert(page.events.every(event => BigInt(event.sequence) > BigInt(after)), 'trace cursor did not advance');
+        trace.events.push(...page.events);
+        trace.dropped = Math.max(trace.dropped, page.dropped);
+      }
+      const complete = trace.dropped === 0;
       const nodes = trace.events.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
       if (complete) assert.equal(nodes.length, nodeCount, 'mixed graph did not execute every Wasm node');
       let cold = 0, prepared = 0;
@@ -350,7 +358,7 @@ async function measure(client, spec) {
       record.workerRoutes = { cold, prepared, unknown: nodeCount - cold - prepared };
       // A missing unrelated event does not invalidate the timing anchors. Each
       // fixture node has one invocation and every expected node must be present.
-      if (trace.events.length < 256 && new Set(nodes.map(node => node.node)).size === nodeCount
+      if (new Set(nodes.map(node => node.node)).size === nodeCount
           && nodes.length === nodeCount) {
         record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
       }
@@ -451,6 +459,10 @@ try {
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
         { count: 4, shape: 'parallel', mixed: true }, { count: 2, shape: 'join', mixed: true },
+        ...(process.env.DIY_WASM_SCALING_WIDE_GRAPHS === '1' ? [
+          { count: 8, shape: 'serial', mixed: true }, { count: 16, shape: 'serial', mixed: true },
+          { count: 1, shape: 'serial', unused: 15 },
+        ] : []),
       ]
     : scenario === 'paced' ? [1, 4].map(count => ({ count, shape: 'serial' })) : scenario === 'official'
     ? [...[1, 4].flatMap(count => [{ count, shape: 'serial' }, { count, shape: 'serial', official: true }]),
