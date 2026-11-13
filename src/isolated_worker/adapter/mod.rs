@@ -1285,6 +1285,7 @@ impl WasmNode {
         ids: Vec<String>,
         limit: usize,
         refill_controller: Option<GuardedController>,
+        scope_cancel: CancellationToken,
     ) -> Option<Arc<PreparedJitSlot>> {
         if !self.can_prepare_jit() || host.policy().max_physical_jobs < 2 {
             return None;
@@ -1295,6 +1296,7 @@ impl WasmNode {
             capacity: limit.min(host.policy().max_physical_jobs.saturating_sub(1) as usize),
             host: host.clone(),
             refill_controller,
+            scope_cancel,
         });
         slot.refill(&self.artifact);
         self.prepared_jit
@@ -1308,8 +1310,8 @@ impl WasmNode {
         let slot = self.prepared_jit_slot(id)?;
         let mut owners = slot.owners.lock().unwrap_or_else(|p| p.into_inner());
         let ready = owners
-            .iter()
-            .position(|worker| worker.is_running() && worker.ready.try_recv().is_ok());
+            .iter_mut()
+            .position(|worker| worker.observe_ready(Duration::ZERO));
         if let Some(index) = ready {
             return Some(owners.remove(index));
         }
@@ -1321,10 +1323,9 @@ impl WasmNode {
         // A short grace period can avoid a full cold launch when a replacement
         // is already compiling. An unfinished owner remains available on timeout.
         let index = owners.iter().position(PreparedJitOwner::is_running)?;
-        owners[index]
-            .ready
-            .recv_timeout(Duration::from_millis(3))
-            .ok()?;
+        if !owners[index].observe_ready(Duration::from_millis(3)) {
+            return None;
+        }
         Some(owners.remove(index))
     }
 
@@ -1505,9 +1506,40 @@ pub(in crate::isolated_worker) struct PreparedJitSlot {
     capacity: usize,
     host: ExecutionHost,
     refill_controller: Option<GuardedController>,
+    scope_cancel: CancellationToken,
 }
 
 impl PreparedJitSlot {
+    pub(in crate::isolated_worker) fn wait_ready(
+        &self,
+        cancel: &CancellationToken,
+        deadline: std::time::Instant,
+    ) -> Result<bool, CoreError> {
+        loop {
+            if cancel.is_cancelled() {
+                return Err(fail("worker-cancelled", "JIT preparation cancelled"));
+            }
+            let ready = {
+                let mut owners = self.owners.lock().unwrap_or_else(|p| p.into_inner());
+                // Missing reservations cannot become ready by waiting. Leave
+                // the ordinary cold path available under resource contention.
+                if owners.len() != self.capacity {
+                    return Ok(false);
+                }
+                owners
+                    .iter_mut()
+                    .all(|owner| owner.observe_ready(Duration::ZERO))
+            };
+            if ready {
+                return Ok(true);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn wait_for_graph_cleanup(
         controller: &GuardedController,
         key: &crate::execution_control::RunKey,
@@ -1529,10 +1561,15 @@ impl PreparedJitSlot {
     }
 
     fn refill(&self, artifact: &WasmArtifact) {
+        if self.scope_cancel.is_cancelled() {
+            return;
+        }
         let mut owners = self.owners.lock().unwrap_or_else(|p| p.into_inner());
         owners.retain(PreparedJitOwner::is_running);
         while owners.len() < self.capacity {
-            let Ok(owner) = PreparedJitOwner::start(&self.host, artifact.clone()) else {
+            let Ok(owner) =
+                PreparedJitOwner::start_scoped(&self.host, artifact.clone(), &self.scope_cancel)
+            else {
                 break;
             };
             owners.push(owner);
@@ -1543,6 +1580,7 @@ impl PreparedJitSlot {
 struct PreparedJitOwner {
     input: Option<std::sync::mpsc::SyncSender<JitDelivery>>,
     ready: std::sync::mpsc::Receiver<()>,
+    ready_seen: bool,
     cancel: CancellationToken,
     worker: Option<std::thread::JoinHandle<Result<Vec<u8>, CoreError>>>,
     trace: Arc<std::sync::OnceLock<OwnedInvocation>>,
@@ -1556,13 +1594,39 @@ enum PreparedDispatch {
 }
 
 impl PreparedJitOwner {
+    fn observe_ready(&mut self, timeout: Duration) -> bool {
+        if !self.is_running() {
+            return false;
+        }
+        if !self.ready_seen {
+            self.ready_seen = if timeout.is_zero() {
+                self.ready.try_recv().is_ok()
+            } else {
+                self.ready.recv_timeout(timeout).is_ok()
+            };
+        }
+        self.ready_seen && self.is_running()
+    }
+
     fn is_running(&self) -> bool {
         self.worker
             .as_ref()
             .is_some_and(|thread| !thread.is_finished())
     }
+    #[cfg(test)]
     fn start(host: &ExecutionHost, artifact: WasmArtifact) -> Result<Self, CoreError> {
+        Self::start_scoped(host, artifact, &CancellationToken::default())
+    }
+
+    fn start_scoped(
+        host: &ExecutionHost,
+        artifact: WasmArtifact,
+        scope: &CancellationToken,
+    ) -> Result<Self, CoreError> {
         use std::sync::mpsc;
+        if scope.is_cancelled() {
+            return Err(fail("worker-cancelled", "JIT plan scope withdrawn"));
+        }
         let slot = host.try_reserve(ResourceUsage {
             physical_jobs: 1,
             ..ResourceUsage::default()
@@ -1571,7 +1635,7 @@ impl PreparedJitOwner {
         let worker_reservation = reservation.clone();
         let (notify, ready) = mpsc::sync_channel(1);
         let (input, receive) = mpsc::sync_channel(1);
-        let cancel = CancellationToken::default();
+        let cancel = scope.scoped_child();
         let stop = cancel.clone();
         let trace = Arc::new(std::sync::OnceLock::new());
         let worker_trace = trace.clone();
@@ -1618,6 +1682,7 @@ impl PreparedJitOwner {
         Ok(Self {
             input: Some(input),
             ready,
+            ready_seen: false,
             cancel,
             worker: Some(worker),
             trace,
@@ -1721,8 +1786,12 @@ mod tests {
             },
         )
         .unwrap();
-        let owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
-        owner.ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+        if let Err(error) = owner.ready.recv_timeout(Duration::from_secs(5)) {
+            owner.cancel.cancel();
+            let result = owner.worker.take().unwrap().join();
+            panic!("prepared Worker readiness failed: {error:?}; worker: {result:?}");
+        }
         assert_eq!(artifact.active_processes(), 1);
         assert_eq!(host.usage().physical_jobs, 1);
         let second = match PreparedJitOwner::start(&host, artifact.clone()) {
@@ -1887,19 +1956,48 @@ mod tests {
         pool_policy.max_physical_jobs = 2;
         let pool_host = ExecutionHost::new("prepared-jit-shared-instances", pool_policy).unwrap();
         let slot = node
-            .prepare_jit_slot(&pool_host, vec!["first".into(), "second".into()], 1, None)
+            .prepare_jit_slot(
+                &pool_host,
+                vec!["first".into(), "second".into()],
+                1,
+                None,
+                CancellationToken::default(),
+            )
             .unwrap();
+        let cancelled_wait = CancellationToken::default();
+        cancelled_wait.cancel();
+        assert_eq!(
+            slot.wait_ready(&cancelled_wait, std::time::Instant::now())
+                .unwrap_err()
+                .code,
+            "worker-cancelled"
+        );
+        assert!(
+            slot.wait_ready(
+                &CancellationToken::default(),
+                std::time::Instant::now() + Duration::from_secs(5)
+            )
+            .unwrap()
+        );
+        assert!(
+            slot.wait_ready(&CancellationToken::default(), std::time::Instant::now())
+                .unwrap()
+        );
         assert!(other_plan.prepared_jit_slot("second").is_none());
         assert!(node.take_prepared_jit("unrelated").is_none());
         for id in ["second", "first"] {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            let owner = loop {
+            let mut owner = loop {
                 if let Some(owner) = node.take_prepared_jit(id) {
                     break owner;
                 }
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(1));
             };
+            // Activation may have observed the one-shot acknowledgement.
+            // Repeated observation must not consume the available Worker.
+            assert!(owner.observe_ready(Duration::ZERO));
+            assert!(owner.observe_ready(Duration::ZERO));
             assert_eq!(pool_host.usage().physical_jobs, 1);
             assert!(node.take_prepared_jit("first").is_none());
             assert!(node.take_prepared_jit("second").is_none());
@@ -1927,6 +2025,83 @@ mod tests {
         }
         drop(slot);
         assert!(node.prepared_jit_slot("first").is_none());
+
+        let waiting = node
+            .prepare_jit_slot(
+                &pool_host,
+                vec!["waiting".into()],
+                1,
+                None,
+                CancellationToken::default(),
+            )
+            .unwrap();
+        // Delay the parent's notification after the actual isolated process
+        // has reached its input-free ready point. No guest input is supplied.
+        let (_delayed_notice, delayed) = mpsc::sync_channel(1);
+        {
+            let mut owners = waiting.owners.lock().unwrap();
+            owners[0]
+                .ready
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            owners[0].ready = delayed;
+        }
+        assert!(
+            !waiting
+                .wait_ready(&CancellationToken::default(), std::time::Instant::now())
+                .unwrap()
+        );
+        let cancel_wait = CancellationToken::default();
+        let stop_wait = cancel_wait.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            stop_wait.cancel();
+        });
+        assert_eq!(
+            waiting
+                .wait_ready(
+                    &cancel_wait,
+                    std::time::Instant::now() + Duration::from_secs(5)
+                )
+                .unwrap_err()
+                .code,
+            "worker-cancelled"
+        );
+        cancel_thread.join().unwrap();
+        // A readiness timeout/cancel is not an original-process exit receipt.
+        assert_eq!(artifact.active_processes(), 1);
+        assert_eq!(pool_host.usage().physical_jobs, 1);
+        drop(waiting);
+        assert_eq!(artifact.active_processes(), 0);
+        assert_eq!(pool_host.usage().physical_jobs, 0);
+
+        let scope = CancellationToken::default();
+        let scoped = node
+            .prepare_jit_slot(&pool_host, vec!["scoped".into()], 1, None, scope.clone())
+            .unwrap();
+        assert!(
+            scoped
+                .wait_ready(
+                    &CancellationToken::default(),
+                    std::time::Instant::now() + Duration::from_secs(5)
+                )
+                .unwrap()
+        );
+        scope.cancel();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while artifact.active_processes() != 0 || pool_host.usage().physical_jobs != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "withdrawn plan retained an input-free process or reservation"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Stop does not depend on taking the slot, polling Host status or
+        // dropping the plan's inventory. Withdrawal also prevents refilling.
+        scoped.refill(&artifact);
+        assert_eq!(artifact.active_processes(), 0);
+        assert_eq!(pool_host.usage().physical_jobs, 0);
+        drop(scoped);
     }
 
     #[test]

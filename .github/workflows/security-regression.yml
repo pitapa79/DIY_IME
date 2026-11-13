@@ -252,6 +252,21 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
+      - name: Immediate input after activation readiness comparison
+        run: |
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_FRESH_GRAPH = '1'
+          $env:DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE = '1'
+          foreach ($ready in @('0', '1')) {
+            $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = $ready
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-activation-$ready.json"
+            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 30 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Preserve partial Wasm benchmark reports on failure
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -278,6 +293,7 @@ jobs:
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
             target/windows-prepared-jit-image-*.json
+            target/windows-prepared-jit-activation-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

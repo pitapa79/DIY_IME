@@ -159,9 +159,11 @@ async function measure(client, spec) {
   if (review.missing.length) {
     await client.call({ method: 'approve', reviewId: review.reviewId, ids: review.missing.map(x => x.id), save: false });
   }
+  const activationStarted = performance.now();
   const active = await client.call({ method: 'activate', reviewId: review.reviewId });
   assert.equal(active.phase, 'ready');
   const activatedAt = performance.now();
+  const activationMs = activatedAt - activationStarted;
   const prepareMs = activatedAt - prepareStart;
   const firstInputDelayMs = process.env.DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE === '1' ? 0 : 200;
   let initialPreparation;
@@ -245,7 +247,7 @@ async function measure(client, spec) {
     await verifyIdle(preparedExperiment);
     await client.call({ method: 'closeSession' });
     if (preparedExperiment) await verifyIdle(false);
-    return { ...spec, prepareMs, initialPreparation, independentInput, pacing };
+    return { ...spec, prepareMs, activationMs, initialPreparation, independentInput, pacing };
   }
   const records = [];
   const paired = scenario === 'single-detailed';
@@ -346,7 +348,7 @@ async function measure(client, spec) {
   if (freshGraph) {
     await client.call({ method: 'closeSession' });
     if (preparedExperiment) await verifyIdle(false);
-    return { ...spec, prepareMs, initialPreparation, first: records[0] };
+    return { ...spec, prepareMs, activationMs, initialPreparation, first: records[0] };
   }
   const profiler = new PhaseProfiler('host-detailed');
   const tracePages = [];
@@ -364,7 +366,7 @@ async function measure(client, spec) {
   const diagnostic = records.pop();
   const measuredGraphs = records.slice(1).filter(record => record.graphOverhead);
   const graphSamples = measuredGraphs.map(record => record.graphOverhead);
-  return { ...spec, prepareMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
+  return { ...spec, prepareMs, activationMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
     ...(paired && preparedExperiment ? {
       preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length,
@@ -464,6 +466,8 @@ try {
     freshGraphSummary = {
       attempts: scenarios.length,
       allPrepared: allPrepared.length,
+      preparationMs: distribution(scenarios.map(s => s.prepareMs)),
+      activationMs: distribution(scenarios.map(s => s.activationMs)),
       allInputsMs: distribution(scenarios.map(s => s.first.resultMs)),
       ...(allPrepared.length ? { allPreparedMs: distribution(allPrepared.map(s => s.first.resultMs)) } : {}),
     };

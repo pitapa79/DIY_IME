@@ -937,7 +937,11 @@ impl Runner {
                     .as_ref()
                     .map(|proof| pending.session.retained_stages(proof))
                     .transpose()?;
-                let transactional = pending.evidence.official.is_some()
+                let wait_for_jit = std::env::var_os("DIY_EXPERIMENT_JIT_ACTIVATION_READY")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
+                let transactional = wait_for_jit
+                    || pending.evidence.official.is_some()
                     || self
                         .session
                         .as_ref()
@@ -988,10 +992,26 @@ impl Runner {
                             } else {
                                 jit_limit
                             };
-                            node.prepare_jit_slot(&self.host, ids, limit, refill_controller.clone())
+                            node.prepare_jit_slot(
+                                &self.host,
+                                ids,
+                                limit,
+                                refill_controller.clone(),
+                                cancel.clone(),
+                            )
                         })
                         .collect(),
                 };
+                if wait_for_jit {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    for slot in &new._prepared_jit {
+                        // No policy lock is held while waiting. The binding's
+                        // cancellation token is also withdrawn on revocation.
+                        // A readiness timeout keeps the normal cold fallback.
+                        let _ = slot.wait_ready(&cancel, deadline)?;
+                        new.session.controller().control_state()?;
+                    }
+                }
                 if transactional {
                     // Order cancellation acceptance and the commit. Do not hold
                     // this lock while dropping the old process/Session owner.
