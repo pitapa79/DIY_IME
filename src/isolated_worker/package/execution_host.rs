@@ -963,6 +963,13 @@ impl Runner {
                     == Some(std::ffi::OsStr::new("1")))
                 .then(|| session.controller().clone());
                 let jit_groups = jit_candidates.len();
+                let jit_spares = jit_candidates
+                    .iter()
+                    .map(|(ids, _)| ids.len())
+                    .sum::<usize>()
+                    .min(jit_nodes)
+                    .saturating_mul(jit_limit)
+                    .min(self.host.policy().max_physical_jobs.saturating_sub(1) as usize);
                 let new = ActivePlan {
                     session,
                     evidence: pending.evidence,
@@ -971,14 +978,13 @@ impl Runner {
                         .into_iter()
                         .enumerate()
                         .filter_map(|(index, (ids, node))| {
-                            let spares =
-                                self.host.policy().max_physical_jobs.saturating_sub(1) as usize;
                             let limit = if pooled_jit {
                                 // Divide a bounded inventory among implementations, not
                                 // graph positions. Every actual process still reserves
                                 // its physical slot before starting and is used once.
-                                (spares / jit_groups + usize::from(index < spares % jit_groups))
-                                    .max(1)
+                                (jit_spares / jit_groups
+                                    + usize::from(index < jit_spares % jit_groups))
+                                .max(1)
                             } else {
                                 jit_limit
                             };

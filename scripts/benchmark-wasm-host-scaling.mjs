@@ -171,7 +171,7 @@ async function measure(client, spec) {
   const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
   const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
-    && physicalSlots >= 2 && ['single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
+    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
   const eligibleNodes = nodeCount + (spec.unused ?? 0);
   // Activation has no run targets yet, so unused eligible nodes can reserve spares.
@@ -281,7 +281,7 @@ async function measure(client, spec) {
   }
   const records = [];
   const paired = scenario === 'single-detailed';
-  const traceEachSample = paired || scenario === 'mixed';
+  const traceEachSample = paired || scenario === 'mixed' || (preparedExperiment && scenario === 'all');
   const lastRevision = freshGraph ? 1 : samples + 2;
   for (let revision = 1; revision <= lastRevision; revision++) {
     if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
