@@ -109,7 +109,11 @@ Core内の単調時計を使い、記録開始からのµsを10進文字列で�
 
 Workerは固定12区間の開始/退出だけを記録する。計測対象全体、DLL読込、module読込、stdin読込、Engine/Store準備、compile、instantiate、ゲスト呼出準備、diyime_call、応答の取出し、stdoutの送信/flush、Runtime後片付け。入力サイズや本文・出力・設定・path・自由文は含めない。最大24個の固定長frameと8-byte版ヘッダー（248 bytes）で、4096-byte pipe bufferを満たさない。Parent側も4096 bytesに制限し、超過分は保存せずEOFまで排出する。診断EOFは処理完了の証明にならず、OS process handleの終了確認後にreaderをjoinしてから既存の実終了所有権を返す。
 
-取得する `worker-interval` の `atUs` は**Hostが受信記録を採用した時刻**。`worker: {instance, phase, startedUs, finishedUs?}` はWorker自身の単調時計を起点としたµs文字列であり、Hostの時間軸に足し合わせない。Worker時計の起点は隔離確認と引数解析を終えた計測開始で、OSプロセスの生成時刻/初期化完了ではない。実終了後に右側の「Worker内部（相対時刻）」へ専用の棒と開始/退出/所要msを表示する。未退出は所要時間を補間せず「退出未取得」とする。正常なscope退出も成功やOS終了を意味しない。
+取得する `worker-interval` の `atUs` は**Hostが受信記録を採用した時刻**。`worker: {instance, phase, startedUs, finishedUs?}` はWorker自身の単調時計を起点としたµs文字列であり、Hostの時間軸に足し合わせない。Worker時計の起点は隔離確認と引数解析を終えた計測開始で、OSプロセスの生成時刻/初期化完了ではない。入力前に起動した単回Workerでは、入力の配送時に詳細記録を指定した時点が起点となる。入力前のDLL読込・Module/Engine準備・compileは未観測として残し、開始/退出を後から生成しない。`main` は実際の計測対象区間であり、これをprocess全生存期間と扱わない。実終了後に右側の「Worker内部（相対時刻）」へ専用の棒と開始/退出/所要msを表示する。未退出は所要時間を補間せず「退出未取得」とする。正常なscope退出も成功やOS終了を意味しない。
+
+単回Workerの詳細記録は、信頼済みNativeの入力controlで有効にした場合だけ、既存stdout通信の私的なフレームへ返す。OFFでは診断pipe・追加reader thread・Worker計測時計・診断bufferを作らない。ONでもguest応答の8MiB上限は変えず、そのバイト列をJSON再変換せず取り出す。診断部分は従来の4096byte上限内で別に検査し、欠落・不正・上限超過をguest応答の補完や成功判定に使わない。診断回収を含むIO、元processの実終了、ACL/profile等の回収が終わるまで結果採用を進めない。通常の未準備Workerは従来の明示的な詳細記録pipeを使える。
+
+単回Workerが異常終了・取消等で私的フレームを返せなかった場合、内部工程は欠測になる。受信しなかった開始・退出・0秒の工程を生成しない。失敗や取消自体はCore/Hostの状態と元processの終了確認で判断し、診断欠落を正常終了の証拠にしない。
 
 instanceはHostが当該run/Node内の呼出順に付ける1〜20,000の記録内番号で、PIDやhandleではない。continuationごとの新規processを区別し、別runの同じ番号を同一processとは扱わない。未知phase、重複、逆行、開始のない退出、余分なframe、部分frameを拒否し、取消等で開始だけが残った区間は未完のまま保持する。停止・消去・保護・新しい記録開始で旧ticketは無効となる。ゲスト自己申告の内部工程は含めない。
 

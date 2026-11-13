@@ -485,6 +485,8 @@ try {
     console.error(JSON.stringify({ freshGraphSummary }));
   }
   const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
+    requestedPreparedDiagnostics: process.env.DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS === '1'
+      ? 'legacy-pipe-at-preparation' : 'input-selected-inline',
     ...(freshGraphSummary ? { freshGraphSummary } : {}),
     physicalSlots, samples, moduleSha256: modules.map(sha), moduleCodeSha256, hostSha256: sha(readFileSync(host)),
     alternateFixtureSupplied: Boolean(alternateWasm),

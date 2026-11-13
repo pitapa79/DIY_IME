@@ -47,6 +47,8 @@ try {
   $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
   & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Prepared JIT ownership regression'}
+  & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Deferred Native diagnostic transport regression'}
   & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
@@ -99,6 +101,8 @@ try {
   $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
   & $Cargo test --locked --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Prepared JIT production Worker lifecycle failed'}
+  & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Deferred Native diagnostic transport production Worker failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::retained::tests::real_core_skipped_suffix -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Retained coordinator actual Core Skipped suffix integration failed'}
  } finally {

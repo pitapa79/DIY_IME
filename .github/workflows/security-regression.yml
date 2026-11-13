@@ -319,6 +319,28 @@ jobs:
               if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing compiled cache report ($cache / $scenario)" }
             }
           }
+      - name: Prepared diagnostic delivery comparison
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $trial = 0
+          foreach ($legacy in @('1', '0', '0', '1')) {
+            $trial++
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            foreach ($scenario in @('single', 'single-detailed')) {
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-diagnostics-$trial-legacy-$legacy-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-diagnostics-$trial-legacy-$legacy-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 100 2 $scenario
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing diagnostic delivery report ($trial / $scenario)" }
+            }
+          }
       - name: Immediate input after activation readiness comparison
         if: matrix.segment == 'prepared'
         run: |
@@ -364,6 +386,7 @@ jobs:
             target/windows-prepared-jit-cache-*.json
             target/windows-prepared-jit-compiled-native.json
             target/windows-prepared-jit-activation-*.json
+            target/windows-prepared-jit-diagnostics-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

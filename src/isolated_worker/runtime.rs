@@ -86,6 +86,50 @@ fn private_runtime_bootstrap_rejects_invalid_and_aliased_handles_before_loading(
         assert!(error.contains("invalid"), "unexpected rejection: {error}");
     }
 }
+#[test]
+fn deferred_bootstrap_rejects_nonprepared_modes_and_a_diagnostic_handle() {
+    for flag in [
+        "--compile-jit-v1",
+        "--compile-official",
+        "--resource-ranges-v1",
+    ] {
+        let args = [
+            flag,
+            "runtime",
+            "module",
+            "1",
+            "none",
+            "none",
+            "--deferred-diagnostics-v1",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+        assert!(
+            worker_with_args(args)
+                .unwrap_err()
+                .contains("require single-use JIT")
+        );
+    }
+    let args = [
+        "--prepare-jit-v1",
+        "runtime",
+        "module",
+        "1",
+        "none",
+        "none",
+        "--deferred-diagnostics-v1",
+        "--diagnostics=123",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect();
+    assert!(
+        worker_with_args(args)
+            .unwrap_err()
+            .contains("cannot inherit")
+    );
+}
 
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args
@@ -94,7 +138,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     {
         return retained_module::run(&args[1..]);
     }
-    let (args, mode) = {
+    let (mut args, mode) = {
         let mut args = args;
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
         let mode = if flag == "--compile-official" {
@@ -128,6 +172,22 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         }
         (args, mode)
     };
+    let deferred_diagnostics = args
+        .get(5)
+        .is_some_and(|arg| arg == "--deferred-diagnostics-v1");
+    if deferred_diagnostics {
+        args.remove(5);
+        if !matches!(
+            mode,
+            ModuleMode::Jit {
+                acknowledge_preparation: true
+            } | ModuleMode::JitPipe
+                | ModuleMode::PreparedCompiled(_)
+                | ModuleMode::PreparedCompiledPipe(_)
+        ) {
+            return Err("deferred diagnostics require single-use JIT delivery".into());
+        }
+    }
     if args.len() != 5 && args.len() != 6 {
         return Err("expected runtime module module-length fuel memory".into());
     }
@@ -183,14 +243,21 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             .and_then(|arg| arg.strip_prefix("--diagnostics="))
             .and_then(|value| value.parse::<usize>().ok())
     };
-    let diagnostics = diagnostic_handle
-        .filter(|handle| *handle != 0 && *handle != usize::MAX)
-        .map(|handle| {
-            use std::os::windows::io::FromRawHandle;
-            Recorder::new(unsafe {
-                std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void)
+    if deferred_diagnostics && diagnostic_handle.is_some_and(|handle| handle != 0) {
+        return Err("deferred diagnostics cannot inherit a diagnostic handle".into());
+    }
+    let diagnostics = if deferred_diagnostics {
+        Some(Recorder::deferred())
+    } else {
+        diagnostic_handle
+            .filter(|handle| *handle != 0 && *handle != usize::MAX)
+            .map(|handle| {
+                use std::os::windows::io::FromRawHandle;
+                Recorder::new(unsafe {
+                    std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void)
+                })
             })
-        });
+    };
     run(
         vec![args[0].clone(), args[1].clone(), "-".into()],
         Limits {
@@ -986,6 +1053,26 @@ fn run(
     } else {
         None
     };
+    // This byte belongs only to the trusted Native bootstrap, not guest JSON.
+    // No startup clock/metadata was collected by a deferred recorder. Enable
+    // only for this invocation; never reconstruct unobserved preparation spans.
+    let inline_diagnostics = if let Some(recorder) = diagnostics.filter(|d| d.is_deferred()) {
+        let mut control = [0];
+        std::io::stdin()
+            .lock()
+            .read_exact(&mut control)
+            .map_err(|_| "Worker diagnostic control truncated")?;
+        match control[0] {
+            0 => false,
+            1 => {
+                recorder.enable_inline();
+                true
+            }
+            _ => return Err("invalid Worker diagnostic control".into()),
+        }
+    } else {
+        false
+    };
     let input_phase = diagnostics.map(|d| d.span(WorkerTracePhase::InputRead));
     let input = if args[2] == "-" {
         let mut bytes = Vec::new();
@@ -1030,8 +1117,26 @@ fn run(
         let reply = guest.invoke(&input)?;
         let _write = diagnostics.map(|d| d.span(WorkerTracePhase::ReplyWrite));
         let mut output = std::io::stdout().lock();
+        if inline_diagnostics {
+            output
+                .write_all(
+                    &u32::try_from(reply.len())
+                        .map_err(|_| "reply frame size overflow")?
+                        .to_le_bytes(),
+                )
+                .map_err(|_| "reply frame failed")?;
+        }
         output.write_all(&reply).map_err(|_| "reply pipe failed")?;
         output.flush().map_err(|_| "reply pipe failed")?;
+        if inline_diagnostics {
+            drop(_write);
+            drop(guest); // actual Runtime destruction is included in received metadata
+            if let Some(bytes) = diagnostics.and_then(Recorder::finish_inline) {
+                // Diagnostics loss must not turn a complete exact guest reply
+                // into execution failure. Parent still requires OS exit/cleanup.
+                let _ = output.write_all(&bytes).and_then(|()| output.flush());
+            }
+        }
         return Ok(());
     }
     let requests = if input.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
@@ -1138,6 +1243,15 @@ fn real_jit_compiler_fallback() {
 #[test]
 #[ignore = "requires a real Windows AppContainer and pinned Wasmtime DLL"]
 fn real_jit_preparation_acknowledges_before_input() {
+    check_jit_preparation_acknowledges_before_input(false);
+}
+#[test]
+#[ignore = "requires a real Windows AppContainer and pinned Wasmtime DLL"]
+fn real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe() {
+    check_jit_preparation_acknowledges_before_input(true);
+}
+#[cfg(test)]
+fn check_jit_preparation_acknowledges_before_input(deferred: bool) {
     use super::pipe::{WorkerScope, execute_observed};
     use super::{Cache, EndReason, Job, Outcome, Profile, RunControl};
     use crate::execution_control::{ExecutionHost, ResourcePolicy, ResourceUsage};
@@ -1164,7 +1278,7 @@ fn real_jit_preparation_acknowledges_before_input() {
         (func (export "diyime_release_reply")))"#;
     let module = cache.write("fixture.wat", wat).unwrap();
     naming_profile.delete().unwrap();
-    let args = [
+    let mut args = vec![
         OsString::from("--prepare-jit-v1"),
         runtime.into_os_string(),
         module.into_os_string(),
@@ -1172,13 +1286,19 @@ fn real_jit_preparation_acknowledges_before_input() {
         "10000".into(),
         "1048576".into(),
     ];
+    if deferred {
+        args.push("--deferred-diagnostics-v1".into());
+    }
     let repeats = if std::env::var_os("DIY_MEASURE_PREPARED_JIT").is_some() {
         101
     } else {
         1
     };
     let mut samples = Vec::new();
-    for deliver in std::iter::once(false).chain(std::iter::repeat_n(true, repeats)) {
+    let cases = std::iter::once((false, false))
+        .chain(std::iter::repeat_n((true, false), repeats))
+        .chain(deferred.then_some((true, true)));
+    for (deliver, detailed) in cases {
         let slot = host
             .try_reserve(ResourceUsage {
                 physical_jobs: 1,
@@ -1211,6 +1331,7 @@ fn real_jit_preparation_acknowledges_before_input() {
                     .map(|bytes| super::pipe::JitDelivery {
                         bytes,
                         run_cancel: None,
+                        detailed,
                         check: Some(Box::new(move || {
                             deliver
                                 .then_some(())
@@ -1220,6 +1341,7 @@ fn real_jit_preparation_acknowledges_before_input() {
                     .map_err(|error| error.to_string())
             },
             control.cancel.clone(),
+            deferred,
         );
         let Outcome::Exited(receipt) =
             execute_observed(scope, &executable, &args, vec![], &control).unwrap()
@@ -1236,6 +1358,33 @@ fn real_jit_preparation_acknowledges_before_input() {
                 receipt.output().map(String::from_utf8_lossy)
             );
             assert_eq!(receipt.output().unwrap(), b"{}");
+            if detailed {
+                let bytes = receipt.diagnostics().unwrap().as_ref().unwrap();
+                let intervals = super::worker_trace::decode(bytes).unwrap();
+                for expected in [
+                    WorkerTracePhase::Main,
+                    WorkerTracePhase::InputRead,
+                    WorkerTracePhase::Instantiate,
+                    WorkerTracePhase::GuestCall,
+                    WorkerTracePhase::Cleanup,
+                ] {
+                    assert!(
+                        intervals
+                            .iter()
+                            .any(|phase| phase.phase == expected && phase.end.is_some())
+                    );
+                }
+                for absent in [
+                    WorkerTracePhase::DllLoad,
+                    WorkerTracePhase::ModuleRead,
+                    WorkerTracePhase::EngineSetup,
+                    WorkerTracePhase::Compile,
+                ] {
+                    assert!(!intervals.iter().any(|phase| phase.phase == absent));
+                }
+            } else {
+                assert!(receipt.diagnostics().is_none());
+            }
         } else {
             assert_ne!(receipt.exit_code(), Some(0));
             assert!(!receipt.input_delivered());
@@ -1307,7 +1456,7 @@ fn real_jit_preparation_acknowledges_before_input() {
         super::adapter::remove_asset(&cache.path().join(file)).unwrap();
     }
     std::fs::remove_dir(cache.path()).unwrap();
-    if repeats > 1 {
+    if repeats > 1 && !deferred {
         for (index, phase) in ["dispatch-to-exit-confirmed", "dispatch-to-recovered"]
             .into_iter()
             .enumerate()

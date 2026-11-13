@@ -148,7 +148,9 @@ pub fn execute_preparation<'a>(
         if result.is_err() {
             ranges.withdraw();
         }
-        result.map_err(|_| "Worker preparation exchange failed".into())
+        result
+            .map(super::ExchangeOutput::plain)
+            .map_err(|_| "Worker preparation exchange failed".into())
     });
     let outcome = execute_observed(
         WorkerScope {

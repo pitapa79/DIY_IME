@@ -699,6 +699,7 @@ impl WasmArtifact {
                         bytes,
                         check: delivery,
                         run_cancel: None,
+                        detailed: false,
                     })
                 }),
                 trace: None,
@@ -962,7 +963,7 @@ impl WasmArtifact {
             .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
         let option =
             |n: Option<u64>| OsString::from(n.map_or_else(|| "none".to_owned(), |n| n.to_string()));
-        let args: Vec<_> = flag
+        let mut args: Vec<_> = flag
             .into_iter()
             .map(OsString::from)
             .chain([
@@ -987,8 +988,15 @@ impl WasmArtifact {
             WorkerRequest::Jit { trace, .. } => trace.clone(),
             WorkerRequest::Immediate(_) => None,
         };
-        let detailed = deferred_trace.is_some()
+        let legacy_prepared_diagnostics = deferred_trace.is_some()
+            && std::env::var_os("DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+        let detailed = legacy_prepared_diagnostics
             || invocation.is_some_and(OwnedInvocation::host_trace_is_detailed);
+        let deferred_diagnostics = deferred_trace.is_some() && !legacy_prepared_diagnostics;
+        if deferred_diagnostics {
+            args.push("--deferred-diagnostics-v1".into());
+        }
         let scope = super::pipe::WorkerScope::observed(
             &profile,
             &job,
@@ -998,7 +1006,12 @@ impl WasmArtifact {
         .with_verified_runtime(verified_runtime);
         let (scope, bytes) = match request {
             WorkerRequest::Jit { request, .. } => (
-                scope.with_jit_delivery(streamed_bytes, request, control.cancel.clone()),
+                scope.with_jit_delivery(
+                    streamed_bytes,
+                    request,
+                    control.cancel.clone(),
+                    deferred_diagnostics,
+                ),
                 Vec::new(),
             ),
             WorkerRequest::Immediate(bytes) => (scope, bytes),
@@ -1576,7 +1589,7 @@ impl WasmNode {
                             let bytes = serde_json::to_vec(&request)
                                 .map_err(|_| fail("worker-request", "request serialization failed"))?;
                             match prepared.try_dispatch(
-                                JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()) },
+                                JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()), detailed: false },
                                 Some((&invocation, &completion)),
                             ) {
                                 PreparedDispatch::Settled(result) => {
@@ -1862,7 +1875,7 @@ impl PreparedJitOwner {
 
     fn try_dispatch(
         mut self,
-        delivery: JitDelivery,
+        mut delivery: JitDelivery,
         execution: Option<(&OwnedInvocation, &CompletionPermit)>,
     ) -> PreparedDispatch {
         if let Some((invocation, completion)) = execution {
@@ -1885,6 +1898,7 @@ impl PreparedJitOwner {
             if invocation.host_trace_is_detailed() {
                 let _ = self.trace.set(invocation.clone());
             }
+            delivery.detailed = invocation.host_trace_is_detailed();
         }
         if let Err(error) = self.input.take().unwrap().send(delivery) {
             return PreparedDispatch::Undelivered(error.0);
@@ -2006,6 +2020,7 @@ mod tests {
             bytes: b"{}".to_vec(),
             check,
             run_cancel: None,
+            detailed: false,
         };
         for expected_settled in [2, 3] {
             let before = artifact.0.code_budget.used.load(Ordering::Acquire);
@@ -2030,7 +2045,9 @@ mod tests {
                     before + temporary
                 );
             }
-            let bytes = owner.dispatch(delivery(None), None).unwrap();
+            let mut input = delivery(None);
+            input.detailed = expected_settled == 3;
+            let bytes = owner.dispatch(input, None).unwrap();
             assert_eq!(wire::reply(&bytes).unwrap()["value"], 1);
             assert_eq!(artifact.timings().settled_calls, expected_settled);
             assert_eq!(artifact.active_processes(), 0);
@@ -2263,6 +2280,7 @@ mod tests {
                     .unwrap(),
                     check: Some(Box::new(|| Ok(()))),
                     run_cancel: None,
+                    detailed: false,
                 },
                 None,
             )
@@ -2305,6 +2323,7 @@ mod tests {
                         .map_err(|error| error.to_string())
                 })),
                 run_cancel: None,
+                detailed: false,
             },
             None,
         );
@@ -2342,6 +2361,7 @@ mod tests {
                 bytes: b"not dispatched".to_vec(),
                 check: None,
                 run_cancel: None,
+                detailed: false,
             },
             None,
         );
@@ -2369,6 +2389,7 @@ mod tests {
                     notify.send(()).map_err(|error| error.to_string())
                 })),
                 run_cancel: Some(run_cancel.clone()),
+                detailed: false,
             })
             .map_err(|_| "prepared Worker stopped before delivery")
             .unwrap();
@@ -2465,6 +2486,7 @@ mod tests {
                         .unwrap(),
                         check: Some(Box::new(|| Ok(()))),
                         run_cancel: None,
+                        detailed: false,
                     },
                     None,
                 )

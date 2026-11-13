@@ -243,7 +243,7 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
         if result.is_err() {
             cancel.cancel();
         }
-        result
+        result.map(super::ExchangeOutput::plain)
     });
     let deadline = request.reservation.inner.deadline;
     let (activity, process_id) = observation.map_or((None, None), |value| {

@@ -388,3 +388,32 @@ Host SHA `94bccc06e2a1dfc539e758939de4c414d82debb4288f9728939cab82602f463c`、Wo
 Host SHA `95f3c95a996ef403cc814a881c5eaeb515ab0d99c481b147a10e569662fef216`、Worker `27934c4b85e669c2e128905d82f8799d4da97e7e32bd8e1d59a68d0730d2dfec`。全moduleのcode節SHAは同じ `6899f503843ebd604755ce2cb2d3bc70a8ad88c865734e9eac45f1de4cd62fa2` で、異種実コードの証拠ではない。レポートSHAは順に `9f97bf60c0e102cbecc49c35c19a8bdbb33539dd595d128053768f0f4aa96bf7`、`4c3ba372eebe170f9a7882dc83a3b13439ede57be107c11b0e02ff7f8924d80d`、`b17aad9635ee7174944997b7461fa4aa20a65029748f06e12816d4a06c58dbe3`、`e8f681064b8dc51a6d864d6f71d4263a9a2a18adabff61ab914c48ec5154118e`。保存した候補patchのSHAは `cca79686aafaaa55105e1c5ed4d25653a96244e74b81a06b7bea78c93e363744`。
 
 c651a0fのCI [43471554069](https://github.com/pitapa79/DIY_IME/actions/runs/43471554069) のruntime-cache segmentは既存のservice fault検査で失敗した。意図的なcontrol thread panicの拒否自体は通ったが、停止通知の直後、threadが最後のArcを解放する前に再接続してservice-faultになっていた。検査は生存中の旧ownerに対する拒否を維持し、既存の有界待ちでWeakの失効を確認してから新serviceを作る。製品のfault・再接続方針や待ち時間の上限は変更しない。
+
+### 分割後の必須CIと入力時選択の診断（2026-11-14）
+
+ad7ce24の [CI 43474360689](https://github.com/pitapa79/DIY_IME/actions/runs/43474360689) はprepared/runtime-cache両Windows segmentと必須集約checkがすべて成功した。テスト対象のmerge sourceは43f7a042a85f298cacc4fd05e2228030b8a2192a。prepared archiveのSHAは `1bf9350444cd404a095dfbd0baa1be19c3c067bb49c27881d26950bec4544366`、runtime-cacheは `1a132fb30b382cd203ffc18958453abc3c7fc897027a4bf7c68a9413fd2fc465`。JSONをそれぞれ24,783,023 / 41,359,390 bytes保存した。2つのrunnerの分布を同一条件の一組として混ぜない。
+
+runtime-cache segment内の同一binary/moduleによるcache0→1は、単段150件の基盤P95/P99が9.561/11.399→8.467/113.178ms、prepared150→147/150だった。異種直列2段のNode ready→resolvedから同一guest callを除いたP95/P99は208.315/267.437→7.711/65.920ms、4段は123.823/192.172→19.118/1450.232ms、8段は55.825/630.577→69.929/734.616ms、16段は57.144/172.278→50.296/214.122ms。並列の完全計測6→9/10、合流10→9/10。同じWasm2段はP95が9.439→70.585ms、未使用15個を含む単段は7.267→29.305msへ悪化した。合格CIを性能目標の合格にしない。
+
+同じ実装4段・各245入力で100ms正答125→184、20msは双方35、逐次は双方245。単段20msは91→110/245。受付拒否/failedは0で、残りはsuperseded。混合Job CPU54.484→29.938秒、peak commit130,396,160→136,024,064 bytes、paced CPU239.594→130.875秒、peak142,364,672→123,801,600 bytes。これらも逐次・固定間隔・資源・失効を分離して扱う。
+
+canary artifactから既定/opt-level2の実Wasmを取得し、source receiptと全module hashを確認した。code節SHAは `6899f503843ebd604755ce2cb2d3bc70a8ad88c865734e9eac45f1de4cd62fa2` / `5e196cc6571232ff3d2080ce36ef0b5eb015f75d6c4a1bd5e65609d045361a7f` で異なる。canary archive SHA `9906fc846a78472ffefcd63b953b932feeb1d3a788faf8e9f43f63697d6fb032`。custom sectionだけの別名とは区別できる。
+
+その後の変更は、prepared Workerの入力配送時に詳細記録の要否をNative controlで渡し、ONの場合だけ既存stdoutの私的フレームへ診断を返す方式。OFFの常設診断FD/reader thread/Worker計測時計/bufferを除去し、guest JSON/ABIを変えずに最大8MiBの応答原文を取り出す。診断は別の4096byte上限を維持し、確保失敗・不正・上限超過は欠測とする。未観測のstartupは再構成しない。元process/IO/Job/ACL/profileと現在の許可・入力世代の条件は維持する。内部比較control `DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS=1` だけで旧常設pipe方式を選べる。
+
+同一Host/Workerの旧→新→新→旧ABBA、単段・物理2枠・各25件の局所比較を行った。逐次要求の間には100ms待機し、固定100ms間隔の連続入力とは区別する。preparedall/pooled/verified-runtime/compiled/stream/inherited-ACL/overlapは1。全正答、run物理所有ゼロ、session終了後のprocess/予約ゼロを確認した。
+
+| 配送順 | OFF総応答P95 / P99 ms | ON同一guest call除外の基盤P95 / P99 ms | OFF Job CPU ms | ON Job CPU ms |
+| --- | --- | --- | --- | --- |
+| 1 旧 | 29.913 / 175.644 | 31.588 / 3189.871 | 5109.375 | 5031.250 |
+| 2 新 | 197.767 / 377.469 | 19.375 / 21.809 | 6093.750 | 4937.500 |
+| 3 新 | 78.899 / 971.846 | 21.755 / 22.010 | 5312.500 | 4718.750 |
+| 4 旧 | 271.236 / 287.662 | 23.486 / 46.719 | 5218.750 | 5093.750 |
+
+OFFではguest区間を測っていないため独立した別計測のguest分布を引かず、総応答のまま示す。OFFの速度改善は一貫せず、新方式の初回応答にも243.629/1249.719msを要した。ONのpreparedは24/25→25/25→25/25→25/25。新ONの回収P95は12.155/14.191msで、これだけでも大きな残差がある。Job CPU/peak commitは導入・準備・終了を含む全子processの費用であり、1入力のCPU時間ではない。ONの改善例をGoal達成やOFFの改善保証にしない。
+
+比較時Host SHA `dff56357e1ca152c805fb907c40b0bbb892ca833f9b611f7300138c9a14f4ca5`、Worker `fa4b010fe7f0d7627bbf6820ed2ed9351b87460ca59ea86434e2bf1445f261a8`。OFF report SHA（順番通り）は `3842f64b7c85623937ab95afec51daf595cf5f9e68a149496035387e4ee12466`、`8a27ab487732105081443cb383e73ea4cb01240eb6813f800dcf40c74448e1a6`、`6ea2a763e9fa71f4aec7bb89afdd3797e5548e61a254db1138111cdc5731fab1`、`c8ec56a49f798b1cce2ef225d685d9ac8ec044dde406c6c219905f16f4f331d7`。ONは `c259fc38cef062056c528074042749bb3f7e45ee613756b952a61f719ee58cc9`、`73450a2c67b3c03f4c3131153fcd54ddc391b39dc17b33e47d7908d7b12996c2`、`bbbbc89738c0072471fc503dc1a4810d1a131f36af7a8de169222ffd3e228e48`、`1e683ac19a4aa80a39511f6c9a4f6089a277da5847031b0ff77a792f51bb8821`。計測後に確保失敗の明示処理を追加して再検査したため、このbinaryの時刻を最終版の実測と読み替えない。
+
+異なる実コードを使う新方式の局所結合検査も実施した。2/4/8/16直列・4並列・合流・未使用Nodeを含む9構成、各5件で45/45グラフの同一試行計測、正答と元process/資源回収を確認したが、Node基盤P95は異種4段130.204ms、並列788.639ms、合流1128.456ms、16段92.141ms等で未達。Job CPU39.375秒、peak commit184,487,936 bytes。JSON SHA `34777d4e419d9197a7b78341dcd72f9d600c9f083e8205fd17a16c88c5faa1ed`。5件ではGoalの尾部の合否を判断しない。
+
+OFF無時計/無buffer、実測済み工程だけの開始/退出、停止後の再開拒否、上限と欠測、応答原文/重複keyの保持、truncation/過大応答/過大診断、bootstrapの不正mode/handle拒否を検査する。実WorkerのOFF/ON/配送拒否と、compiled file/pipeの単回状態・取消・元process/資源回収も検査する。Core単体は109成功/9失敗/33ignoreで、9失敗はこのWin10の必須WinHTTP option195/OS12009による既存のplatform不一致。必須設定・fixture・待ち上限を緩めず、最新のCIで別途確認する。

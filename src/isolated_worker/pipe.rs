@@ -12,6 +12,8 @@ use std::{
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
 const OUTPUT_LIMIT_ERROR: &str = "Worker output exceeds wire limit";
+#[cfg(test)]
+mod deferred_tests;
 #[cfg(target_arch = "x86_64")]
 mod preparation;
 #[cfg(target_arch = "x86_64")]
@@ -155,7 +157,7 @@ pub struct Running<'a> {
     _cache: &'a Cache,
     process: OwnedHandle,
     process_id: u32,
-    output: Option<thread::JoinHandle<Result<Vec<u8>, String>>>,
+    output: Option<thread::JoinHandle<Result<ExchangeOutput, String>>>,
     input: Option<thread::JoinHandle<Result<(), String>>>,
     diagnostics: Option<thread::JoinHandle<Result<Vec<u8>, ()>>>,
     diagnostics_requested: bool,
@@ -198,13 +200,17 @@ impl<'a> Running<'a> {
             None
         };
         let output = self.output.take().map_or_else(
-            || Ok(Vec::new()),
+            || Ok(ExchangeOutput::plain(Vec::new())),
             |t| {
                 t.join()
                     .map_err(|_| "Worker reader panicked".to_owned())
                     .and_then(|r| r)
             },
         );
+        let (output, inline_diagnostics) = match output {
+            Ok(output) => (Ok(output.bytes), output.diagnostics),
+            Err(error) => (Err(error), None),
+        };
         let input = self.input.take().map_or_else(
             || {
                 if self.exchange_used && output.is_err() {
@@ -219,12 +225,15 @@ impl<'a> Running<'a> {
                     .and_then(|r| r)
             },
         );
-        let diagnostics = self.diagnostics_requested.then(|| {
-            self.diagnostics
-                .take()
-                .ok_or(())
-                .and_then(|t| t.join().map_err(|_| ()).and_then(|r| r))
-        });
+        let diagnostics = self
+            .diagnostics_requested
+            .then(|| {
+                self.diagnostics
+                    .take()
+                    .ok_or(())
+                    .and_then(|t| t.join().map_err(|_| ()).and_then(|r| r))
+            })
+            .or(inline_diagnostics);
         if self.observed {
             self.activity
                 .as_ref()
@@ -361,12 +370,52 @@ pub(super) struct WorkerScope<'a> {
     #[cfg(test)]
     prepared: bool,
 }
-type HostExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
+struct ExchangeOutput {
+    bytes: Vec<u8>,
+    diagnostics: Option<Result<Vec<u8>, ()>>,
+}
+impl ExchangeOutput {
+    fn plain(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            diagnostics: None,
+        }
+    }
+}
+fn read_inline_reply(mut output: impl Read) -> Result<ExchangeOutput, String> {
+    let mut length = [0; 4];
+    output
+        .read_exact(&mut length)
+        .map_err(|_| "Worker reply frame truncated")?;
+    let length = u32::from_le_bytes(length) as usize;
+    if length > WIRE_LIMIT {
+        return Err(OUTPUT_LIMIT_ERROR.into());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| "Worker reply buffer unavailable")?;
+    bytes.resize(length, 0);
+    output
+        .read_exact(&mut bytes)
+        .map_err(|_| "Worker reply body truncated")?;
+    // Only the Native Worker frames this private transport. The exact guest
+    // wire (including duplicate keys) is untouched. Bad/missing metadata cannot
+    // replace, enlarge or invalidate an otherwise complete guest reply.
+    let diagnostics = Some(super::worker_trace::read(output));
+    Ok(ExchangeOutput { bytes, diagnostics })
+}
+type HostExchange =
+    Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<ExchangeOutput, String> + Send>;
+#[cfg(test)]
+type PlainExchange =
+    Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
 pub(super) struct JitDelivery {
     pub bytes: Vec<u8>,
     pub check: Option<JitDeliveryCheck>,
     pub run_cancel: Option<CancellationToken>,
+    pub detailed: bool,
 }
 impl<'a> WorkerScope<'a> {
     pub(super) fn with_verified_runtime(
@@ -381,6 +430,7 @@ impl<'a> WorkerScope<'a> {
         module: Option<Arc<[u8]>>,
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
+        deferred_diagnostics: bool,
     ) -> Self {
         let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
         self.jit_run_cancel = Some(run_cancellation.clone());
@@ -404,6 +454,7 @@ impl<'a> WorkerScope<'a> {
                 bytes,
                 check,
                 run_cancel,
+                detailed,
             } = request()?;
             if let Some(token) = run_cancel {
                 let _ = run_cancellation.set(token);
@@ -421,10 +472,18 @@ impl<'a> WorkerScope<'a> {
             {
                 return Err("JIT input cancelled before delivery".into());
             }
+            if deferred_diagnostics {
+                input
+                    .write_all(&[u8::from(detailed)])
+                    .map_err(|_| "Worker control pipe failed")?;
+            }
             input
                 .write_all(&bytes)
                 .map_err(|_| "Worker input pipe failed")?;
             drop(input);
+            if deferred_diagnostics && detailed {
+                return read_inline_reply(output);
+            }
             let mut bytes = Vec::new();
             match output.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes) {
                 Ok(_) => (),
@@ -434,7 +493,7 @@ impl<'a> WorkerScope<'a> {
             if bytes.len() > WIRE_LIMIT {
                 return Err(OUTPUT_LIMIT_ERROR.into());
             }
-            Ok(bytes)
+            Ok(ExchangeOutput::plain(bytes))
         }));
         self
     }
@@ -482,8 +541,10 @@ impl<'a> WorkerScope<'a> {
         self
     }
     #[cfg(test)]
-    pub(super) fn with_test_exchange(mut self, exchange: HostExchange) -> Self {
-        self.exchange = Some(exchange);
+    pub(super) fn with_test_exchange(mut self, exchange: PlainExchange) -> Self {
+        self.exchange = Some(Box::new(move |output, input| {
+            exchange(output, input).map(ExchangeOutput::plain)
+        }));
         self
     }
 }
@@ -563,7 +624,9 @@ pub fn execute_resources<'a>(
         if result.is_err() {
             session.withdraw();
         }
-        result.map_err(|_| "Worker resource exchange failed".into())
+        result
+            .map(ExchangeOutput::plain)
+            .map_err(|_| "Worker resource exchange failed".into())
     });
     execute_observed(
         WorkerScope {
@@ -938,8 +1001,8 @@ pub(super) fn execute_with_diagnostics<'a>(
                 return Err(OUTPUT_LIMIT_ERROR.into());
             }
             match result {
-                Ok(_) => Ok(bytes),
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
+                Ok(_) => Ok(ExchangeOutput::plain(bytes)),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(ExchangeOutput::plain(bytes)),
                 Err(_) => Err("Worker output pipe failed".into()),
             }
         }));
