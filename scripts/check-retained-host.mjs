@@ -74,19 +74,48 @@ try {
  const previous=(await host.call({method:'getRun',key:lastKey})).snapshot;assert.equal(previous.current,true);assert.equal(previous.result.reason,'completed');assert.equal(previous.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'ん');
  pid=null;assert.equal((await run('kousui')).packet.root.text,'降水');
  console.log('retained ordinary Host: later original Worker crash kept the adopted result; replacement followed true ownership cleanup');
+ // The pinned official romaji implementation exhausts the unchanged 50M fuel
+ // on 4096 ASCII a's. Verify that failure and true cleanup separately; it is
+ // not a successful completion that lost a cancellation race.
+ revision++;await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision});
+ const exhausted=await host.call({method:'run',request:{startKey:String(revision),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text:'a'.repeat(4096),mode:'compose'}}});
+ const fuelFailure=await until(async()=>{const {snapshot}=await host.call({method:'getRun',key:exhausted.receipt.key});return snapshot.state==='terminal'&&Object.values(snapshot.physical).every(n=>n===0)?snapshot:null;});
+ assert.equal(fuelFailure.current,true);assert.equal(fuelFailure.result.reason,'completed');assert.equal(fuelFailure.result.delivery,'failed');
+ assert.equal(fuelFailure.result.nodes.find(n=>n.nodeId==='hiragana').status,'failed');
+ for(const node of ['dictionary','select','result'])assert.equal(fuelFailure.result.nodes.find(n=>n.nodeId===node).status,'blocked');
+ assert(fuelFailure.result.ports.filter(p=>p.endpoint.node!=='input').every(p=>p.value.status==='error'));
+ await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.physicalJobs===0&&s.workerProcesses===0&&s.physical.physicalJobs===0;});
+ pid=null;assert.equal((await run('kousui')).packet.root.text,'降水');
+ // Keep the full 4096-code-point boundary (with MORE UTF-8 bytes), using a
+ // conversion passthrough that can complete within the existing fuel bound.
+ const cancellableText='あ'.repeat(4096);
+ assert.equal((await run(cancellableText)).packet.root.text,cancellableText);
+ console.log('retained ordinary Host: fixed-fuel ASCII exhaustion failed safely; full-size Unicode completed and the original owner recovered');
+ const cancellationTrials=Number(process.env.DIY_RETAINED_CANCEL_TRIALS??3);
+ assert(Number.isInteger(cancellationTrials)&&cancellationTrials>=3&&cancellationTrials<=100);
+ const firstCancelDelayMs=Number(process.env.DIY_RETAINED_FIRST_CANCEL_DELAY_MS??0);
+ assert(Number.isInteger(firstCancelDelayMs)&&firstCancelDelayMs>=0&&firstCancelDelayMs<=1000);
  let cancelled=0;
- for(let trial=0;trial<3;trial++){
-  revision++;await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision});const text='a'.repeat(4096),{receipt}=await host.call({method:'run',request:{startKey:String(revision),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text,mode:'compose'}}});
+ for(let trial=0;trial<cancellationTrials;trial++){
+  revision++;await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision});const text=cancellableText,{receipt}=await host.call({method:'run',request:{startKey:String(revision),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text,mode:'compose'}}});
   const observed=await until(async()=>{const s=await host.call({method:'status'});if(s.retainedWorker.activeInput)return true;const {snapshot}=await host.call({method:'getRun',key:receipt.key});return snapshot.state==='terminal'?{snapshot}:null;});
-  if(observed===true)await host.call({method:'cancelRun',key:receipt.key});
+  if(observed===true){if(trial===0&&firstCancelDelayMs)await delay(firstCancelDelayMs);await host.call({method:'cancelRun',key:receipt.key});}
   const snapshot=await until(async()=>{const {snapshot}=await host.call({method:'getRun',key:receipt.key});return snapshot.state==='terminal'&&Object.values(snapshot.physical).every(n=>n===0)?snapshot:null;});
   if(snapshot.result.reason==='cancelled'){
    cancelled++;await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.physicalJobs===0&&s.workerProcesses===0&&s.physical.physicalJobs===0;});pid=null;
-  }else{assert.equal(snapshot.result.reason,'completed');assert.equal(snapshot.result.ports.find(p=>p.endpoint.node==='result').value.packet.root.text,'あ'.repeat(4096));}
+  }else{
+   assert.equal(snapshot.result.reason,'completed');
+   assert.equal(snapshot.result.delivery,'complete');
+   const output=snapshot.result.ports.find(p=>p.endpoint.node==='result');
+   assert(output?.value?.packet,JSON.stringify({trial,reason:snapshot.result.reason,delivery:snapshot.result.delivery,
+    ports:snapshot.result.ports.map(p=>({node:p.endpoint.node,status:p.value.status})),
+    nodes:snapshot.result.nodes.map(n=>({node:n.nodeId,status:n.status,error:n.diagnostic?.error}))}));
+   assert.equal(output.value.packet.root.text,'あ'.repeat(4096));
+  }
   assert.equal((await run('kousui')).packet.root.text,'降水');
  }
  assert(cancelled>0,'must observe cancellation while an actual Host input is active');
- console.log('retained ordinary Host: active-input cancellation, true drain and successful replenishment passed ('+cancelled+'/3 cancelled; remaining trials completed correctly before cancellation)');
+ console.log('retained ordinary Host: active-input cancellation, true drain and successful replenishment passed ('+cancelled+'/'+cancellationTrials+' cancelled; remaining trials completed correctly before cancellation)');
  const previousKey=lastKey;writeFileSync(dictionaryPath,'reading\tsurface\tweight\nこうすい\t香水\t99\n');const successor=await host.call({method:'prepare',graph});assert.equal((await host.call({method:'status'})).sessionEpoch,oldEpoch);await host.call({method:'activate',reviewId:successor.reviewId});assert.notEqual((await host.call({method:'status'})).sessionEpoch,oldEpoch);pid=null;generation=0;revision=0;assert.equal((await run('kousui')).packet.root.text,'香水');assert.equal((await host.send({method:'getRun',key:previousKey})).ok,false);
  writeFileSync(dictionaryPath,originalDictionary);const restore=await host.call({method:'prepare',graph});await host.call({method:'activate',reviewId:restore.reviewId});pid=null;generation=0;revision=0;assert.equal((await run('kousui')).packet.root.text,'降水');
  const preparing=host.send({method:'prepare',graph}),preparingId=String(host.serial);await host.call({method:'cancel',requestId:preparingId});assert.equal((await preparing).ok,false);assert.equal((await run('kousui')).packet.root.text,'降水');

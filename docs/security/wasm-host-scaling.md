@@ -417,3 +417,13 @@ OFFではguest区間を測っていないため独立した別計測のguest分�
 異なる実コードを使う新方式の局所結合検査も実施した。2/4/8/16直列・4並列・合流・未使用Nodeを含む9構成、各5件で45/45グラフの同一試行計測、正答と元process/資源回収を確認したが、Node基盤P95は異種4段130.204ms、並列788.639ms、合流1128.456ms、16段92.141ms等で未達。Job CPU39.375秒、peak commit184,487,936 bytes。JSON SHA `34777d4e419d9197a7b78341dcd72f9d600c9f083e8205fd17a16c88c5faa1ed`。5件ではGoalの尾部の合否を判断しない。
 
 OFF無時計/無buffer、実測済み工程だけの開始/退出、停止後の再開拒否、上限と欠測、応答原文/重複keyの保持、truncation/過大応答/過大診断、bootstrapの不正mode/handle拒否を検査する。実WorkerのOFF/ON/配送拒否と、compiled file/pipeの単回状態・取消・元process/資源回収も検査する。Core単体は109成功/9失敗/33ignoreで、9失敗はこのWin10の必須WinHTTP option195/OS12009による既存のplatform不一致。必須設定・fixture・待ち上限を緩めず、最新のCIで別途確認する。
+
+### 既存の取消検査におけるfuel枯渇の分離（2026-11-14）
+
+e1740d2の [CI43516314068](https://github.com/pitapa79/DIY_IME/actions/runs/43516314068) はprepared segmentが成功したが、runtime-cache segmentの通常保持Host検査で失敗し、集約もfailureとなった。取消検査の4096個のASCII `a` が、取消より先に先頭のローマ字Nodeで失敗した場合を、検査が正常な完了と誤って仮定していた。`reason=completed` でも `delivery=failed`、hiraganaがFailedで後段がBlockedだった。出力Packetなしを正常データとして扱う修正は行わない。
+
+同じ製品binary/公式Wasmで20回の即時取消は20/20成功し、初回取消を1秒遅らせると完了失敗を再現した。固定公式Wasm SHA `105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134` を同じWasmtime DLL・標準compiler・50,000,000 fuel / 128MiB / fresh Storeで検証すると、ASCII4096はromaji.convert内で `all fuel consumed`、かな4096とASCII1024は正答だった。この同一プロセス調査はNodeの燃料要因の検証であり、Hostの性能値には使わない。調査用Rustコードは製品差分から除去した。
+
+通常Hostの検査は、元のASCII4096を独立した資源枯渇例として残し、失敗・全後段Blocked・非Inputポートに成功データなし・元process/物理予約ゼロ・次の正答への回復を要求する。取消例は4096個の `あ` とし、同じ4096 code pointと同じ期待出力を保持しつつ、入力UTF-8は4096→12288 bytesへ増える。事前に最大長Unicodeの通常完了を確認し、取消できなかった試行は `delivery=complete` と全文一致を要求する。既定3回で少なくとも1回の実取消と実回収が必要な条件も維持する。fuel・memory・正式fixture・Node実装・既定配布bytesは変更しない。
+
+修正後、実Windows製品Hostで既定3回は2取消+1正答、初回のみ1秒遅延した20回は19取消+1正答で、ASCII枯渇とUnicode最大長の事前確認、全試行の実回収・補充、Session/辞書の切替、保護/失効/EOFまで通った。`DIY_RETAINED_CANCEL_TRIALS` は3〜100回、`DIY_RETAINED_FIRST_CANCEL_DELAY_MS` は0〜1000msの検査用制御で、既定条件は3回/遅延なし。これは検査の誤った入力前提の訂正と範囲の分離であり、基盤遅延目標やNode自身の計算費用の削減を実証するものではない。
