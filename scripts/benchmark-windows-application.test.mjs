@@ -68,6 +68,46 @@ test('Host input counts bad results and refuses stale payloads after a newer rev
  }
  await assert.rejects(measure(true), /stale-host-result/);
 });
+
+test('admission rejection stays in the attempted denominator without a fake run or physical exit', async () => {
+ let latest = 0;
+ const scenarios = await measureHostInput({
+  steps: [{id:'first',text:'reject',expected:'reject'}, {id:'middle',text:'accept',expected:'accept'}, {id:'last',text:'reject',expected:'reject'}],
+  submit: async text => { const key = ++latest; return text === 'accept' ? key : {admissionRejected:'busy'}; },
+  read: async key => { assert.equal(typeof key, 'number'); return {current:key === latest, result:key === latest ? {text:'accept'} : null}; },
+  ended: () => true,
+  verify: (snapshot, expected) => assert.equal(snapshot.result.text, expected),
+  summarize, pollMs: 5, rounds: 1, independentInput: true,
+ });
+ for (const scenario of scenarios) {
+  assert.equal(scenario.attempts, 3);
+  assert.equal(scenario.admitted, 1);
+  assert.equal(scenario.admissionRejected, 2);
+  assert.equal(scenario.failed, 2);
+  assert.equal(scenario.correct + scenario.superseded + scenario.failed, 3);
+  assert.equal(scenario.physicalEnd.count, 1);
+  for (const id of ['first', 'last']) {
+   assert.equal(scenario.byCase[id].correct, 0);
+   assert.equal(scenario.byCase[id].physicalEnd, null);
+   assert.equal(scenario.byCase[id].firstCorrectResponse, null);
+  }
+ }
+ assert.equal(scenarios[0].correct, 1);
+});
+
+test('all rejected inputs create no read or physical-end sample and unexpected errors still fail', async () => {
+ const args = {steps:[{id:'only',text:'x',expected:'x'}], submit:async()=>({admissionRejected:'busy'}),
+  read:async()=>{throw new Error('rejected input has no run');}, ended:()=>true,
+  verify:()=>{throw new Error('rejected input has no result');}, summarize, pollMs:5, rounds:1};
+ const scenarios = await measureHostInput(args);
+ for (const scenario of scenarios) {
+  assert.equal(scenario.attempts, 1); assert.equal(scenario.admitted, 0);
+  assert.equal(scenario.failed, 1); assert.equal(scenario.admissionRejected, 1);
+  assert.equal(scenario.correct, 0); assert.equal(scenario.physicalEnd, null);
+ }
+ await assert.rejects(measureHostInput({...args,submit:async()=>({admissionRejected:'unknown'})}), /invalid-admission-rejection/);
+ await assert.rejects(measureHostInput({...args,submit:async()=>{throw new Error('unexpected-host-error');}}), /unexpected-host-error/);
+});
 test('fixed cadence submits the next revision during an outstanding result read', {timeout: 3000}, async () => {
  let round = 0, latest = 0, heldKey, reading = false;
  const heldRead = Promise.withResolvers();

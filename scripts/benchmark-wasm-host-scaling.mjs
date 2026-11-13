@@ -96,7 +96,7 @@ function connect(executable = host, configuration = configPath) {
     if (request) { pending.delete(reply.id); request.resolve(reply); }
   });
   return {
-    async call(operation) {
+    async call(operation, { allowBusyAdmission = false } = {}) {
       const id = String(++next), bytes = Buffer.from(JSON.stringify({ id, operation }));
       const header = Buffer.alloc(12);
       header.writeUInt32LE(bytes.length);
@@ -107,6 +107,9 @@ function connect(executable = host, configuration = configPath) {
           timer = setTimeout(() => reject(Error(`Host deadline: ${operation.method}`)), 120000);
           child.stdin.write(Buffer.concat([header, bytes]), error => { if (error) reject(error); });
         });
+        if (allowBusyAdmission && operation.method === 'run' && reply.ok === false && reply.error?.code === 'busy') {
+          return { admissionRejected: 'busy' };
+        }
         assert.equal(reply.ok, true, JSON.stringify(reply.error));
         return reply.data;
       } finally { clearTimeout(timer); pending.delete(id); }
@@ -179,9 +182,9 @@ async function measure(client, spec) {
   const expectedPlanVersion = active.state.activePlanVersion;
   async function submit(text, revision) {
     if (revision > 1) await client.call({ method: 'invalidateInput', expectedPlanVersion, revision });
-    const { receipt } = await client.call({ method: 'run', request: { startKey: String(revision),
-      expectedPlanVersion, targets, input: { revision, text, mode: 'compose' } } });
-    return receipt.key;
+    const admitted = await client.call({ method: 'run', request: { startKey: String(revision),
+      expectedPlanVersion, targets, input: { revision, text, mode: 'compose' } } }, { allowBusyAdmission: scenario === 'paced' });
+    return admitted.admissionRejected ? admitted : admitted.receipt.key;
   }
   const read = async key => (await client.call({ method: 'getRun', key })).snapshot;
   async function verifyIdle(allowSpare) {
@@ -211,13 +214,17 @@ async function measure(client, spec) {
       }
       await client.call({ method: 'traceStop' });
       const accepted = events.filter(event => event.event === 'run-accepted');
-      assert(accepted.length <= pending.length);
-      if (!dropped) assert.equal(accepted.length, pending.length);
+      const admitted = pending.filter(record => !record.admissionRejected);
+      assert(accepted.length <= admitted.length);
+      if (!dropped) assert.equal(accepted.length, admitted.length);
       if (!routeCounts.has(interval)) routeCounts.set(interval, { prepared: 0, cold: 0, unknown: 0, incompleteRounds: 0,
-        preparedStages: 0, coldStages: 0, unknownStages: 0, allStagesPrepared: 0 });
+        preparedStages: 0, coldStages: 0, unknownStages: 0, allStagesPrepared: 0, attempts: 0, admitted: 0, admissionRejected: 0 });
       const counts = routeCounts.get(interval);
+      counts.attempts += pending.length;
+      counts.admitted += admitted.length;
+      counts.admissionRejected += pending.length - admitted.length;
       if (dropped) counts.incompleteRounds++;
-      counts.unknown += pending.length - accepted.length;
+      counts.unknown += admitted.length - accepted.length;
       for (const run of accepted) {
         const runEvents = events.filter(event => event.run === run.run && event.plan === run.plan && event.input === run.input);
         const nodes = runEvents.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));

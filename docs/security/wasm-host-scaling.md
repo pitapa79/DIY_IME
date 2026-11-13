@@ -279,3 +279,17 @@ Workerはprivate Native bootstrapで渡されたhandleについて、disk上の�
 6番目のprivate引数で検証済みfileと任意の診断pipeを区別し、同一handleの二重所有を拒否する。診断handleだけの準備失敗では、検証済みfileを残した正規の隔離起動を試す。安全側handleの用意・照合の失敗を診断失敗として無視しない。従来のWorkerは未知の任意引数を使わず、従来どおり全hashを行うため、旧Workerを使った成功をこの最適化の性能証拠としない。
 
 NTFSの別streamはbase fileとfile IDを共有し得るため、両側とも絶対パスの無名streamに限定し、ADSを指定するパスを拒否する。検査は未固定bytes拒否、同内容の別file拒否、mutable handle/pipe/相対パス/ADS拒否、複製handleの読み取り限定、所有者交代後も書込・削除拒否、解放後に変更した実DLLのhash拒否、bootstrapの不正値・handle別名による二重所有の拒否を含む。性能比較は同じHost/Worker/DLL/Wasmでコピー・マッピング・Parent所有権引継ぎの順に、単段150件、混合各50件、独立20/100 ms入力各35件を行い、CPU/RAMと回収を含めて記録する。効果・採用・Goal達成は結果確認前に確定しない。
+
+`482e4aa` の同一Host/Workerを使ったローカル予備比較は、stream/継承ACL/並行回収/共有予備、物理2枠、単段ウォーム各20件、引継ぎなし→ありの順。追加遅延P50/P95/P99は245.159/368.544/386.595→17.855/114.462/155.971 ms、準備済み10→17/20件。DLL読込P50/P95は168.732/214.437→7.544/10.612 ms、compile P50は35.513→35.268 msだった。Windows10・約4GiBの小標本で、正答・終了後残存ゼロを確認したがGoal合格ではない。レポートSHA-256は `a69947639d41535a8c67cca56dca85ba894474fe690387becef29c0f344eb865` / `1d51c2a5b49b753104e3efec83ea607a83d4a413491d102e30981e4c71340532`。Hostは `c213652a296e8254f566d990202a9494f3ec912099816ee58f673ff33134e590`、Workerは `fe1e20068cdbb662fe38e0cb0d566f984642c1ffca1fc2696ebe75aacdda0bfd`。DLL/fixtureは上記の固定資産。
+
+同HEADの[CI 43410755574](https://github.com/pitapa79/DIY_IME/actions/runs/43410755574)は、先行する独立20ms入力の共有予備条件で `busy / exchange exceeds resource budget` となり失敗した。DLL引継ぎ比較の工程まで到達せず、そのCIによる性能・全回帰成功は未確認。部分資料はartifact `14030217434`。計測はこの受付拒否も `attempts` に残し、`admissionRejected` と `failed` に数える。存在しないrunの照会、応答成功、実process終了の試料にはしない。未知のHostエラーは従来どおり停止し、資源上限を拡大して隠さない。診断CIの完走だけを、失敗件数ゼロやGoalの性能達成と呼ばない。
+
+### 入力未配送のコンパイル成果再利用候補
+
+`DIY_EXPERIMENT_COMPILED_JIT=1` は、同じ捕捉済みWasm・不変のWorker/DLL・実行policyについて、予備Workerを補充するたびのコンパイルを切り分ける内部候補。Parent自身で外部Wasmをコンパイルせず、既存のAppContainer/Job/環境・handle制限を受ける専用Workerを使う。準備用の既存物理1枠を先に予約し、compilerと次の使い捨てWorkerを順番に動かす。compilerはModuleの生成・serializeのみで、Store/Instance・guest start・入力・brokerを持たない。Winchで生成できなければ標準を試す。guest実行後の再試行は行わない。
+
+Parentは自分が捕捉した信頼側compilerの元process終了・IO・ACL・profile回収を確認した後だけ成果を受け取り、元Wasmのdigest、fuel/memory設定、選ばれたstrategyを有界なprivate frameで照合する。frame全体をhashし、Host専用の読み取り専用code snapshotとして512MiBの既存総予算内に保持する。1成果はframe込み8MiB以下。別module/policyへ所有状態を引き継がず、準備中の競合・生成失敗は従来JITを残す。取消で未完の成果を成功として固定しない。公式限定の既存cacheとは分離する。`node.cwasm` はHostが生成した固定名の通常ファイルとして回収し、未知名・link/reparseの拒否は維持する。
+
+新しいWorkerでは固定DLL、成果hash・frame・設定を確認し、対応する新しいEngine・Storeへdeserializeする。入力配送前にはinstantiateせず、currentな許可・入力世代の検査後に1回だけguestを開始する。成功結果も元process/IO/ACL/profile回収前には採用しない。公開packageからcwasmを取り込む機能はない。hash・形式・自己申告だけでは信頼できないため、Parentが所有する専用compilerからの来歴が必須。[固定v50.0.1 C API](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/c-api/include/wasmtime/module.h)と[同版の安全要件](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/wasmtime/src/runtime/module.rs#L360)に従い、serializeの未改変出力以外をunsafe deserializeへ渡さない。同一Host内の捕捉物だけを使い、永続cacheの版/CPU移行を認めない。
+
+Native予備検証では、同じ固定APIが生成した成果だけをprivate ownerへ格納し、Winch/標準それぞれで新しいStoreの状態初期化、設定・元Wasm・改変拒否、start trapの延期、fuel・memory制限、標準のみ対応するWasmを検査した。これは信頼済み固定fixtureの同一Native process内の検査で、通常Hostや別processの来歴の証明ではない。最初の各20件で、Winchの生成/serialize中央値40.228msに対し新Engine/Store/deserialize中央値6.888ms、標準は157.325/6.719msだった。ローカル報告SHA `93c9a2ddd1c542b208b790946c9273af8d79c2598d522808d70842a24d58b4da`。通常Hostでは単段150件、混合各10件の初期比較と独立20/100ms入力を行い、採用判断の前に十分な多段反復・権限/異常/再生成・通常経路で再検証する。10件の末尾値を安定したP95/P99としない。

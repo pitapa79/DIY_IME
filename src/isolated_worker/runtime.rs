@@ -99,6 +99,10 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
         let mode = if flag == "--compile-official" {
             ModuleMode::Compile
+        } else if flag == "--compile-jit-v1" {
+            ModuleMode::CompileJit
+        } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-v1=") {
+            ModuleMode::PreparedCompiled(digest.to_owned())
         } else if flag == "--prepare-jit-pipe-v1" {
             ModuleMode::JitPipe
         } else if flag == "--resource-ranges-v1" {
@@ -788,6 +792,8 @@ fn create_engine_configured(
 }
 
 #[cfg(test)]
+pub(super) mod compiled_jit_probe;
+#[cfg(test)]
 mod compiled_module_probe;
 enum ModuleMode {
     Jit { acknowledge_preparation: bool },
@@ -795,9 +801,12 @@ enum ModuleMode {
     ResourceRanges,
     ResourceBuild,
     Compile,
+    CompileJit,
+    PreparedCompiled(String),
     Reuse(String),
 }
 
+pub(super) mod compiled_jit;
 mod compiled_module;
 mod resource_import;
 mod retained_module;
@@ -926,15 +935,33 @@ fn run(
             .write_all(&artifact)
             .map_err(|_| "compiler pipe failed".into());
     }
+    if matches!(mode, ModuleMode::CompileJit) {
+        use std::io::Write;
+        let artifact = compiled_jit::compile(&api, &limits, &module)?;
+        return std::io::stdout()
+            .lock()
+            .write_all(&artifact)
+            .map_err(|_| "JIT compiler pipe failed".into());
+    }
     // Prepare only the Module and Store. Instantiation can run guest start code
     // and must wait for the Host-owned input.
-    let prepared_jit = if matches!(mode, ModuleMode::Jit { .. } | ModuleMode::JitPipe) {
-        let prepared = Runtime::prepare_jit(&api, &module, &limits, diagnostics)?;
+    let prepared_jit = if matches!(
+        mode,
+        ModuleMode::Jit { .. } | ModuleMode::JitPipe | ModuleMode::PreparedCompiled(_)
+    ) {
+        let prepared = if let ModuleMode::PreparedCompiled(digest) = &mode {
+            // SAFETY: only the trusted Parent chooses this private Native mode
+            // and supplies its own compiler-produced immutable file and digest.
+            unsafe { compiled_jit::prepare(&api, &limits, diagnostics, &module, digest)? }
+        } else {
+            Runtime::prepare_jit(&api, &module, &limits, diagnostics)?
+        };
         if matches!(
             mode,
             ModuleMode::Jit {
                 acknowledge_preparation: true
             } | ModuleMode::JitPipe
+                | ModuleMode::PreparedCompiled(_)
         ) {
             use std::io::Write;
             let mut output = std::io::stdout().lock();
@@ -963,7 +990,7 @@ fn run(
     };
     drop(input_phase);
     let mut guest = match mode {
-        ModuleMode::Jit { .. } | ModuleMode::JitPipe => {
+        ModuleMode::Jit { .. } | ModuleMode::JitPipe | ModuleMode::PreparedCompiled(_) => {
             if input.is_empty() {
                 return Err("empty request before guest instantiation".into());
             }
@@ -974,7 +1001,9 @@ fn run(
         ModuleMode::Reuse(digest) => {
             compiled_module::load(&api, &limits, diagnostics, &module, &digest)?
         }
-        ModuleMode::Compile => unreachable!("compile returns before guest input"),
+        ModuleMode::Compile | ModuleMode::CompileJit => {
+            unreachable!("compile returns before guest input")
+        }
         ModuleMode::ResourceRanges => unreachable!("resource transport returns before raw input"),
         ModuleMode::ResourceBuild => unreachable!("resource build returns before raw input"),
     };

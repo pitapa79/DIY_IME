@@ -52,10 +52,17 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
           const issued = performance.now();
           const key = await submit(step.text);
           const admitted = performance.now();
+          const admissionRejected = key?.admissionRejected;
+          if (admissionRejected !== undefined && admissionRejected !== 'busy') throw new Error('invalid-admission-rejection');
           const previous = pending.at(-1);
-          pending.push({step, key, issued, schedulingMs: issued - scheduled,
+          pending.push({step, key: admissionRejected ? null : key, issued, schedulingMs: issued - scheduled,
             inputIntervalMs: previous ? issued - previous.issued : null,
-            admissionMs: admitted - issued, responseMs: null, endedMs: null, outcome: null});
+            admissionMs: admitted - issued, responseMs: null,
+            // No run/process was created for a rejected input. This resolves
+            // submission only and is excluded from physical-end statistics.
+            endedMs: admissionRejected ? admitted - issued : null,
+            outcome: admissionRejected ? 'admission-rejected' : null,
+            ...(admissionRejected ? {admissionRejected} : {})});
           continue;
         }
         if (independentInput && intervalMs !== null) {
@@ -86,6 +93,7 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         }
       }
       for (const record of pending.slice(0, -1)) {
+        if (record.admissionRejected) continue;
         const snapshot = await read(record.key);
         if (snapshot.current !== false || snapshot.result != null || !ended(snapshot)) {
           throw new Error('stale-host-result');
@@ -99,17 +107,19 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
       const correct = group.filter(record => record.outcome === 'correct');
       return {
         attempts: group.length,
+        admitted: group.filter(record => !record.admissionRejected).length,
+        admissionRejected: group.filter(record => record.admissionRejected).length,
         correct: correct.length,
         superseded: group.filter(record => record.outcome === 'superseded').length,
         timedOut: group.filter(record => record.outcome === 'expired').length,
         cancelled: group.filter(record => record.outcome === 'cancelled').length,
-        failed: group.filter(record => record.outcome === 'failed').length,
+        failed: group.filter(record => ['failed', 'admission-rejected'].includes(record.outcome)).length,
         over50Ms: correct.filter(record => record.responseMs > 50).length,
         schedulingDelay: stats(group.map(record => record.schedulingMs)),
         inputInterval: stats(group.flatMap(record => record.inputIntervalMs === null ? [] : [record.inputIntervalMs])),
         admissionDelay: stats(group.map(record => record.admissionMs)),
         firstCorrectResponse: stats(correct.map(record => record.responseMs)),
-        physicalEnd: stats(group.map(record => record.endedMs)),
+        physicalEnd: stats(group.filter(record => !record.admissionRejected).map(record => record.endedMs)),
       };
     };
     scenarios.push({intervalMs, ...summarizeRecords(records),

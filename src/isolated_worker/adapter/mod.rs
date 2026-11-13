@@ -123,6 +123,7 @@ struct Image {
     module_files: std::sync::Mutex<Option<Arc<CodeFiles>>>,
     code_budget: Arc<CodeBudget>,
     compiled: Option<Arc<std::sync::Mutex<CompiledState>>>,
+    jit_compiled: std::sync::Mutex<CompiledState>,
 }
 struct CompiledAsset {
     files: Arc<CodeFiles>,
@@ -137,6 +138,8 @@ enum CompiledState {
 enum WorkerImage {
     Jit,
     Compile,
+    CompileJit,
+    PreparedCompiled(Arc<CodeFiles>, usize, String),
     Reuse(Arc<CodeFiles>, usize, String),
 }
 enum WorkerRequest {
@@ -470,7 +473,7 @@ fn cleanup(cache: &Cache) -> Result<(), CoreError> {
         .collect::<Result<_, _>>()
         .map_err(|_| fail("worker-cleanup", "cache enumeration failed"))?;
     for entry in &entries {
-        if !["worker.exe", "wasmtime.dll", "node.wasm"]
+        if !["worker.exe", "wasmtime.dll", "node.wasm", "node.cwasm"]
             .iter()
             .any(|n| entry.file_name() == *n)
             || !entry.metadata().is_ok_and(|m| {
@@ -553,6 +556,7 @@ impl WasmArtifact {
             runtime_files: Arc::new(std::sync::Mutex::new(None)),
             module_files: std::sync::Mutex::new(None),
             compiled: None,
+            jit_compiled: std::sync::Mutex::new(CompiledState::Pending),
         })))
     }
     pub(super) fn enable_profile_preparation(mut self, physical_slots: u64) -> Self {
@@ -604,6 +608,8 @@ impl WasmArtifact {
             runtime_files: self.0.runtime_files.clone(),
             module_files: std::sync::Mutex::new(None),
             compiled: self.0.compiled.clone(),
+            // A new captured module/policy never inherits another source's code.
+            jit_compiled: std::sync::Mutex::new(CompiledState::Pending),
         })))
     }
     pub fn identity(&self) -> &str {
@@ -731,6 +737,60 @@ impl WasmArtifact {
         }
     }
 
+    fn prepared_jit_image(&self, cancel: &CancellationToken) -> WorkerImage {
+        if std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+            || cancel.is_cancelled()
+        {
+            return WorkerImage::Jit;
+        }
+        // One compile-only process per captured source/policy. Other owners
+        // retain ordinary JIT while compilation is underway; no busy wait.
+        let Ok(mut state) = self.0.jit_compiled.try_lock() else {
+            return WorkerImage::Jit;
+        };
+        if matches!(*state, CompiledState::Pending) {
+            let produced: Result<CompiledAsset, CoreError> = (|| {
+                let bytes = self.call_worker(
+                    WorkerRequest::Immediate(Vec::new()),
+                    cancel.clone(),
+                    None,
+                    0,
+                    WorkerImage::CompileJit,
+                )?;
+                // Only accept the captured compiler's output after original
+                // process/IO/ACL/profile cleanup, never a package artifact.
+                super::runtime::compiled_jit::validate_produced(
+                    &bytes,
+                    self.0.identity.rsplit(':').next().unwrap(),
+                    self.0.policy.fuel_per_call,
+                    self.0.policy.wasm_memory_bytes,
+                )
+                .map_err(|_| fail("worker-identity", "compiled JIT binding unavailable"))?;
+                let digest = sha256(&bytes)?;
+                let files = Arc::new(CodeFiles::new(
+                    &self.0.workspace,
+                    &[("node.cwasm", &bytes)],
+                    &self.0.code_budget,
+                )?);
+                Ok(CompiledAsset {
+                    files,
+                    len: bytes.len(),
+                    digest,
+                })
+            })();
+            if cancel.is_cancelled() {
+                return WorkerImage::Jit;
+            }
+            *state = produced.map_or(CompiledState::Unavailable, CompiledState::Ready);
+        }
+        if let CompiledState::Ready(asset) = &*state {
+            WorkerImage::PreparedCompiled(asset.files.clone(), asset.len, asset.digest.clone())
+        } else {
+            WorkerImage::Jit
+        }
+    }
+
     fn compile_official_asset(
         &self,
         cancel: &CancellationToken,
@@ -787,21 +847,24 @@ impl WasmArtifact {
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
-        let verified_runtime = if matches!(image, WorkerImage::Jit)
-            && std::env::var_os("DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE").as_deref()
-                == Some(std::ffi::OsStr::new("1"))
+        let verified_runtime =
+            if matches!(image, WorkerImage::Jit | WorkerImage::PreparedCompiled(..))
+                && std::env::var_os("DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+            {
+                Some(
+                    runtime_files
+                        .verified_runtime
+                        .get_or_init(|| super::runtime::VerifiedRuntimeFile::open(&dll))
+                        .as_ref()
+                        .map_err(|_| fail("worker-identity", "runtime file proof unavailable"))?,
+                )
+            } else {
+                None
+            };
+        if matches!(image, WorkerImage::Jit | WorkerImage::PreparedCompiled(..))
+            != matches!(request, WorkerRequest::Jit { .. })
         {
-            Some(
-                runtime_files
-                    .verified_runtime
-                    .get_or_init(|| super::runtime::VerifiedRuntimeFile::open(&dll))
-                    .as_ref()
-                    .map_err(|_| fail("worker-identity", "runtime file proof unavailable"))?,
-            )
-        } else {
-            None
-        };
-        if matches!(image, WorkerImage::Jit) != matches!(request, WorkerRequest::Jit { .. }) {
             return Err(fail(
                 "worker-request",
                 "Worker image and request transport differ",
@@ -829,6 +892,18 @@ impl WasmArtifact {
                 "node.wasm",
                 self.0.module.len(),
                 Some("--compile-official".into()),
+            ),
+            WorkerImage::CompileJit => (
+                Some(self.module_code_files()?),
+                "node.wasm",
+                self.0.module.len(),
+                Some("--compile-jit-v1".into()),
+            ),
+            WorkerImage::PreparedCompiled(files, len, digest) => (
+                Some(files),
+                "node.cwasm",
+                len,
+                Some(format!("--prepare-compiled-jit-v1={digest}")),
             ),
             WorkerImage::Reuse(files, len, digest) => (
                 Some(files),
@@ -1677,6 +1752,9 @@ impl PreparedJitOwner {
             .spawn(move || {
                 let _slot = worker_reservation;
                 let delivery_cancel = stop.clone();
+                // The charged physical slot covers compiler then execution
+                // sequentially; the compiler settles before this image exists.
+                let image = artifact.prepared_jit_image(&stop);
                 artifact.call_worker(
                     WorkerRequest::Jit {
                         request: Box::new(move || {
@@ -1708,7 +1786,7 @@ impl PreparedJitOwner {
                     stop,
                     None,
                     1,
-                    WorkerImage::Jit,
+                    image,
                 )
             })
             .map_err(|_| fail("worker-thread", "prepared JIT owner unavailable"))?;
@@ -1792,6 +1870,222 @@ impl Drop for PreparedJitOwner {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn generated_compiled_code_releases_its_snapshot_and_budget() {
+        let budget = Arc::new(CodeBudget::default());
+        let files = CodeFiles::new(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            &[("node.cwasm", b"generated immutable code")],
+            &budget,
+        )
+        .unwrap();
+        let path = files.cache.path().join("node.cwasm");
+        assert!(path.exists());
+        assert!(std::fs::File::options().write(true).open(&path).is_err());
+        drop(files);
+        assert!(!path.exists());
+        assert_eq!(budget.used.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    #[ignore = "requires current production Worker, pinned DLL and real AppContainer"]
+    fn real_compiled_jit_cache_preserves_source_policy_single_use_and_exit() {
+        use crate::execution_control::ResourcePolicy;
+        assert_eq!(
+            std::env::var("DIY_EXPERIMENT_COMPILED_JIT").as_deref(),
+            Ok("1")
+        );
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/execution_control.json"
+        ))
+        .unwrap();
+        let mut resources =
+            ResourcePolicy::from_value(contract["resourceProfiles"]["bounded"].clone()).unwrap();
+        resources.max_physical_jobs = 1;
+        let host = ExecutionHost::new("compiled-jit-lifecycle", resources).unwrap();
+        let worker = std::env::var_os("DIY_RANGE_WORKER_BINARY").unwrap();
+        let dll = std::env::var_os("DIY_RANGE_RUNTIME_DLL").unwrap();
+        let fixture =
+            |mode| super::super::runtime::compiled_jit_probe::worker_fixture(Path::new(&dll), mode);
+        let source = fixture("state");
+        let policy = WorkerPolicy {
+            fuel_per_call: Some(10_000),
+            wasm_memory_bytes: Some(1024 * 1024),
+            ..WorkerPolicy::bounded_probe()
+        };
+        let artifact = WasmArtifact::capture(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            Path::new(&worker),
+            Path::new(&dll),
+            source.clone(),
+            policy.clone(),
+        )
+        .unwrap();
+        let ready = |artifact: &WasmArtifact| {
+            let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
+            if let Err(error) = owner.ready.recv_timeout(Duration::from_secs(5)) {
+                owner.cancel.cancel();
+                let result = owner.worker.take().unwrap().join();
+                panic!("compiled JIT readiness failed: {error:?}; {result:?}");
+            }
+            assert_eq!(artifact.active_processes(), 1);
+            assert_eq!(host.usage().physical_jobs, 1);
+            assert!(matches!(
+                *artifact.0.jit_compiled.lock().unwrap(),
+                CompiledState::Ready(_)
+            ));
+            owner
+        };
+        let delivery = |check| JitDelivery {
+            bytes: b"{}".to_vec(),
+            check,
+            run_cancel: None,
+        };
+        for expected_settled in [2, 3] {
+            let owner = ready(&artifact);
+            // Exactly one compiler exited before the first spare became ready;
+            // the next spare loads that code and owns a new Store/process.
+            assert_eq!(artifact.timings().settled_calls, expected_settled - 1);
+            let bytes = owner.dispatch(delivery(None), None).unwrap();
+            assert_eq!(wire::reply(&bytes).unwrap()["value"], 1);
+            assert_eq!(artifact.timings().settled_calls, expected_settled);
+            assert_eq!(artifact.active_processes(), 0);
+            assert_eq!(host.usage().physical_jobs, 0);
+        }
+        let owner = ready(&artifact);
+        assert!(
+            owner
+                .dispatch(
+                    delivery(Some(Box::new(|| Err("withdrawn before delivery".into())))),
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(artifact.timings().settled_calls, 4);
+        assert_eq!(host.usage().physical_jobs, 0);
+        let owner = ready(&artifact);
+        assert_eq!(
+            wire::reply(&owner.dispatch(delivery(None), None).unwrap()).unwrap()["value"],
+            1
+        );
+        assert_eq!(artifact.timings().settled_calls, 5);
+
+        let preparing = artifact
+            .with_module(
+                fixture("state"),
+                WorkerPolicy {
+                    fuel_per_call: Some(11_000),
+                    ..policy.clone()
+                },
+            )
+            .unwrap();
+        let scope = CancellationToken::default();
+        let held = PreparedJitOwner::start_scoped(&host, preparing.clone(), &scope).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while preparing.active_processes() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no preparation process observed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Cancel while preparation/ready ownership is retained and before any
+        // input delivery; no status query or slot Drop may be needed to stop it.
+        scope.cancel();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while preparing.active_processes() != 0 || host.usage().physical_jobs != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled compiler/spare remained live"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(held);
+        let before_retry = preparing.timings().settled_calls;
+        let compiled_before_retry = matches!(
+            *preparing.0.jit_compiled.lock().unwrap(),
+            CompiledState::Ready(_)
+        );
+        let owner = ready(&preparing);
+        assert_eq!(
+            preparing.timings().settled_calls,
+            before_retry + u64::from(!compiled_before_retry)
+        );
+        assert_eq!(
+            wire::reply(&owner.dispatch(delivery(None), None).unwrap()).unwrap()["value"],
+            1
+        );
+        assert_eq!(preparing.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+
+        let different = artifact
+            .with_module(fixture("different"), policy.clone())
+            .unwrap();
+        let changed_policy = artifact
+            .with_module(
+                source,
+                WorkerPolicy {
+                    fuel_per_call: None,
+                    ..policy.clone()
+                },
+            )
+            .unwrap();
+        for (other, expected) in [(&different, 2), (&changed_policy, 1)] {
+            assert!(matches!(
+                *other.0.jit_compiled.lock().unwrap(),
+                CompiledState::Pending
+            ));
+            let owner = ready(other);
+            assert_eq!(other.timings().settled_calls, 1);
+            assert_eq!(
+                wire::reply(&owner.dispatch(delivery(None), None).unwrap()).unwrap()["value"],
+                expected
+            );
+            assert_eq!(other.timings().settled_calls, 2);
+            assert_eq!(other.active_processes(), 0);
+            assert_eq!(host.usage().physical_jobs, 0);
+        }
+        let trap = artifact
+            .with_module(fixture("trap"), policy.clone())
+            .unwrap();
+        let owner = ready(&trap); // start must not execute during compilation/load
+        assert!(owner.dispatch(delivery(None), None).is_err());
+        assert_eq!(
+            trap.timings().settled_calls,
+            2,
+            "no retry after guest start traps"
+        );
+        assert_eq!(trap.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+
+        let tail = artifact.with_module(fixture("tail"), policy).unwrap();
+        let owner = ready(&tail);
+        let code_path = {
+            let state = tail.0.jit_compiled.lock().unwrap();
+            let CompiledState::Ready(asset) = &*state else {
+                panic!("compiler did not produce code")
+            };
+            let path = asset.files.cache.path().join("node.cwasm");
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(
+                bytes[8], 1,
+                "Winch-incompatible source must use standard compiler"
+            );
+            assert_eq!(sha256(&bytes).unwrap(), asset.digest);
+            assert!(std::fs::File::options().write(true).open(&path).is_err());
+            path
+        };
+        drop(owner); // no input, still requires actual process/IO cleanup
+        assert_eq!(tail.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+        assert_eq!(tail.timings().settled_calls, 2);
+        drop(tail);
+        assert!(
+            !code_path.exists(),
+            "compiled snapshot retained after all owners closed"
+        );
+    }
 
     #[test]
     #[ignore = "requires the production Worker, pinned DLL and a real AppContainer"]
