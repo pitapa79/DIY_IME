@@ -307,6 +307,13 @@ jobs:
             cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_compiled_jit_cache_preserves_source_policy_single_use_and_exit -- --exact --ignored --nocapture
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          $env:DIY_EXPERIMENT_RUNTIME_ONLY_SPARE = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_compiled_jit_cache_preserves_source_policy_single_use_and_exit -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Remove-Item Env:DIY_EXPERIMENT_RUNTIME_ONLY_SPARE, Env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS
           $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
           foreach ($cache in @('0', '1')) {
             $env:DIY_EXPERIMENT_COMPILED_JIT = $cache

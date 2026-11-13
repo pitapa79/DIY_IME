@@ -885,6 +885,7 @@ impl WasmArtifact {
         let mut streamed_bytes = stream_module.then(|| self.0.module.clone());
         let mut stream_charge = None;
         let mut streamed_files = None;
+        let mut late_module_digest = None;
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
             WorkerImage::Jit if stream_module => (
                 None,
@@ -911,10 +912,13 @@ impl WasmArtifact {
                 Some("--compile-jit-v1".into()),
             ),
             WorkerImage::PreparedCompiled(files, len, digest) => {
+                let runtime_spare = std::env::var_os("DIY_EXPERIMENT_RUNTIME_ONLY_SPARE")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
                 // Charge both Vec and Arc conversion storage conservatively.
                 // If the existing code budget cannot cover it, retain the
                 // file-based path rather than widening a resource limit.
-                let charge = stream_enabled
+                let charge = (stream_enabled || runtime_spare)
                     .then(|| self.0.code_budget.reserve(2 * (len as u64 + 1)))
                     .and_then(Result::ok);
                 if let Some(charge) = charge {
@@ -929,11 +933,18 @@ impl WasmArtifact {
                     stream_charge = Some(charge);
                     streamed_files = Some(files);
                     streamed_bytes = Some(Arc::from(bytes));
+                    if runtime_spare {
+                        late_module_digest = Some(digest.clone());
+                    }
                     (
                         None,
                         "-",
-                        len,
-                        Some(format!("--prepare-compiled-jit-pipe-v1={digest}")),
+                        if runtime_spare { 0 } else { len },
+                        Some(if runtime_spare {
+                            "--prepare-runtime-jit-v1".into()
+                        } else {
+                            format!("--prepare-compiled-jit-pipe-v1={digest}")
+                        }),
                     )
                 } else {
                     (
@@ -1011,6 +1022,7 @@ impl WasmArtifact {
                     request,
                     control.cancel.clone(),
                     deferred_diagnostics,
+                    late_module_digest,
                 ),
                 Vec::new(),
             ),
@@ -2033,8 +2045,12 @@ mod tests {
                 let CompiledState::Ready(asset) = &*state else {
                     unreachable!()
                 };
-                let temporary = if std::env::var_os("DIY_EXPERIMENT_JIT_STREAM_MODULE").as_deref()
-                    == Some(std::ffi::OsStr::new("1"))
+                let temporary = if [
+                    "DIY_EXPERIMENT_JIT_STREAM_MODULE",
+                    "DIY_EXPERIMENT_RUNTIME_ONLY_SPARE",
+                ]
+                .iter()
+                .any(|name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new("1")))
                 {
                     2 * (asset.len as u64 + 1)
                 } else {
@@ -2155,7 +2171,18 @@ mod tests {
                 },
             )
             .unwrap();
-        for (other, expected) in [(&different, 2), (&changed_policy, 1)] {
+        let standard = artifact
+            .with_module(fixture("standard-state"), policy.clone())
+            .unwrap();
+        let memory = artifact
+            .with_module(fixture("memory"), policy.clone())
+            .unwrap();
+        for (other, expected) in [
+            (&different, 2),
+            (&changed_policy, 1),
+            (&standard, 1),
+            (&memory, 1),
+        ] {
             assert!(matches!(
                 *other.0.jit_compiled.lock().unwrap(),
                 CompiledState::Pending
@@ -2181,6 +2208,19 @@ mod tests {
             "no retry after guest start traps"
         );
         assert_eq!(trap.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+
+        let fuel = artifact
+            .with_module(fixture("fuel"), policy.clone())
+            .unwrap();
+        let owner = ready(&fuel);
+        assert!(owner.dispatch(delivery(None), None).is_err());
+        assert_eq!(
+            fuel.timings().settled_calls,
+            2,
+            "fuel failure is not retried"
+        );
+        assert_eq!(fuel.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
 
         let tail = artifact

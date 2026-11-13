@@ -431,20 +431,26 @@ impl<'a> WorkerScope<'a> {
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
         deferred_diagnostics: bool,
+        late_module_digest: Option<String>,
     ) -> Self {
         let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
         self.jit_run_cancel = Some(run_cancellation.clone());
         self.exchange = Some(Box::new(move |mut output, mut input| {
-            if let Some(module) = module {
+            if let Some(module) = module.as_ref().filter(|_| late_module_digest.is_none()) {
                 input
-                    .write_all(&module)
+                    .write_all(module)
                     .map_err(|_| "JIT module pipe closed")?;
             }
-            let mut ready = [0; super::runtime::JIT_READY.len()];
+            let marker = if late_module_digest.is_some() {
+                super::runtime::RUNTIME_READY
+            } else {
+                super::runtime::JIT_READY
+            };
+            let mut ready = vec![0; marker.len()];
             output
                 .read_exact(&mut ready)
                 .map_err(|_| "JIT readiness pipe closed")?;
-            if ready != super::runtime::JIT_READY {
+            if ready != marker {
                 return Err("invalid JIT readiness frame".into());
             }
             if cancel.is_cancelled() {
@@ -476,6 +482,19 @@ impl<'a> WorkerScope<'a> {
                 input
                     .write_all(&[u8::from(detailed)])
                     .map_err(|_| "Worker control pipe failed")?;
+            }
+            if let Some(digest) = late_module_digest {
+                let module = module.ok_or("late runtime module absent")?;
+                if !(1..=8 * 1024 * 1024).contains(&module.len()) || digest.len() != 64 {
+                    return Err("invalid late runtime module binding".into());
+                }
+                // No code bytes are sent until the normal size, grant,
+                // generation and cancellation checks above have succeeded.
+                input
+                    .write_all(&(module.len() as u32).to_le_bytes())
+                    .and_then(|()| input.write_all(digest.as_bytes()))
+                    .and_then(|()| input.write_all(&module))
+                    .map_err(|_| "late runtime module pipe failed")?;
             }
             input
                 .write_all(&bytes)

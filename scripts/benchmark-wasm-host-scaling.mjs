@@ -485,6 +485,7 @@ try {
     console.error(JSON.stringify({ freshGraphSummary }));
   }
   const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
+    requestedRuntimeOnlySpare: process.env.DIY_EXPERIMENT_RUNTIME_ONLY_SPARE === '1',
     requestedPreparedDiagnostics: process.env.DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS === '1'
       ? 'legacy-pipe-at-preparation' : 'input-selected-inline',
     ...(freshGraphSummary ? { freshGraphSummary } : {}),

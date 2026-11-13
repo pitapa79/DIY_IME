@@ -152,6 +152,84 @@ pub(super) unsafe fn prepare<'a>(
     bytes: &[u8],
     expected: &str,
 ) -> Result<Runtime<'a>, String> {
+    unsafe {
+        prepare_using(api, limits, diagnostics, bytes, expected, |s| {
+            s.engine(api, limits)
+        })
+    }
+}
+
+/// Only public runtime state: no Module, Store, Instance or guest input. A
+/// consumed owner selects exactly one compiler engine and drops the other.
+pub(super) struct PublicRuntime<'a> {
+    api: &'a Api,
+    limits: Limits,
+    standard: P,
+    winch: P,
+}
+impl Drop for PublicRuntime<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            for engine in [self.standard, self.winch] {
+                if !engine.is_null() {
+                    (self.api.engine_delete)(engine);
+                }
+            }
+        }
+    }
+}
+impl<'a> PublicRuntime<'a> {
+    pub(super) fn new(api: &'a Api, limits: &Limits) -> Result<Self, String> {
+        let standard = create_engine(api, limits)?;
+        Ok(Self {
+            api,
+            limits: limits.clone(),
+            standard,
+            winch: create_winch_engine(api, limits).unwrap_or(ptr::null_mut()),
+        })
+    }
+
+    /// # Safety
+    /// Same compiler-origin requirements as `prepare`. Neither digest nor the
+    /// private transport establishes authority to deserialize external bytes.
+    pub(super) unsafe fn prepare(
+        mut self,
+        diagnostics: Option<&'a Recorder>,
+        bytes: &[u8],
+        expected: &str,
+    ) -> Result<Runtime<'a>, String> {
+        let limits = self.limits.clone();
+        unsafe {
+            prepare_using(
+                self.api,
+                &limits,
+                diagnostics,
+                bytes,
+                expected,
+                |strategy| {
+                    let selected = match strategy {
+                        Strategy::Standard => &mut self.standard,
+                        Strategy::Winch => &mut self.winch,
+                    };
+                    if selected.is_null() {
+                        return Err("prepared compiler engine unavailable".into());
+                    }
+                    // Runtime takes ownership even if Store/load subsequently fails.
+                    Ok(std::mem::replace(selected, ptr::null_mut()))
+                },
+            )
+        }
+    }
+}
+
+unsafe fn prepare_using<'a>(
+    api: &'a Api,
+    limits: &Limits,
+    diagnostics: Option<&'a Recorder>,
+    bytes: &[u8],
+    expected: &str,
+    engine: impl FnOnce(Strategy) -> Result<P, String>,
+) -> Result<Runtime<'a>, String> {
     if hash(bytes)? != expected {
         return Err("compiled JIT bytes changed".into());
     }
@@ -168,7 +246,7 @@ pub(super) unsafe fn prepare<'a>(
         api,
         limits,
         diagnostics,
-        || frame.strategy.engine(api, limits),
+        || engine(frame.strategy),
         |engine, module| {
             // This interval measures code preparation, including cached loading.
             let _phase =

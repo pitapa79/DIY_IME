@@ -427,3 +427,26 @@ e1740d2の [CI43516314068](https://github.com/pitapa79/DIY_IME/actions/runs/4351
 通常Hostの検査は、元のASCII4096を独立した資源枯渇例として残し、失敗・全後段Blocked・非Inputポートに成功データなし・元process/物理予約ゼロ・次の正答への回復を要求する。取消例は4096個の `あ` とし、同じ4096 code pointと同じ期待出力を保持しつつ、入力UTF-8は4096→12288 bytesへ増える。事前に最大長Unicodeの通常完了を確認し、取消できなかった試行は `delivery=complete` と全文一致を要求する。既定3回で少なくとも1回の実取消と実回収が必要な条件も維持する。fuel・memory・正式fixture・Node実装・既定配布bytesは変更しない。
 
 修正後、実Windows製品Hostで既定3回は2取消+1正答、初回のみ1秒遅延した20回は19取消+1正答で、ASCII枯渇とUnicode最大長の事前確認、全試行の実回収・補充、Session/辞書の切替、保護/失効/EOFまで通った。`DIY_RETAINED_CANCEL_TRIALS` は3〜100回、`DIY_RETAINED_FIRST_CANCEL_DELAY_MS` は0〜1000msの検査用制御で、既定条件は3回/遅延なし。これは検査の誤った入力前提の訂正と範囲の分離であり、基盤遅延目標やNode自身の計算費用の削減を実証するものではない。
+
+### Runtimeだけを先行準備する私的経路の予備比較（2026-11-14）
+
+`DIY_EXPERIMENT_RUNTIME_ONLY_SPARE=1` は、Host自身のcompile-only成果を利用でき、同じ既存code budgetで配送bufferを確保できる場合に限り、実験的な `--prepare-runtime-jit-v1` を選ぶ。Native Workerは固定DLLと空の標準/Winch Engineだけを準備し、Node用のModule/Store/Instanceを持たず `DIY-RUNTIME-READY-v1\0` を返す。通常のJIT-readyとは別の通知である。module pathは `-`、事前module lengthは0に限定する。
+
+Hostの入力サイズ・許可・世代・取消検査後にだけ、長さ・digest・実際のcompiled bytesと入力を配送する。Nativeは最大8MiBのcompiled frameと最大8MiBの入力を制限し、同じcompiler-originの前提、digest、policyを確認して、Engineを1つだけ消費してfresh Store/Module/Instanceを作る。他方の空Engineは破棄する。Engineの所有権移転はStore/deserialize失敗時も解放される。Nodeコードを複数ロードせず、入力後の再利用・再試行もしない。既存の原文replyと入力時診断選択を保ち、Module読込み・Store/deserialize・instantiateは入力後費用として計測する。元process/IO/Job/ACL/profile回収、資源予算、結果採用条件を省略しない。
+
+これはまだ**Node間で在庫を共有しない**。現在のNode別ownerに新Native経路を接続した段階であり、Node非依存の共有poolや任意のNodeへの後選択が実装済みとは主張しない。既定OFF、予算不足なら既存のfile経路へ戻る。公開ABI・許可・標準配布Nodeは変更しない。単に読込みを後へ動かした方式を速度改善として採用しない。
+
+同じHost/Workerで旧→新→新→旧、各25ウォーム入力（初回は別記）、物理2枠、詳細診断ONの予備比較を実施した。各要求終了後100ms待機であり、固定100ms周期ではない。preparedall/pooled/compiled/stream/verified-runtime/inherited-ACL/overlapは1。全入力の正答、各runとsession終了の物理回収をdriverが検証した。
+
+| 順序 | 基盤P95 / P99 ms（同一guest callだけ除外） | prepared / 25 | 初回総応答 ms | Job CPU ms | peak commit bytes |
+| --- | --- | --- | --- | --- | --- |
+| 旧1 | 171.621 / 198.820 | 22 | 208.718 | 5828.125 | 116883456 |
+| 新2 | 436.240 / 1001.570 | 16 | 844.216 | 6453.125 | 115101696 |
+| 新3 | 57.535 / 681.875 | 24 | 199.845 | 6125.000 | 116531200 |
+| 旧4 | 23.260 / 38.880 | 25 | 191.670 | 5671.875 | 116211712 |
+
+新経路のprepared入力16/24件はすべて入力後のmodule-read実区間を持ち、旧のprepared入力には同区間がなかった。要求環境変数だけで経路選択を認定していない。新の回収P95は48.810/40.815msで依然大きく、単段での改善は認められない。25件では尾部の合否も判定せず、Goalは未達。次に検証すべき点は、Nodeコードを持たない状態の在庫を実際に共有した場合に、異種・未使用Nodeによる準備不足と費用を減らせるかである。
+
+Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Worker `b4de83ccd757ae224dc31b33e0c8b2d900c21dd9f5aa4ec5a3b5f7abaf27bf1d`、DLL `fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef`。report SHA（順序通り）は `21392eab665741d7c1368748515256c185923c336009ac37de481919c220b3ab`、`af5377abae9f8b02dc483748de955046b3c2798d04dff830396a2ecce4a55bb9`、`119deb6fcb27a56894956553994a9f22c87e9d8e9a6ee37aab2c438b8fb1ef0d`、`8ca641b9612beeefced030ab76bb1a9f1424574f76d759d3d7dd9127fc625623`。
+
+実AppContainerの既存ライフサイクル検査を標準compiler fallback・fuel枯渇・memory.grow拒否まで拡張した。新経路の入力時診断では全ケース成功した一方、このWin10で従来file経路の起動前準備タイムアウト2回、新経路+旧診断FDの準備タイムアウト3回（うち1回は継承ACL条件）も記録した。5秒の準備待ちやfixtureを緩めず、成功だけを残して安定性を認定しない。CIにも新経路の入力時/旧診断FD比較を追加し、全既存run行・条件・45分上限・集約ゲートを維持した。

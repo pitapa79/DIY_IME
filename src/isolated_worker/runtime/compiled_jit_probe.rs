@@ -107,10 +107,20 @@ pub(in crate::isolated_worker) fn worker_fixture(dll: &Path, mode: &str) -> Vec<
     match mode {
         "trap" => wat(&api, "(module (func $start unreachable) (start $start))"),
         "tail" => wat(&api, "(module (func $callee) (func return_call $callee))"),
-        "state" | "different" => {
+        "state" | "different" | "standard-state" | "fuel" | "memory" => {
             let reply = r#"{"apiVersion":1,"ok":true,"data":{"value":0}}"#;
             let position = 32 + reply.find(":0").unwrap() + 1;
-            let increment = if mode == "state" { 1 } else { 2 };
+            let increment = if mode == "different" { 2 } else { 1 };
+            let prelude = match mode {
+                "fuel" => "(loop $forever br $forever)",
+                "memory" => "i32.const 16 memory.grow i32.const -1 i32.ne if unreachable end",
+                _ => "",
+            };
+            let fallback = if mode == "standard-state" {
+                "(func $callee) (func return_call $callee)"
+            } else {
+                ""
+            };
             wat(
                 &api,
                 &format!(
@@ -120,10 +130,11 @@ pub(in crate::isolated_worker) fn worker_fixture(dll: &Path, mode: &str) -> Vec<
                 (func (export "diyime_api_version") (result i32) i32.const 1)
                 (func (export "diyime_alloc") (param i32) (result i32) i32.const 1024)
                 (func (export "diyime_call") (param i32 i32) (result i64)
+                    {prelude}
                     i32.const {position} i32.const {position} i32.load8_u
                     i32.const {increment} i32.add i32.store8
                     i64.const {})
-                (func (export "diyime_release_reply")))"#,
+                (func (export "diyime_release_reply")) {fallback})"#,
                     reply.replace('"', "\\22"),
                     ((reply.len() as u64) << 32) | 32
                 ),
