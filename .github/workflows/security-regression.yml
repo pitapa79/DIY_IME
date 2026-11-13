@@ -231,6 +231,27 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing mixed graph report ($mode)" }
           }
+      - name: Read-only runtime image comparison
+        run: |
+          cargo build --locked --release --features copied-runtime-verification-baseline --bin diy-ime2-wasm-worker --target-dir target/copied-runtime-control
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          foreach ($mode in @('copied', 'mapped')) {
+            $worker = if ($mode -eq 'copied') { 'target/copied-runtime-control/release/diy-ime2-wasm-worker.exe' } else { 'target/windows-app/bin/diy-ime2-wasm-worker.exe' }
+            foreach ($scenario in @('single-detailed', 'mixed')) {
+              $samples = if ($scenario -eq 'single-detailed') { 150 } else { 50 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-image-$mode-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-image-$mode-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $worker target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
       - name: Preserve partial Wasm benchmark reports on failure
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -256,6 +277,7 @@ jobs:
             target/windows-prepared-jit-response.json
             target/windows-prepared-jit-paced-*.json
             target/windows-prepared-jit-mixed-*.json
+            target/windows-prepared-jit-image-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

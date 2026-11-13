@@ -4,6 +4,48 @@ import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfigurati
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {measureHostInput} from './host-input-scenarios.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
+import {graphOverhead} from './wasm-host-overhead.mjs';
+
+function graphEvent(event, atUs, node, extra = {}) {
+ return {event, atUs: String(atUs), run: 1, plan: 1, input: 1, ...(node ? {node} : {}), ...extra};
+}
+function queuedGraph() {
+ return {events: [graphEvent('run-accepted', 0), graphEvent('node-ready', 10, 'n'),
+  graphEvent('node-started', 1010, 'n'), graphEvent('call-ended', 1510, 'n'),
+  graphEvent('node-resolved', 1520, 'n'), graphEvent('host-response-published', 1530),
+  graphEvent('worker-interval', 1500, 'n', {worker: {phase: 'guest-call', startedUs: '9000', finishedUs: '9100'}})]};
+}
+test('Wasm overhead includes queueing and resolution without subtracting independent clock offsets', () => {
+ const trace = queuedGraph();
+ const result = graphOverhead(trace, [trace.events[2]], 'serial');
+ assert.equal(result.lowerUs, 1430);
+ assert.equal(result.upperUs, 1430);
+ assert.deepEqual(result.nodes, [400]);
+ assert.deepEqual(result.readyToResolved, [1410]);
+ // A delayed event from the preceding input cannot supply this run's duration.
+ trace.events.push({...trace.events[6], run: 2});
+ assert.deepEqual(graphOverhead(trace, [trace.events[2]], 'serial'), result);
+});
+test('Wasm graph timing refuses missing, ambiguous, reversed or reused invocation anchors', () => {
+ for (const change of [t => t.events.pop(), t => t.events.push({...t.events[3]}),
+  t => t.events[4].atUs = '1000', t => t.events[6].worker.finishedUs = '9600']) {
+  const trace = queuedGraph(); change(trace);
+  assert.equal(graphOverhead(trace, [trace.events[2]], 'serial'), undefined);
+ }
+ const trace = queuedGraph();
+ assert.equal(graphOverhead(trace, [trace.events[2], trace.events[2]], 'serial'), undefined);
+ assert.equal(graphOverhead(trace, [{...trace.events[2], input: 2}], 'serial'), undefined);
+});
+test('parallel Wasm graph overhead keeps overlap bounds rather than adding Worker clocks', () => {
+ const trace = queuedGraph();
+ trace.events[5].atUs = '3000';
+ trace.events.push(graphEvent('node-ready', 10, 'm'), graphEvent('node-started', 20, 'm'),
+  graphEvent('call-ended', 2000, 'm'), graphEvent('node-resolved', 2010, 'm'),
+  graphEvent('worker-interval', 1990, 'm', {worker: {phase: 'guest-call', startedUs: '0', finishedUs: '200'}}));
+ const result = graphOverhead(trace, [trace.events[2], trace.events[8]], 'parallel');
+ assert.equal(result.lowerUs, 2700);
+ assert.equal(result.upperUs, 2800);
+});
 
 function tracePage(events,dropped=0){return {...emptyTrace(),recordingId:'a'.repeat(32),nowUs:'100000',firstSequence:String(events[0]?.sequence??0),nextSequence:String(events.at(-1)?.sequence??0),events,dropped};}
 test('Host input counts bad results and refuses stale payloads after a newer revision', async () => {

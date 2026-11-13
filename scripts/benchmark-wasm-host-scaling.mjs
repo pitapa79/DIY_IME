@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PhaseProfiler } from './trace-phase-profile.mjs';
 import { measureHostInput } from './host-input-scenarios.mjs';
+import { graphOverhead } from './wasm-host-overhead.mjs';
 
 const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario = 'all', alternateWasm] = process.argv.slice(2);
 const samples = Number(count), physicalSlots = Number(slots);
@@ -118,40 +119,6 @@ function distribution(values) {
   const rank = p => sorted[Math.ceil(sorted.length * p) - 1];
   return { p50: rank(0.5), p95: rank(0.95), p99: rank(0.99), max: sorted.at(-1) };
 }
-function graphOverhead(trace, nodes, shape) {
-  const only = predicate => {
-    const matches = trace.events.filter(predicate);
-    return matches.length === 1 ? matches[0] : undefined;
-  };
-  const accepted = only(event => event.event === 'run-accepted');
-  if (!accepted) return undefined;
-  const sameRun = event => event.run === accepted.run && event.plan === accepted.plan && event.input === accepted.input;
-  const published = only(event => sameRun(event) && event.event === 'host-response-published');
-  if (!published) return undefined;
-
-  const calls = [];
-  for (const node of nodes) {
-    const ended = only(event => sameRun(event) && event.node === node.node && event.event === 'call-ended');
-    const guest = only(event => sameRun(event) && event.node === node.node && event.worker?.phase === 'guest-call')?.worker;
-    if (!ended || guest?.finishedUs === undefined) return undefined;
-    const callUs = Number(BigInt(guest.finishedUs) - BigInt(guest.startedUs));
-    const nodeUs = Number(BigInt(ended.atUs) - BigInt(node.atUs));
-    if (callUs < 0 || callUs > nodeUs) return undefined;
-    calls.push({ callUs, nodeMinusGuestCallUs: nodeUs - callUs });
-  }
-
-  const hostUs = Number(BigInt(published.atUs) - BigInt(accepted.atUs));
-  const totalGuestUs = calls.reduce((sum, call) => sum + call.callUs, 0);
-  const longestGuestUs = Math.max(...calls.map(call => call.callUs));
-  // Worker timestamps are process-local. In parallel graphs, the wall time
-  // occupied by guest calls lies between the longest call and their sum.
-  return {
-    hostUs,
-    lowerUs: Math.max(0, hostUs - totalGuestUs),
-    upperUs: hostUs - (shape === 'serial' ? totalGuestUs : longestGuestUs),
-    nodes: calls.map(call => call.nodeMinusGuestCallUs),
-  };
-}
 function ended(snapshot) {
   return snapshot.state === 'terminal' && Object.values(snapshot.physical).every(count => count === 0);
 }
@@ -173,6 +140,7 @@ async function measure(client, spec) {
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
     && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
+  const executedNodeCount = spec.shape === 'skip' ? Math.min(nodeCount, 1) : nodeCount;
   const eligibleNodes = nodeCount + (spec.unused ?? 0);
   // Activation has no run targets yet, so unused eligible nodes can reserve spares.
   const spareLimit = Math.min(allNodes ? eligibleNodes : requestedSpares, physicalSlots - 1);
@@ -355,18 +323,19 @@ async function measure(client, spec) {
       }
       const complete = trace.dropped === 0;
       const nodes = trace.events.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
-      if (complete) assert.equal(nodes.length, nodeCount, 'mixed graph did not execute every Wasm node');
+      if (complete) assert.equal(nodes.length, executedNodeCount, 'graph did not execute the expected Wasm nodes');
       let cold = 0, prepared = 0;
       for (const { node } of nodes) {
         const events = trace.events.filter(event => event.node === node);
         if (events.some(event => event.event === 'worker-process-started')) cold++;
         else if (complete && events.some(event => event.worker?.phase === 'guest-call')) prepared++;
       }
-      record.workerRoutes = { cold, prepared, unknown: nodeCount - cold - prepared };
+      record.workerRoutes = { cold, prepared, unknown: executedNodeCount - cold - prepared,
+        ...(executedNodeCount < nodeCount ? { skipped: nodeCount - executedNodeCount } : {}) };
       // A missing unrelated event does not invalidate the timing anchors. Each
       // fixture node has one invocation and every expected node must be present.
-      if (new Set(nodes.map(node => node.node)).size === nodeCount
-          && nodes.length === nodeCount) {
+      if (new Set(nodes.map(node => node.node)).size === executedNodeCount
+          && nodes.length === executedNodeCount) {
         record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
       }
       record.trace = trace;
@@ -410,14 +379,17 @@ async function measure(client, spec) {
         }];
       })),
     } : {}),
-    ...(scenario === 'mixed' ? {
+    ...(scenario === 'mixed' || (preparedExperiment && scenario === 'all') ? {
       graphOverhead: {
+        attempts: records.length - 1,
         measured: graphSamples.length,
+        unmeasured: records.length - 1 - graphSamples.length,
         withDroppedTraceEvents: measuredGraphs.filter(record => record.trace.dropped > 0).length,
         ...(graphSamples.length ? {
           lowerUs: distribution(graphSamples.map(sample => sample.lowerUs)),
           upperUs: distribution(graphSamples.map(sample => sample.upperUs)),
           nodeMinusGuestCallUs: distribution(graphSamples.flatMap(sample => sample.nodes)),
+          readyToResolvedMinusGuestCallUs: distribution(graphSamples.flatMap(sample => sample.readyToResolved)),
         } : {}),
       },
     } : {}),

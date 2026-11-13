@@ -1,6 +1,7 @@
 //! Pinned Wasmtime50.0.1 full x64 C API. Host worker and developer probe entrypoints.
 use super::worker_trace::Recorder;
 use crate::execution_control::WorkerTracePhase;
+mod runtime_image;
 pub(super) const MAX_STREAMED_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
 #[derive(Clone)]
@@ -262,9 +263,16 @@ unsafe extern "system" {
 fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
 }
-fn verify_runtime(path: &Path) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("runtime read: {e}"))?;
-    verify_runtime_bytes(&bytes)
+fn verify_runtime(path: &Path) -> Result<Option<runtime_image::ReadOnlyImage>, String> {
+    if cfg!(feature = "copied-runtime-verification-baseline") {
+        let bytes = std::fs::read(path).map_err(|e| format!("runtime read: {e}"))?;
+        verify_runtime_bytes(&bytes)?;
+        Ok(None)
+    } else {
+        let image = runtime_image::ReadOnlyImage::open(path)?;
+        verify_runtime_bytes(image.bytes())?;
+        Ok(Some(image))
+    }
 }
 fn verify_runtime_bytes(bytes: &[u8]) -> Result<(), String> {
     let size = u32::try_from(bytes.len()).map_err(|_| "runtime file too large")?;
@@ -306,7 +314,9 @@ macro_rules! api {
   ($($field:ident:[$ty:ty] => $name:literal),+ $(,)?)=>{
    struct Api {_library:Library,$($field:$ty),+}
    impl Api {fn load(path:&Path)->Result<Self,String>{
-    verify_runtime(path)?;
+    // Retain the read-only mapping and its deny-write/delete file handle
+    // through LoadLibrary and symbol resolution, not just through hashing.
+    let _verified_image = verify_runtime(path)?;
     // SAFETY: this is the verified pinned runtime in a Host-owned code snapshot.
     unsafe { Self::load_verified(path) }
    }
