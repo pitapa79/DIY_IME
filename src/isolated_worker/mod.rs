@@ -57,26 +57,29 @@ pub struct Profile {
     sid: PSID,
     deleted: bool,
 }
+fn private_worker_name() -> Result<String, String> {
+    let mut random = [0u8; 16];
+    // SAFETY: system-preferred RNG accepts a null provider and initialized buffer.
+    let status = unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            random.as_mut_ptr(),
+            16,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(format!("private nonce unavailable {status:#x}"));
+    }
+    let suffix = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok(format!("DIYIME2.Worker.{suffix}"))
+}
 impl Profile {
     pub fn new() -> Result<Self, String> {
-        let mut random = [0u8; 16];
-        // SAFETY: system-preferred RNG accepts a null provider and initialized buffer.
-        let status = unsafe {
-            BCryptGenRandom(
-                ptr::null_mut(),
-                random.as_mut_ptr(),
-                16,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        };
-        if status < 0 {
-            return Err(format!("profile nonce unavailable {status:#x}"));
-        }
-        let suffix = random
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let name = wide(OsStr::new(&format!("DIYIME2.Worker.{suffix}")));
+        let name = wide(OsStr::new(&private_worker_name()?));
         let mut sid = ptr::null_mut();
         // SAFETY: valid terminated names, no requested OS capabilities, owned returned SID.
         let hr = unsafe {
@@ -158,6 +161,16 @@ pub struct Cache {
 }
 impl Cache {
     pub fn new(workspace: &Path, profile: &Profile) -> Result<Self, String> {
+        Self::new_named(workspace, &profile.name())
+    }
+    /// Immutable code storage has no token, SID or process. It only needs an
+    /// exclusive unpredictable directory name; invocation isolation still
+    /// requires its own real Profile and per-profile ACL lease.
+    pub(super) fn new_code_snapshot(workspace: &Path) -> Result<Self, String> {
+        Self::new_named(workspace, &private_worker_name()?)
+    }
+    fn new_named(workspace: &Path, name: &str) -> Result<Self, String> {
+        asset_name(name)?;
         let workspace = std::fs::canonicalize(workspace).map_err(|e| e.to_string())?;
         let target = workspace.join("target/appcontainer-probes");
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -165,7 +178,7 @@ impl Cache {
         if !target.starts_with(&workspace) {
             return Err("Worker cache escapes workspace".into());
         }
-        let root = target.join(profile.name());
+        let root = target.join(name);
         std::fs::create_dir(&root).map_err(|e| e.to_string())?;
         Ok(Self { root })
     }

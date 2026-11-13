@@ -297,10 +297,6 @@ impl CodeFiles {
             })
             .ok_or_else(|| fail("worker-asset", "code size overflow"))?;
         let reservation = budget.reserve(bytes)?;
-        // A profile is used solely to generate a private, existing cache identity.
-        // No process or ACL uses this naming SID, and it is deleted immediately.
-        let mut naming = Profile::new()
-            .map_err(|_| fail("worker-isolation", "runtime cache identity unavailable"))?;
         // Own the reservation together with the directory before the first write,
         // so partial construction has the same cleanup/accounting as a live cache.
         let mut files = Self {
@@ -308,7 +304,7 @@ impl CodeFiles {
             reservation: Some(reservation),
             locks: Vec::new(),
             cache: ScopedCache(
-                Cache::new(workspace, &naming)
+                Cache::new_code_snapshot(workspace)
                     .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
             ),
             healthy: std::sync::Mutex::new(true),
@@ -332,9 +328,6 @@ impl CodeFiles {
                     .map_err(|_| fail("worker-asset", "code snapshot lock unavailable"))?,
             );
         }
-        naming
-            .delete()
-            .map_err(|_| fail("worker-cleanup", "runtime naming profile cleanup failed"))?;
         Ok(files)
     }
     fn change_access(&self, profile: &Profile, allow: bool) -> Result<(), String> {
@@ -1970,12 +1963,19 @@ mod tests {
             policy.clone(),
         )
         .unwrap();
+        let readiness_attempt = std::cell::Cell::new(0);
         let ready = |artifact: &WasmArtifact| {
+            let attempt = readiness_attempt.get() + 1;
+            readiness_attempt.set(attempt);
             let mut owner = PreparedJitOwner::start(&host, artifact.clone()).unwrap();
             if let Err(error) = owner.ready.recv_timeout(Duration::from_secs(5)) {
+                let processes = artifact.active_processes();
+                let settled = artifact.timings().settled_calls;
                 owner.cancel.cancel();
                 let result = owner.worker.take().unwrap().join();
-                panic!("compiled JIT readiness failed: {error:?}; {result:?}");
+                panic!(
+                    "compiled JIT readiness failed: attempt={attempt} active={processes} settled={settled} {error:?}; {result:?}"
+                );
             }
             assert_eq!(artifact.active_processes(), 1);
             assert_eq!(host.usage().physical_jobs, 1);

@@ -307,3 +307,42 @@ Native予備検証では、同じ固定APIが生成した成果だけをprivate 
 実AppContainerでfile/pipe両方のcache lifecycle検査が7.70/7.26秒で成功した。余分なbuffer予算の保持・解放、予算を満たした状態でのfile fallback、健全性を失った元CodeFilesの拒否、取消・再生成、異なる実コード/policy、guest失敗の非再試行、物理process/予約ゼロを含む。CIでも両配送を検査する。
 
 同一バイナリ・物理2枠・コンパイルcacheありのローカル単段各30件、file→pipe順の基盤遅延P50/P95/P99は18.279/139.188/165.618→17.023/225.875/235.398ms、preparedは28→26/30件だった。中央値だけで採用せず、末尾改善は未証明とする。正答とsession終了後の物理所有ゼロは通った。報告SHAは `0cc285aafdb4f586c68d2c1cfee053705e51dd1d68f3e9ee6c3363dcb8d13cbe` / `cb1672713181665eb541f5e7c2b6a711b2bce827e9da50d0b202d4120144420c`。通常defaultへの採用、多段反復、trace OFF、全変更/失効/異常条件、main統合は引き続き未完了。
+
+### コード保存用の命名と、補充開始を早める案の切り分け
+
+CodeFilesのディレクトリは、以前は名前を得るためだけのAppContainer profileを作成・削除していた。このSIDはtoken・process・ACLに使っていない。ここを同じOS RNGの128bit乱数名と排他的create_dirへ置き換え、名前だけのOS profile操作を除く。固定prefix、workspace内の正規化・既存directory拒否、資産名の制限、private ACL、書込/削除共有拒否、有界code予算、固定名だけの回収は維持する。実行用Profile::newとCache::new(workspace, profile)は従来どおりで、入力を扱う各Workerの実profile作成・元process終了後の削除を省略しない。
+
+局所検査には初期readinessの5秒timeoutが残る。失敗例の観測はattempt1/active0/settled0、attempt1/active0/settled1、命名変更後にはattempt1/active1/settled1だった。settledはcompilerを含む元process/IO/ACL/profile回収済み呼出し数で、readyや成功実行の代用ではない。timeoutや失敗条件を緩めず、命名変更だけで冷間起動の問題を解決したとはしない。現在のローカルCore単体検査は102成功/9失敗/32ignoreで、9失敗は必須WinHTTP option195がこのWindowsで利用できないnetwork-platformに関係する。CIとローカル検査を区別する。
+
+補充案を除去した最終版はfmt、locked/offline release all-target Clippy、release Host/Workerと検査binaryのbuildを確認した。コードキャッシュの既存検査10件（各profileへの個別許可/取消、他profileの許可維持、書込・置換・削除共有拒否、部分構築、健全性失効、追加ファイル拒否、予算/回収）は成功。同じ最終binaryの実cache lifecycleはfileの最初のreadyが5秒timeout（全体6.68秒）で失敗し、その後のpipeは8.92秒、従来raw JITは4.07秒で成功した。fileを成功扱いにせず、実profile・入力世代・取消・回収の条件を緩めない。pipeline全体の判定は未合格であり、冷間の起動待ちを引き続き調べる。
+
+コンパイル済みの場合だけ、既存予備の予約を現在のdispatchへ引き継いだ直後に次の入力未配送Workerを別枠で補充する案もローカルで比較した。別process/Store/Instanceと2物理枠は実fixtureで検査したが、性能の見込みが乏しいため追加flag・callback・専用検査を取り下げた。残す実装は従来どおり現在のWorkerの回収後に補充する。
+
+この一時版の同一Host/Worker・物理2枠・独立入力各35件、通常補充→早期補充の順では、単段逐次の応答P95が192.715→768.837ms、100msの正答23→22/35、20msは10→6/35。4段逐次P95は526.312→1370.880ms、100/20ms正答は双方各5/35だった。すべてadmitted、admissionRejected/failed/timedOutは0、残りはsuperseded。各session終了後の元process/予約ゼロは通った。低メモリのローカル小標本、順序固定、4段の別digestはcustom section追加であり異なる実コードではないため、Goalの異種Wasm達成根拠にしない。別の先行測定はローカル検査と重なったため比較から除外した。
+
+一時版レポートSHAは `5c4fa4173f3ba9dee44aa493d716a08e6189c484838603dac09ef3fe04c3486e` / `3714164e12062908b621b7e21f0fccaa7461c7832d2fff6a370ee50dd34d70b1`、Host `c2cd79f95b7c97464ec12fa5ac5c50c811b41604f9bc01098b4f1ae951a5ed4a`、Worker `9835ef58149c71c9074737e745fbee4d8e4b3f9b7d1fa3e103e1de0719d80028`。削除後の最終バイナリの性能値へ流用しない。
+
+### 95bdf50 のコンパイルcache比較結果
+
+[CI 43427234957](https://github.com/pitapa79/DIY_IME/actions/runs/43427234957) は `95bdf50adb61a5191041d438d5e3f84cb418e7b5` で全工程成功し、file/pipe双方の実cache lifecycleも通った。artifact `14040711070` に以前欠落したcache比較とNative probe JSONがある。これは上記の命名専用profile削減を含まない。同一Host/Worker/DLLと実Wasm2種を照合し、cache0→cache1（pipe）の順で測った。単段は2物理枠・ウォーム150件、混合は6枠・各10グラフ、固定間隔は6枠・各245入力。反復順は固定で、10グラフの多段末尾値には十分な再現性がない。
+
+| 構成・測定区間 | cache0 P95/P99 (ms) | cache1 P95/P99 (ms) |
+| --- | --- | --- |
+| 単段、Host受付→公開 minus 同じ実行のguest-call | 11.156 / 12.404 | 9.962 / 85.282 |
+| 異種直列4段、各Nodeのready→resolved minus guest-call | 50.839 / 242.552 | 20.666 / 63.170 |
+| 異種直列8段、同上 | 69.618 / 210.559 | 19.173 / 613.425 |
+| 異種直列16段、同上 | 65.613 / 241.481 | 21.681 / 309.493 |
+
+単段のpreparedは150→149/150。cache1の遅い2件は同一試行の記録から、#82がpreparedで基盤85.282ms・回収78.795ms、#83がcoldで154.649ms・staging96.567msだった。#82の対応するcleanupログはprofile削除78.367ms、Job/ACL1.835ms、ACL lock待ち0ms。これを結果公開から除外しない。異種4段でもcache1の最大63.170ms中、同じNodeの回収が58.760msだった。通常の初期化費用だけでなく、実回収・冷間補充・Coreの待機を引き続き対象にする。
+
+並列4段は完全な測定4→5/10グラフ、合流2段は8→7/10。欠落したグラフを合格標本へ補完しない。同じWasm4段の独立入力は、100msで正答57→211/245、superseded188→34、20msでは正答35/245・superseded210で両者同じ。両構成の逐次は245/245正答。受付拒否・failed・timedOut・cancelledはこの比較の全間隔で0。単段20msは正答82→107/245で、残りはsuperseded。これらpacedは同じ実装の1/4段であり、異種Wasmを20/100msで測った証拠ではない。
+
+混合Job CPUは65.266→37.063秒、peak commit134,918,144→132,956,160 bytes。paced Job CPUは292.547→159.391秒、peak commit135,303,168→125,759,488 bytesだった。CPU削減は確認できるが、通常default経路・必要な全行列・P95/P99・欠落のない証拠は未達。単段150件でP95が10ms未満だったことを全体の成功にしない。
+
+Host SHAは `b920d74251406fe31dbb0e2df322c92ceea744da62bb2a89c0205eb299f96793`、Workerは `69f1c619a5c4e8e0b7429a88619ae09e147e970f703cabc8461b27cd16d20192`。DLLは前述の固定SHA、Wasmは `824de18259c64c2b07663a2419445651d53ddb7a72f4da582a07cd9c74331d2d` / `c95623ea297e98e35b32ad1d3b17d92079d0b68d17699bdefa664ea57c5b7ea3`。レポートSHAは次のとおり。
+
+| JSON | cache0 | cache1 |
+| --- | --- | --- |
+| single-detailed | `6b4c0fe38e9e0c99ce7bba79053f51dcd5266cd4d348e70651477e43ef488632` | `344d6ca42bd05782a096bdec187a18c343c453f5814a60d90ee12c04ee26df72` |
+| mixed | `3839f7c4458ce319de4d332a18b4e1d941dbe3ace74f57c20975df7b4ea7c6d0` | `b9bdcd7136d7a73869d42623c29f5127b5ca6ffa696a88da44892f317f703851` |
+| paced | `9c01361b23d59f8cc9ffefbd209250508cd3e2b617d4ca191b4e68b4b35471bc` | `5bb5a37cad997ef7426458256f82d0b87036542f96fcb3cfde5831acfbe11a70` |
