@@ -369,3 +369,22 @@ guest区間は77/80→80/80となったが、Host側anchorの欠落は残る。�
 Host SHA `94bccc06e2a1dfc539e758939de4c414d82debb4288f9728939cab82602f463c`、Worker `4a7808cbd60a56e004989f7db802f68e4ad61ec504638f0d3bfd5f33979ffc12`、DLLと原本Wasmは上記固定SHA。比較JSONのSHAは順番に `6c5bd63d7edd739ef86d2f3ed333a3d2638e059e0fb9a01c64c8b9901be4b87f`、`a6b2f9c658f97eddbd08b3ece9446153128d19fc3adf325666e3dd3ff9b2d0eb`、`1dcc5455c3d9ccc068f4b413b10e6288002e72a4a153854b3a457dcaf8aed6f6`、`11399bbd7f209a623cb6ab0aa2ca295d9f8e10834a5402e3d2a9dd79258d499e`。この後のstop競合修正は単体検査で別途確認し、上記のbinary実測に含めない。
 
 今後の明示ALT_WASM指定はmodule全体hashだけでなくWasm code節のhash差も必須とし、両方をJSONへ残す。custom section別名は同一実装対照として使えるが、異種実コードの合格材料にはしない。CIは既存検査コマンドを保った2つのWindows segmentへ分割し、従来名の必須checkは両方successの場合のみsuccessにする。45分上限、fixture、権限・物理回収の条件を緩めず、失敗/取消時の部分JSON保存も試みる。
+
+### 同時所有者ごとのRuntimeコード複製案を棄却（2026-11-14）
+
+同一のruntime snapshotへのACL更新・lock待ちを減らすため、入力を含まない固定Worker/DLLだけを同時所有者ごとに複製する案を比較した。実行済みprocess/profile/Store/Instanceは保持せず、immutable fileの共有拒否・健全性・個別ACL取消と既存512MiB予算を維持した。pool上限18枚、予算不足・複製失敗時はguest開始前に既存共有経路へ戻り、実回収後だけコードを再利用する。所有分離・再利用・上限/予算・poison拒否の3検査、および実AppContainerのcompiled-file/pipe lifecycleは成功した（8.87/6.60秒）。これは候補の検査結果であり、採用済みの機能ではない。
+
+同じHost/Worker/DLL/Wasm、4並列・6枠・各10件、shared→private→private→sharedのABBAでJob全子processのCPU/peak commitを測った。他の準備・cache・stream・ACL・overlap条件は直前の比較と同じで、直接記録controlは0。全runの正答・実物理所有ゼロとsession終了後の全process/予約ゼロは通った。
+
+| 順番・方式 | 応答P50 / P95 ms | 完全グラフ / 10 | ready→resolved基盤P95 ms（観測できたNodeのみ） | Job CPU ms | peak commit bytes |
+| --- | --- | --- | --- | --- | --- |
+| 1 shared | 364.400 / 1230.902 | 9 | 1005.174 | 8312.500 | 150388736 |
+| 2 private | 409.144 / 6653.347 | 8 | 6557.252 | 10484.375 | 153612288 |
+| 3 private | 208.561 / 806.993 | 5 | 560.104 | 8609.375 | 136732672 |
+| 4 shared | 345.985 / 868.322 | 10 | 703.229 | 8781.250 | 156508160 |
+
+20ms以上の回収ログにおけるACL lock待ちの最大は172244→0→1→48313us、Job/ACL全体は716171→86894→87959→195312us、profile削除は617761→88894→101287→85815usだった。特定の共有待ちは減ったが、全体の応答・欠測・CPUが一貫して改善せず、大きな遅延も残った。コード複製、startup/補充、profile回収を除外して成功とはしない。private方式の実装・環境flag・専用検査を取り下げ、共有runtime snapshotの実装を維持した。このtemporary binaryを以降の確定ソースの測定に流用しない。
+
+Host SHA `95f3c95a996ef403cc814a881c5eaeb515ab0d99c481b147a10e569662fef216`、Worker `27934c4b85e669c2e128905d82f8799d4da97e7e32bd8e1d59a68d0730d2dfec`。全moduleのcode節SHAは同じ `6899f503843ebd604755ce2cb2d3bc70a8ad88c865734e9eac45f1de4cd62fa2` で、異種実コードの証拠ではない。レポートSHAは順に `9f97bf60c0e102cbecc49c35c19a8bdbb33539dd595d128053768f0f4aa96bf7`、`4c3ba372eebe170f9a7882dc83a3b13439ede57be107c11b0e02ff7f8924d80d`、`b17aad9635ee7174944997b7461fa4aa20a65029748f06e12816d4a06c58dbe3`、`e8f681064b8dc51a6d864d6f71d4263a9a2a18adabff61ab914c48ec5154118e`。保存した候補patchのSHAは `cca79686aafaaa55105e1c5ed4d25653a96244e74b81a06b7bea78c93e363744`。
+
+c651a0fのCI [43471554069](https://github.com/pitapa79/DIY_IME/actions/runs/43471554069) のruntime-cache segmentは既存のservice fault検査で失敗した。意図的なcontrol thread panicの拒否自体は通ったが、停止通知の直後、threadが最後のArcを解放する前に再接続してservice-faultになっていた。検査は生存中の旧ownerに対する拒否を維持し、既存の有界待ちでWeakの失効を確認してから新serviceを作る。製品のfault・再接続方針や待ち時間の上限は変更しない。
