@@ -315,16 +315,29 @@ impl PendingPermissionSession {
     pub(in crate::isolated_worker) fn jit_candidates(
         &self,
         limit: usize,
-    ) -> Vec<(String, crate::isolated_worker::adapter::WasmNode)> {
-        self.plan
+        pooled: bool,
+    ) -> Vec<(Vec<String>, crate::isolated_worker::adapter::WasmNode)> {
+        let mut candidates: Vec<(Vec<String>, crate::isolated_worker::adapter::WasmNode)> =
+            Vec::new();
+        for node in self
+            .plan
             .as_ref()
             .expect("pending plan")
             .nodes
             .iter()
             .filter(|node| node.node.can_prepare_jit())
-            .take(limit)
-            .map(|node| (node.id.clone(), node.node.clone()))
-            .collect()
+        {
+            if pooled
+                && let Some((ids, _)) = candidates
+                    .iter_mut()
+                    .find(|(_, known)| known.shares_jit_preparation(&node.node))
+            {
+                ids.push(node.id.clone());
+            } else if candidates.len() < limit {
+                candidates.push((vec![node.id.clone()], node.node.clone()));
+            }
+        }
+        candidates
     }
 
     pub(in crate::isolated_worker) fn retained_stages(

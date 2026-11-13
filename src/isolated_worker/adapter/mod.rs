@@ -1269,6 +1269,12 @@ impl DeferredNode for WasmNode {
     }
 }
 impl WasmNode {
+    pub(in crate::isolated_worker) fn shares_jit_preparation(&self, other: &Self) -> bool {
+        // This identity is fresh for each prepared plan. Equal module bytes or
+        // a package's claimed kind are insufficient to share a waiting owner.
+        Arc::ptr_eq(&self.prepared_jit, &other.prepared_jit)
+    }
+
     pub(in crate::isolated_worker) fn can_prepare_jit(&self) -> bool {
         self.dictionary.is_none() && self.network.is_none() && self.artifact.0.compiled.is_none()
     }
@@ -1276,7 +1282,7 @@ impl WasmNode {
     pub(in crate::isolated_worker) fn prepare_jit_slot(
         &self,
         host: &ExecutionHost,
-        id: String,
+        ids: Vec<String>,
         limit: usize,
         refill_controller: Option<GuardedController>,
     ) -> Option<Arc<PreparedJitSlot>> {
@@ -1284,7 +1290,7 @@ impl WasmNode {
             return None;
         }
         let slot = Arc::new(PreparedJitSlot {
-            id,
+            ids,
             owners: std::sync::Mutex::new(Vec::new()),
             capacity: limit.min(host.policy().max_physical_jobs.saturating_sub(1) as usize),
             host: host.clone(),
@@ -1328,7 +1334,7 @@ impl WasmNode {
             .unwrap_or_else(|p| p.into_inner())
             .iter()
             .filter_map(std::sync::Weak::upgrade)
-            .find(|slot| slot.id == id)
+            .find(|slot| slot.ids.iter().any(|candidate| candidate == id))
     }
 
     fn start_legacy(
@@ -1494,7 +1500,7 @@ impl WasmNode {
     }
 }
 pub(in crate::isolated_worker) struct PreparedJitSlot {
-    id: String,
+    ids: Vec<String>,
     owners: std::sync::Mutex<Vec<PreparedJitOwner>>,
     capacity: usize,
     host: ExecutionHost,
@@ -1861,6 +1867,66 @@ mod tests {
         assert!(!owner.cancel.is_cancelled());
         assert_eq!(artifact.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
+
+        // Input-free owners can serve either instance of the exact prepared
+        // implementation. A new plan and an unrelated graph ID cannot take one.
+        let node = artifact
+            .prepare(
+                "fixture.wasm",
+                1,
+                vec![json!({"mode":"echo"})],
+                ExecutionGate::default(),
+                CancellationToken::default(),
+            )
+            .unwrap();
+        assert!(node.shares_jit_preparation(&node.clone()));
+        let other_plan = node.clone().fresh_preparation();
+        assert!(!node.shares_jit_preparation(&other_plan));
+        let mut pool_policy =
+            ResourcePolicy::from_value(contract["resourceProfiles"]["bounded"].clone()).unwrap();
+        pool_policy.max_physical_jobs = 2;
+        let pool_host = ExecutionHost::new("prepared-jit-shared-instances", pool_policy).unwrap();
+        let slot = node
+            .prepare_jit_slot(&pool_host, vec!["first".into(), "second".into()], 1, None)
+            .unwrap();
+        assert!(other_plan.prepared_jit_slot("second").is_none());
+        assert!(node.take_prepared_jit("unrelated").is_none());
+        for id in ["second", "first"] {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let owner = loop {
+                if let Some(owner) = node.take_prepared_jit(id) {
+                    break owner;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            assert_eq!(pool_host.usage().physical_jobs, 1);
+            assert!(node.take_prepared_jit("first").is_none());
+            assert!(node.take_prepared_jit("second").is_none());
+            let output = owner
+                .dispatch(
+                    JitDelivery {
+                        bytes: serde_json::to_vec(&wire::request(
+                            "fixture.wasm",
+                            1,
+                            json!({"method":"describe"}),
+                        ))
+                        .unwrap(),
+                        check: Some(Box::new(|| Ok(()))),
+                        run_cancel: None,
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(wire::reply(&output).unwrap()["kind"], "fixture.wasm");
+            assert_eq!(artifact.active_processes(), 0);
+            assert_eq!(pool_host.usage().physical_jobs, 0);
+            if id == "second" {
+                slot.refill(&artifact);
+            }
+        }
+        drop(slot);
+        assert!(node.prepared_jit_slot("first").is_none());
     }
 
     #[test]
