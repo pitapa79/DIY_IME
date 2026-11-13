@@ -251,6 +251,7 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     });
     execute_observed(
         WorkerScope {
+            verified_runtime: None,
             profile,
             job,
             cache,

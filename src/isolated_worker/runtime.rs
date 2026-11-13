@@ -2,6 +2,7 @@
 use super::worker_trace::Recorder;
 use crate::execution_control::WorkerTracePhase;
 mod runtime_image;
+pub(super) use runtime_image::VerifiedRuntimeFile;
 pub(super) const MAX_STREAMED_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
 #[derive(Clone)]
@@ -24,6 +25,7 @@ pub fn run_probe() -> Result<(), String> {
             tables: Some(1),
             memories: Some(1),
         },
+        None,
         None,
         None,
         ModuleMode::Jit {
@@ -65,6 +67,26 @@ fn require_appcontainer() -> Result<(), String> {
     }
     Ok(())
 }
+#[test]
+fn private_runtime_bootstrap_rejects_invalid_and_aliased_handles_before_loading() {
+    for handles in [
+        "0:0",
+        "1:1",
+        "18446744073709551615:0",
+        "text:0",
+        "1:text",
+        "1:2:3",
+    ] {
+        let args = ["runtime", "module", "1", "none", "none"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain([format!("--verified-runtime-file={handles}").into()])
+            .collect();
+        let error = worker_with_args(args).unwrap_err();
+        assert!(error.contains("invalid"), "unexpected rejection: {error}");
+    }
+}
+
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args
         .first()
@@ -128,11 +150,34 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .map_err(|_| "runtime memory exceeds i64")?;
     // Only the trusted Parent supplies this inherited, allowlisted private pipe.
     // Failure to obtain diagnostics cannot change the guest result.
-    let diagnostics = args
-        .get(5)
-        .and_then(|arg| arg.to_str())
-        .and_then(|arg| arg.strip_prefix("--diagnostics="))
-        .and_then(|value| value.parse::<usize>().ok())
+    let extension = args.get(5).and_then(|arg| arg.to_str());
+    let mut verified_runtime = None;
+    let diagnostic_handle = if let Some(value) =
+        extension.and_then(|arg| arg.strip_prefix("--verified-runtime-file="))
+    {
+        let (file, diagnostic) = value.split_once(':').ok_or("invalid runtime file proof")?;
+        let file = file
+            .parse::<usize>()
+            .map_err(|_| "invalid runtime file handle")?;
+        let diagnostic = diagnostic
+            .parse::<usize>()
+            .map_err(|_| "invalid diagnostic handle")?;
+        if file == 0 || file == usize::MAX || diagnostic == usize::MAX || file == diagnostic {
+            return Err("invalid or aliased runtime file handles".into());
+        }
+        use std::os::windows::io::FromRawHandle;
+        // SAFETY: private Native bootstrap from the trusted Parent. This file
+        // is explicitly allowlisted, read-only and already pinned/fully hashed;
+        // no guest/package protocol can choose it. Keep it until run returns.
+        verified_runtime =
+            Some(unsafe { std::fs::File::from_raw_handle(file as *mut std::ffi::c_void) });
+        Some(diagnostic)
+    } else {
+        extension
+            .and_then(|arg| arg.strip_prefix("--diagnostics="))
+            .and_then(|value| value.parse::<usize>().ok())
+    };
+    let diagnostics = diagnostic_handle
         .filter(|handle| *handle != 0 && *handle != usize::MAX)
         .map(|handle| {
             use std::os::windows::io::FromRawHandle;
@@ -151,6 +196,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         },
         Some(length),
         diagnostics.as_ref(),
+        verified_runtime.as_ref(),
         mode,
     )
 }
@@ -764,6 +810,7 @@ fn run(
     limits: Limits,
     expected_module: Option<usize>,
     diagnostics: Option<&Recorder>,
+    verified_runtime: Option<&std::fs::File>,
     mode: ModuleMode,
 ) -> Result<(), String> {
     if args.len() != 3 {
@@ -777,7 +824,15 @@ fn run(
         return Err("runtime path must be absolute".into());
     }
     let dll_phase = diagnostics.map(|d| d.span(WorkerTracePhase::DllLoad));
-    let api = Api::load(runtime)?;
+    let api = if let Some(verified) = verified_runtime {
+        let _same_file = runtime_image::lock_matching_file(runtime, verified)?;
+        // SAFETY: the trusted Parent hashed and continuously pinned this exact
+        // immutable file. A different path target or mutable file was refused.
+        // The original inherited file remains owned throughout this run.
+        unsafe { Api::load_verified(runtime)? }
+    } else {
+        Api::load(runtime)?
+    };
     drop(dll_phase);
     let module_phase = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
     let limit = expected_module.unwrap_or(64 * 1024 * 1024);

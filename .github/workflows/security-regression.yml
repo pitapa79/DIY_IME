@@ -231,7 +231,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing mixed graph report ($mode)" }
           }
-      - name: Read-only runtime image comparison
+      - name: Runtime image verification comparison
         run: |
           cargo build --locked --release --features copied-runtime-verification-baseline --bin diy-ime2-wasm-worker --target-dir target/copied-runtime-control
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -242,10 +242,21 @@ jobs:
           $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
           $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
           $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
-          foreach ($mode in @('copied', 'mapped')) {
+          $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = '1'
+          foreach ($mode in @('copied', 'mapped', 'parent-verified-file')) {
+            $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = if ($mode -eq 'parent-verified-file') { '1' } else { '0' }
             $worker = if ($mode -eq 'copied') { 'target/copied-runtime-control/release/diy-ime2-wasm-worker.exe' } else { 'target/windows-app/bin/diy-ime2-wasm-worker.exe' }
-            foreach ($scenario in @('single-detailed', 'mixed')) {
-              $samples = if ($scenario -eq 'single-detailed') { 150 } else { 50 }
+            if ($mode -eq 'parent-verified-file') {
+              $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path $worker).Path
+              $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+              $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::runtime_image::tests::real_verified_runtime_file_pins_full_hash_identity_and_readonly_inheritance -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 150 } elseif ($scenario -eq 'paced') { 35 } else { 50 }
               $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
               $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-image-$mode-$scenario.json"
               python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-image-$mode-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $worker target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm

@@ -265,3 +265,17 @@ Core の同期受け渡し診断は Windows x64・Rust GNU 1.90.0 の release、
 同ランの異種直列16段は各50グラフで、応答中央値608.167→585.208 ms、P95は877.648→939.708 ms。ノードのready→resolve追加遅延P95は161.425→130.516 msだった。並列4段の完全な時刻が揃うグラフは37→33/50、合流2段は30→28/50に留まる。メモリ削減は確認できたが、多段の末尾遅延・診断欠落・目標達成は未解決。
 
 次の比較 `DIY_EXPERIMENT_JIT_ACTIVATION_READY=1` は、新プランを公開する前に入力未配送の予備のreadyを確認する。確認済みの単発通知を所有者に記録し、後の配送でも再利用できるようにする。全予備で共通の3秒上限を使い、枠不足・準備タイムアウトでは既存の冷間経路を残す。準備完了と実終了の証拠は区別する。取消・許可撤回はプランに属する待機所有者にも伝わり、個別所有者の片付けではプランや他の予備を取り消さない。公開前の世代・取消・保護状態の再検査を維持する。新しいプラン30件ずつについて、有効化時間と直後の初回入力を別々に記録する。これは初回の準備待ちの比較であり、長期待機・補充・通常経路の採用まで検証済みとはしない。
+
+[有効化前の準備待ち比較](https://github.com/pitapa79/DIY_IME/actions/runs/43400152668/artifacts/14027005721)は `526dfa977398e83f032a626344850a0791d620c2`（merge source `a2b1d500d95034d2ada47b2d25da4e64319be903`）で全回帰に成功。同一runner・物理6枠、異種Wasm直列4段、新規プラン各30件の直後の初回入力で、ready待ちなし→ありの応答P50/P95/P99は210.254/244.725/399.857→54.301/77.333/107.452 msだった。全段準備済みは0→30/30グラフ、ノード呼出し120件中の冷間は30→0件。代わりに有効化自体のP95は1.269→172.321 ms、全準備のP95は772.716→1031.580 msに増える。診断は両条件30/30グラフを照合できたが、ノードのready→resolved追加遅延P95/P99は189.748/208.364→22.874/36.102 msであり、準備済みでも目標未達。入力待ちを準備へ移した効果と準備の費用を両方記録し、ウォーム補充や長期待機の改善と混同しない。
+
+### 固定DLLの検証済みファイル所有権の引継ぎ候補
+
+`DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE=1` は、JIT予備の補充時に同じDLL全体を毎回hashする費用を切り分ける内部候補。通常の既定経路は変更しない。Parentは元のcapture時の照合に加え、実際にロードするHost専用キャッシュファイルを読み取り専用・書込/削除共有なしで開き、その全バイトを固定SHA-256と照合する。成功した場合だけ、非公開型の検証済みファイル所有者を作る。同じruntime snapshot内で保持し、複製した読み取り専用handleだけを子の明示的な継承リストに加える。単なるhash文字列・パス・Nodeの自己申告を検証済みの証拠にしない。
+
+Workerはprivate Native bootstrapで渡されたhandleについて、disk上の有界な通常ファイルであること、DLLパスを読み取り専用・書込/削除共有なしで再度開けること、両handleのvolume番号・128-bit file ID・長さが一致することを確認する。対応しないfilesystem・別file・pipe・書込handle・不一致は実行を拒否する。パス側handleはLoadLibraryとsymbol解決中、継承した元handleはrun中保持する。Parent側も元のprocess/IO/ACL/profile回収を終えるまでsnapshotを所有する。[FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)による同一性と[ファイル共有の競合拒否](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)を組み合わせ、Parentが全体照合したファイルと実際にロードするファイルを結び付ける。
+
+信頼の根は既存の信頼側ParentとNative Worker。NodeパッケージやWasmの入力からbootstrap引数・継承handle・検証済み型を作れない。Nativeを自由に起動できるFullUser自身を敵とした新しい保証は主張しない。継承は[DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)で元と同じ読み取り権限に限定し、既にcode ACLで許している固定DLL以外のファイル、Parentのprocess、入力、秘密情報のhandleを追加しない。複数Nodeのcodeを同居させず、公開Node/guest ABI・許可・実終了条件を変更しない。
+
+6番目のprivate引数で検証済みfileと任意の診断pipeを区別し、同一handleの二重所有を拒否する。診断handleだけの準備失敗では、検証済みfileを残した正規の隔離起動を試す。安全側handleの用意・照合の失敗を診断失敗として無視しない。従来のWorkerは未知の任意引数を使わず、従来どおり全hashを行うため、旧Workerを使った成功をこの最適化の性能証拠としない。
+
+NTFSの別streamはbase fileとfile IDを共有し得るため、両側とも絶対パスの無名streamに限定し、ADSを指定するパスを拒否する。検査は未固定bytes拒否、同内容の別file拒否、mutable handle/pipe/相対パス/ADS拒否、複製handleの読み取り限定、所有者交代後も書込・削除拒否、解放後に変更した実DLLのhash拒否、bootstrapの不正値・handle別名による二重所有の拒否を含む。性能比較は同じHost/Worker/DLL/Wasmでコピー・マッピング・Parent所有権引継ぎの順に、単段150件、混合各50件、独立20/100 ms入力各35件を行い、CPU/RAMと回収を含めて記録する。効果・採用・Goal達成は結果確認前に確定しない。

@@ -348,6 +348,7 @@ fn verify(profile: &Profile, job: &Job, process: HANDLE) -> Result<(), String> {
 /// Validation errors occur before CreateProcess. Every post-create result is
 /// either a verified exit or an owner which still holds the live process.
 pub(super) struct WorkerScope<'a> {
+    verified_runtime: Option<&'a super::runtime::VerifiedRuntimeFile>,
     profile: &'a Profile,
     job: &'a Job,
     cache: &'a Cache,
@@ -368,6 +369,13 @@ pub(super) struct JitDelivery {
     pub run_cancel: Option<CancellationToken>,
 }
 impl<'a> WorkerScope<'a> {
+    pub(super) fn with_verified_runtime(
+        mut self,
+        verified: Option<&'a super::runtime::VerifiedRuntimeFile>,
+    ) -> Self {
+        self.verified_runtime = verified;
+        self
+    }
     pub(super) fn with_jit_delivery(
         mut self,
         module: Option<Arc<[u8]>>,
@@ -438,6 +446,7 @@ impl<'a> WorkerScope<'a> {
         activity: Arc<AtomicU64>,
     ) -> Self {
         Self {
+            verified_runtime: None,
             profile,
             job,
             cache,
@@ -454,6 +463,7 @@ impl<'a> WorkerScope<'a> {
     #[cfg(test)]
     pub(super) fn prepared(profile: &'a Profile, job: &'a Job, cache: &'a Cache) -> Self {
         Self {
+            verified_runtime: None,
             profile,
             job,
             cache,
@@ -488,6 +498,7 @@ pub fn execute<'a>(
 ) -> Result<Outcome<'a>, String> {
     execute_observed(
         WorkerScope {
+            verified_runtime: None,
             profile,
             job,
             cache,
@@ -561,6 +572,7 @@ pub fn execute_resources<'a>(
             cache,
             activity: None,
             exchange: Some(exchange),
+            verified_runtime: None,
             jit_run_cancel: None,
             resource_deadline,
             resource_owner: Some(Box::new(session)),
@@ -593,6 +605,7 @@ pub(super) fn execute_with_diagnostics<'a>(
     #[cfg(test)]
     let launch_started = Instant::now();
     let WorkerScope {
+        verified_runtime,
         profile,
         job,
         cache,
@@ -625,20 +638,40 @@ pub(super) fn execute_with_diagnostics<'a>(
     let executable = wide(program.as_os_str());
     // A diagnostics-only setup failure never changes execution authority/results.
     let mut diagnostics = detailed.then(diagnostic_pipe).transpose().ok().flatten();
+    let runtime_file = verified_runtime
+        .map(super::runtime::VerifiedRuntimeFile::inherit)
+        .transpose()?;
     let mut command = quote(program.as_os_str());
     for arg in args {
         command.push(b' ' as u16);
         command.extend(quote(arg));
     }
     let normal_command_length = command.len();
-    if let Some((_, write)) = &diagnostics {
-        command.push(b' ' as u16);
-        command.extend(
-            wide(OsStr::new(&format!("--diagnostics={}", write.0 as usize)))
-                .into_iter()
-                .take_while(|c| *c != 0),
-        );
-    }
+    let append_extension =
+        |command: &mut Vec<u16>, diagnostics: &Option<(OwnedHandle, OwnedHandle)>| {
+            let diagnostic = diagnostics
+                .as_ref()
+                .map_or(0, |(_, write)| write.0 as usize);
+            let extension = if let Some(file) = &runtime_file {
+                Some(format!(
+                    "--verified-runtime-file={}:{diagnostic}",
+                    file.0 as usize
+                ))
+            } else if diagnostic != 0 {
+                Some(format!("--diagnostics={diagnostic}"))
+            } else {
+                None
+            };
+            if let Some(extension) = extension {
+                command.push(b' ' as u16);
+                command.extend(
+                    wide(OsStr::new(&extension))
+                        .into_iter()
+                        .take_while(|c| *c != 0),
+                );
+            }
+        };
+    append_extension(&mut command, &diagnostics);
     command.push(0);
     let sa = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -677,29 +710,40 @@ pub(super) fn execute_with_diagnostics<'a>(
     };
     // Both arrays outlive Attributes, including the diagnostics-failure branch.
     // A temporary array is invalid: Windows retains the supplied value pointer.
+    let file_handle = runtime_file.as_ref().map_or(ptr::null_mut(), |file| file.0);
+    let diagnostic_handle = diagnostics
+        .as_ref()
+        .map_or(ptr::null_mut(), |(_, write)| write.0);
     let ordinary_handles = [input.0, write.0];
-    let handles = [
-        input.0,
-        write.0,
-        diagnostics.as_ref().map_or(ptr::null_mut(), |(_, w)| w.0),
-    ];
+    let runtime_handles = [input.0, write.0, file_handle];
+    let diagnostic_handles = [input.0, write.0, diagnostic_handle];
+    let both_handles = [input.0, write.0, file_handle, diagnostic_handle];
     let jobs = [job.0.0];
     let mut attributes = Attributes::new()?;
     attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps)?;
     if diagnostics.is_some() {
-        if attributes
-            .set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)
-            .is_err()
-        {
+        let installed = if runtime_file.is_some() {
+            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &both_handles)
+        } else {
+            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &diagnostic_handles)
+        };
+        if installed.is_err() {
             // Preserve the ordinary isolated launch if only the optional handle
             // could not be installed. Never remove AppContainer or Job policy.
             diagnostics = None;
             command.truncate(normal_command_length);
+            append_extension(&mut command, &diagnostics);
             command.push(0);
             attributes = Attributes::new()?;
             attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps)?;
-            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
+            if runtime_file.is_some() {
+                attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &runtime_handles)?;
+            } else {
+                attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
+            }
         }
+    } else if runtime_file.is_some() {
+        attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &runtime_handles)?;
     } else {
         attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
     }

@@ -152,6 +152,7 @@ pub fn execute_preparation<'a>(
     });
     let outcome = execute_observed(
         WorkerScope {
+            verified_runtime: None,
             profile,
             job,
             cache,

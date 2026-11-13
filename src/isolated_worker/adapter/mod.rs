@@ -274,6 +274,7 @@ impl Drop for CodeReservation {
 }
 /// Captured immutable code only; every invocation still has a fresh process and profile.
 struct CodeFiles {
+    verified_runtime: std::sync::OnceLock<Result<super::runtime::VerifiedRuntimeFile, String>>,
     reservation: Option<CodeReservation>,
     locks: Vec<std::fs::File>,
     cache: ScopedCache,
@@ -300,6 +301,7 @@ impl CodeFiles {
         // Own the reservation together with the directory before the first write,
         // so partial construction has the same cleanup/accounting as a live cache.
         let mut files = Self {
+            verified_runtime: std::sync::OnceLock::new(),
             reservation: Some(reservation),
             locks: Vec::new(),
             cache: ScopedCache(
@@ -369,6 +371,7 @@ impl CodeFiles {
 }
 impl Drop for CodeFiles {
     fn drop(&mut self) {
+        drop(self.verified_runtime.take());
         self.locks.clear();
         if cleanup(&self.cache).is_err() {
             // Keep failed cleanup charged for the rest of this Host lifetime.
@@ -784,6 +787,20 @@ impl WasmArtifact {
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
+        let verified_runtime = if matches!(image, WorkerImage::Jit)
+            && std::env::var_os("DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            Some(
+                runtime_files
+                    .verified_runtime
+                    .get_or_init(|| super::runtime::VerifiedRuntimeFile::open(&dll))
+                    .as_ref()
+                    .map_err(|_| fail("worker-identity", "runtime file proof unavailable"))?,
+            )
+        } else {
+            None
+        };
         if matches!(image, WorkerImage::Jit) != matches!(request, WorkerRequest::Jit { .. }) {
             return Err(fail(
                 "worker-request",
@@ -864,7 +881,8 @@ impl WasmArtifact {
             &job,
             &runtime_files.cache,
             self.0.activity.clone(),
-        );
+        )
+        .with_verified_runtime(verified_runtime);
         let (scope, bytes) = match request {
             WorkerRequest::Jit { request, .. } => (
                 scope.with_jit_delivery(
@@ -983,6 +1001,21 @@ impl WasmArtifact {
             || receipt.exit_code() != Some(0)
             || !receipt.input_delivered()
         {
+            #[cfg(test)]
+            eprintln!(
+                "failed Worker: exit={:?} reason={:?} input_delivered={} trace={:?}",
+                receipt.exit_code(),
+                receipt.reason(),
+                receipt.input_delivered(),
+                receipt
+                    .diagnostics()
+                    .map(|r| r
+                        .as_ref()
+                        .map(|b| super::worker_trace::decode(b).map(|intervals| intervals
+                            .into_iter()
+                            .map(|i| (i.phase, i.start, i.end))
+                            .collect::<Vec<_>>())))
+            );
             return Err(fail(
                 "worker-failed",
                 "isolated Worker did not complete successfully",
