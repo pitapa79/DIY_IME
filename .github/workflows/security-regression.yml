@@ -10,9 +10,14 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  windows-core-editor:
+  windows_regression_segments:
+    name: Windows regression (${{ matrix.segment }})
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        segment: [prepared, runtime-cache]
     defaults:
       run:
         shell: pwsh
@@ -131,6 +136,7 @@ jobs:
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
       - name: Prepared JIT latency diagnostic
+        if: matrix.segment == 'prepared'
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
         run: |
@@ -146,6 +152,7 @@ jobs:
           cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
           exit $LASTEXITCODE
       - name: Prepared JIT inherited code ACL comparison
+        if: matrix.segment == 'prepared'
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
           DIY_EXPERIMENT_INHERITED_CODE_ACL: '1'
@@ -155,6 +162,7 @@ jobs:
           node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-inherited-acl.json -Encoding utf8
           exit $LASTEXITCODE
       - name: Prepared JIT streamed module comparison
+        if: matrix.segment == 'prepared'
         env:
           DIY_EXPERIMENT_PREPARED_JIT: '1'
           DIY_EXPERIMENT_JIT_STREAM_MODULE: '1'
@@ -180,6 +188,7 @@ jobs:
             @{mode=$mode;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs;firstInput=@{activationToInputMs=$scenario.first.activationToInputMs;preparedWorker=$scenario.first.preparedWorker;hostMinusGuestCallUs=$scenario.first.hostMinusGuestCallUs}} | ConvertTo-Json -Depth 4
           }
       - name: Prepared JIT spare capacity comparison
+        if: matrix.segment == 'prepared'
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           foreach ($spares in @('1', '2')) {
@@ -193,6 +202,7 @@ jobs:
             @{spares=$spares;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs} | ConvertTo-Json -Depth 4
           }
       - name: Prepared JIT fixed-cadence comparison
+        if: matrix.segment == 'prepared'
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-independent', 'all-stream-acl-overlap-independent', 'all-stream-acl-overlap-after-graph-independent', 'all-stream-acl-overlap-pooled-independent')) {
@@ -208,12 +218,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing fixed-cadence report ($mode)" }
           }
-      - name: Prepared JIT mixed Wasm graph comparison
+      - name: Build alternate executable Wasm fixture
         run: |
-          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepared JIT mixed Wasm graph comparison
+        if: matrix.segment == 'prepared'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-fresh', 'all-stream-acl-overlap-fresh-no-refill', 'all-stream-acl-overlap-wide-capacity', 'all-stream-acl-overlap-after-graph', 'all-stream-acl-overlap-pooled')) {
             $env:DIY_EXPERIMENT_POOLED_JIT = if ($mode -like '*-pooled') { '1' } else { '0' }
             $env:DIY_WASM_SCALING_FRESH_GRAPH = if ($mode -like '*-fresh*') { '1' } else { '0' }
@@ -232,6 +245,7 @@ jobs:
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing mixed graph report ($mode)" }
           }
       - name: Native serialized JIT feasibility
+        if: matrix.segment == 'runtime-cache'
         run: |
           $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
           $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
@@ -241,6 +255,7 @@ jobs:
           cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::compiled_jit_probe::real_serialized_jit_refill_cost_probe -- --exact --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Runtime image verification comparison
+        if: matrix.segment == 'runtime-cache'
         run: |
           cargo build --locked --release --features copied-runtime-verification-baseline --bin diy-ime2-wasm-worker --target-dir target/copied-runtime-control
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -273,6 +288,7 @@ jobs:
             }
           }
       - name: Compiled JIT replenishment comparison
+        if: matrix.segment == 'runtime-cache'
         run: |
           $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
@@ -304,6 +320,7 @@ jobs:
             }
           }
       - name: Immediate input after activation readiness comparison
+        if: matrix.segment == 'prepared'
         run: |
           $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
           $env:DIY_EXPERIMENT_POOLED_JIT = '1'
@@ -319,17 +336,17 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Preserve partial Wasm benchmark reports on failure
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: wasm-benchmark-failure-${{ github.sha }}
+          name: wasm-benchmark-failure-${{ github.sha }}-${{ matrix.segment }}
           path: target/windows-prepared-jit-*.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-application-${{ github.sha }}
+          name: windows-application-${{ github.sha }}-${{ matrix.segment }}
           path: |
             target/windows-app.zip
             target/windows-app/bundle-manifest.json
@@ -352,7 +369,7 @@ jobs:
           compression-level: 0
       - name: Preserve synthetic compiler comparison canaries
         run: |
-          $files = @('target/debug/examples/wasm_v3_probe.exe','target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm')
+          $files = @('target/debug/examples/wasm_v3_probe.exe','target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm','target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm')
           $hashes = @($files | ForEach-Object { @{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} })
           @{source=$env:GITHUB_SHA;syntheticOnly=$true;files=$hashes} | ConvertTo-Json -Depth 5 | Set-Content target/compiler-comparison-provenance.json -Encoding utf8
           $off = Get-Content target/windows-latency-smoke.json -Raw | ConvertFrom-Json
@@ -360,10 +377,11 @@ jobs:
           @{kind='compiler-candidate-smoke-only';source=$env:GITHUB_SHA;off=$off.summary;detailed=$detailed.summary;phases=$detailed.diagnostics.phaseSummary;dropped=$detailed.diagnostics.dropped;checks=$detailed.checks} | ConvertTo-Json -Depth 8
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: wasm-compiler-canaries-${{ github.sha }}
+          name: wasm-compiler-canaries-${{ github.sha }}-${{ matrix.segment }}
           path: |
             target/debug/examples/wasm_v3_probe.exe
             target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
             target/compiler-comparison-provenance.json
           if-no-files-found: error
           retention-days: 30
@@ -383,3 +401,15 @@ jobs:
           if (Test-Path -LiteralPath 'target/security-audit/summary.json') {
             Get-Content target/security-audit/summary.json >> $env:GITHUB_STEP_SUMMARY
           }
+  windows-core-editor:
+    # Preserve the required check name. It succeeds only after every original
+    # regression and benchmark step has succeeded in its Windows segment.
+    needs: windows_regression_segments
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all Windows segments
+        env:
+          TASK_SEGMENT_RESULT: ${{ needs.windows_regression_segments.result }}
+        run: test "$TASK_SEGMENT_RESULT" = success

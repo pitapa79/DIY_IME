@@ -346,3 +346,26 @@ Host SHAは `b920d74251406fe31dbb0e2df322c92ceea744da62bb2a89c0205eb299f96793`�
 | single-detailed | `6b4c0fe38e9e0c99ce7bba79053f51dcd5266cd4d348e70651477e43ef488632` | `344d6ca42bd05782a096bdec187a18c343c453f5814a60d90ee12c04ee26df72` |
 | mixed | `3839f7c4458ce319de4d332a18b4e1d941dbe3ace74f57c20975df7b4ea7c6d0` | `b9bdcd7136d7a73869d42623c29f5127b5ca6ffa696a88da44892f317f703851` |
 | paced | `9c01361b23d59f8cc9ffefbd209250508cd3e2b617d4ca191b4e68b4b35471bc` | `5bb5a37cad997ef7426458256f82d0b87036542f96fcb3cfde5831acfbe11a70` |
+
+### 独立CIと並列計測の欠落（2026-11-14）
+
+同じ95bdf50の独立PR CI [43427311107](https://github.com/pitapa79/DIY_IME/actions/runs/43427311107) も成功した。各run内でHost/Worker/DLL/moduleを照合したが、別runnerのbinary・負荷は同一とはみなさない。単段150件のcache0→1は基盤P95/P99が7.675/8.492→6.722/12.404ms、異種直列4段は38.648/159.805→11.487/16.605ms、8段は38.401/289.459→13.748/287.733ms、16段は38.553/191.062→12.521/164.737msだった。一方、同一Wasm2段はP95が6.224→129.054ms、未使用15個を含む単段は29.116→505.117msへ悪化した。並列の完全測定は1→0/10、合流は3→4/10。速かった別runだけを選んで成功とはしない。
+
+同じ実装4段の100ms正答は208→212/245、20msは35→47/245、逐次は双方245/245。混合Job CPU37.922→23.063秒、peak commit138,027,008→128,479,232 bytes、paced CPU187.703→104.672秒、peak143,421,440→124,416,000 bytes。CPU削減と尾部/欠測の未達は併記する。最新b000adeのCI [43458009441](https://github.com/pitapa79/DIY_IME/actions/runs/43458009441) は45分の上限でcancelled、activation-readiness比較は未完了で、成果物保存もskippedだった。合格とはしない。
+
+詳細記録ではNativeの最大12区間を1束として128枠の非待機キューへ渡し、記録側が既存の8MiB予算内で採用する。入力・設定・権限・process所有は渡さない。OFF/basicではキューを確保せず、clear/stop後の旧producerと欠落counterも新記録や停止済み記録を変更できない。これは計測欠落の改善であり、prepared経路の診断OFF時にも専用pipe等を準備する既存の費用は未解消。
+
+ローカル実Windowsで同一Host/Worker/DLL/module、4並列・6物理枠・各10件、direct→queue→queue→directのABBA比較を実施した。元runの物理所有ゼロ、準備枠上限、session終了後の全process/予約ゼロと正答を全試行で確認した。preparedはall、pooled/verified-runtime/compiled/stream/inherited-ACL/overlapは1。`DIY_EXPERIMENT_DIRECT_WORKER_TRACE=1` だけで旧配送を選び、基盤の実行方式・安全条件は同じとした。alternateはcustom sectionだけの別hashなので、異種実コードの証拠ではない。
+
+| 順番・配送 | guest-call取得 / 40 | グラフ完全計測 / 10 | 全欠落イベント | 応答P95 ms | ready→resolved基盤P95 ms（計測できたNodeのみ） |
+| --- | --- | --- | --- | --- | --- |
+| 1 direct | 39 | 9 | 19 | 916.498 | 859.039 |
+| 2 queue | 40 | 8 | 6 | 1218.145 | 1161.019 |
+| 3 queue | 40 | 9 | 5 | 420.126 | 380.102 |
+| 4 direct | 38 | 7 | 35 | 393.300 | 317.339 |
+
+guest区間は77/80→80/80となったが、Host側anchorの欠落は残る。完全グラフは16/20→17/20で、遅延の改善を示す比較ではない。サンプル数もGoalの尾部合否には不足する。前回のparallel専用試験はスクリプトがprepared枠を許容しておらずidle検査で停止したため破棄し、今回parallel/joinも上限内の準備枠と最終ゼロを区別して検査した。
+
+Host SHA `94bccc06e2a1dfc539e758939de4c414d82debb4288f9728939cab82602f463c`、Worker `4a7808cbd60a56e004989f7db802f68e4ad61ec504638f0d3bfd5f33979ffc12`、DLLと原本Wasmは上記固定SHA。比較JSONのSHAは順番に `6c5bd63d7edd739ef86d2f3ed333a3d2638e059e0fb9a01c64c8b9901be4b87f`、`a6b2f9c658f97eddbd08b3ece9446153128d19fc3adf325666e3dd3ff9b2d0eb`、`1dcc5455c3d9ccc068f4b413b10e6288002e72a4a153854b3a457dcaf8aed6f6`、`11399bbd7f209a623cb6ab0aa2ca295d9f8e10834a5402e3d2a9dd79258d499e`。この後のstop競合修正は単体検査で別途確認し、上記のbinary実測に含めない。
+
+今後の明示ALT_WASM指定はmodule全体hashだけでなくWasm code節のhash差も必須とし、両方をJSONへ残す。custom section別名は同一実装対照として使えるが、異種実コードの合格材料にはしない。CIは既存検査コマンドを保った2つのWindows segmentへ分割し、従来名の必須checkは両方successの場合のみsuccessにする。45分上限、fixture、権限・物理回収の条件を緩めず、失敗/取消時の部分JSON保存も試みる。

@@ -1,3 +1,32 @@
+import { createHash } from 'node:crypto';
+
+// Module hashes can differ solely because of a custom section. Heterogeneous
+// executable-code measurements require different function-body bytes too.
+export function wasmCodeSha256(bytes) {
+  const invalid = () => { throw Error('invalid or missing Wasm code section'); };
+  if (bytes.length < 8 || !bytes.subarray(0, 8).equals(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]))) invalid();
+  let at = 8, code;
+  while (at < bytes.length) {
+    const id = bytes[at++];
+    let length = 0, ended = false;
+    for (let i = 0; i < 5; i++) {
+      if (at >= bytes.length) invalid();
+      const byte = bytes[at++];
+      if (i === 4 && byte > 15) invalid();
+      length += (byte & 127) * 2 ** (7 * i);
+      if (byte < 128) { ended = true; break; }
+    }
+    if (!ended || length > bytes.length - at) invalid();
+    if (id === 10) {
+      if (code || length === 0) invalid();
+      code = bytes.subarray(at, at + length);
+    }
+    at += length;
+  }
+  if (!code) invalid();
+  return createHash('sha256').update(code).digest('hex');
+}
+
 // Host timestamps share one clock. Worker timestamps are used only as durations.
 export function graphOverhead(trace, nodes, shape) {
   const only = predicate => {

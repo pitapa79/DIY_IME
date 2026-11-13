@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PhaseProfiler } from './trace-phase-profile.mjs';
 import { measureHostInput } from './host-input-scenarios.mjs';
-import { graphOverhead } from './wasm-host-overhead.mjs';
+import { graphOverhead, wasmCodeSha256 } from './wasm-host-overhead.mjs';
 
 const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario = 'all', alternateWasm] = process.argv.slice(2);
 const samples = Number(count), physicalSlots = Number(slots);
@@ -29,6 +29,9 @@ const first = readFileSync(wasm);
 const second = alternateWasm ? readFileSync(alternateWasm) : Buffer.concat([first, Buffer.from([0, 2, 1, 120])]);
 assert(!first.equals(second), 'alternate fixture must have a distinct module digest');
 const modules = [first, second, first];
+const moduleCodeSha256 = modules.map(wasmCodeSha256);
+if (alternateWasm) assert.notEqual(moduleCodeSha256[0], moduleCodeSha256[1],
+  'alternate fixture must differ in executable code, not only custom sections');
 const kinds = ['fixture.wasm.chain', 'fixture.wasm.chain-alt', 'fixture.wasm.join'];
 const port = { id: 'in', dataType: { id: 'text-packet', version: 1 }, language: 'ja-Latn', root: 'text' };
 function command(args) {
@@ -141,7 +144,7 @@ async function measure(client, spec) {
   const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
   const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
-    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed'].includes(scenario);
+    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join'].includes(scenario);
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
   const executedNodeCount = spec.shape === 'skip' ? Math.min(nodeCount, 1) : nodeCount;
   const eligibleNodes = nodeCount + (spec.unused ?? 0);
@@ -258,7 +261,8 @@ async function measure(client, spec) {
   }
   const records = [];
   const paired = scenario === 'single-detailed';
-  const traceEachSample = paired || scenario === 'mixed' || (preparedExperiment && scenario === 'all');
+  const graphTrace = ['mixed', 'parallel', 'join'].includes(scenario) || (preparedExperiment && scenario === 'all');
+  const traceEachSample = paired || graphTrace;
   const lastRevision = freshGraph ? 1 : samples + 2;
   for (let revision = 1; revision <= lastRevision; revision++) {
     if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
@@ -388,7 +392,7 @@ async function measure(client, spec) {
         }];
       })),
     } : {}),
-    ...(scenario === 'mixed' || (preparedExperiment && scenario === 'all') ? {
+    ...(graphTrace ? {
       graphOverhead: {
         attempts: records.length - 1,
         measured: graphSamples.length,
@@ -482,7 +486,7 @@ try {
   }
   const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
     ...(freshGraphSummary ? { freshGraphSummary } : {}),
-    physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
+    physicalSlots, samples, moduleSha256: modules.map(sha), moduleCodeSha256, hostSha256: sha(readFileSync(host)),
     alternateFixtureSupplied: Boolean(alternateWasm),
     ...(usesOfficial ? { officialModuleSha256: sha(readFileSync(join(officialRoot, 'official.wasm'))) } : {}),
     ...(scenario === 'dictionary' ? { dictionarySha256: sha(dictionaryBytes) } : {}),

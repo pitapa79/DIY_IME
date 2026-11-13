@@ -1025,12 +1025,29 @@ impl WasmArtifact {
                 .and_then(|b| super::worker_trace::decode(b).ok())
             {
                 Some(intervals) => {
-                    for interval in intervals {
-                        invocation.trace_worker_interval(
+                    if std::env::var_os("DIY_EXPERIMENT_DIRECT_WORKER_TRACE").as_deref()
+                        == Some(std::ffi::OsStr::new("1"))
+                    {
+                        // Matched diagnostic control, with the same binaries,
+                        // Native evidence, limits and execution route.
+                        for interval in intervals {
+                            invocation.trace_worker_interval(
+                                instance,
+                                interval.phase,
+                                Duration::from_micros(interval.start),
+                                interval.end.map(Duration::from_micros),
+                            );
+                        }
+                    } else {
+                        invocation.trace_worker_intervals(
                             instance,
-                            interval.phase,
-                            Duration::from_micros(interval.start),
-                            interval.end.map(Duration::from_micros),
+                            intervals.into_iter().map(|interval| {
+                                (
+                                    interval.phase,
+                                    Duration::from_micros(interval.start),
+                                    interval.end.map(Duration::from_micros),
+                                )
+                            }),
                         );
                     }
                 }

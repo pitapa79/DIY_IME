@@ -4,7 +4,25 @@ import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfigurati
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {measureHostInput} from './host-input-scenarios.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
-import {graphOverhead} from './wasm-host-overhead.mjs';
+import {graphOverhead,wasmCodeSha256} from './wasm-host-overhead.mjs';
+
+test('heterogeneous Wasm evidence distinguishes executable code from custom-section aliases', () => {
+ const header = Buffer.from([0,97,115,109,1,0,0,0]);
+ const module = Buffer.concat([header, Buffer.from([10,5,1,3,0,1,11])]);
+ const alias = Buffer.concat([module, Buffer.from([0,2,1,120])]);
+ const different = Buffer.from(module);
+ different[different.length - 2] = 0;
+ assert.equal(wasmCodeSha256(module), wasmCodeSha256(alias));
+ assert.notEqual(wasmCodeSha256(module), wasmCodeSha256(different));
+ // Bounds/overflow/duplicate section failures cannot manufacture provenance.
+ for (const bytes of [header, module.subarray(0, -1), Buffer.concat([module,module.subarray(8)]),
+   Buffer.concat([header,Buffer.from([10,255,255,255,255,16])]),
+   Buffer.concat([header,Buffer.from([10,128])]), Buffer.alloc(8)]) {
+  assert.throws(() => wasmCodeSha256(bytes), /Wasm code section/);
+ }
+ // A valid padded u32 LEB length is accepted without treating the padding as code.
+ assert.equal(wasmCodeSha256(Buffer.concat([header,Buffer.from([10,133,0,1,3,0,1,11])])), wasmCodeSha256(module));
+});
 
 function graphEvent(event, atUs, node, extra = {}) {
  return {event, atUs: String(atUs), run: 1, plan: 1, input: 1, ...(node ? {node} : {}), ...extra};
