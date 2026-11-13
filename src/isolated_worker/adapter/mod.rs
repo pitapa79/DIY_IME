@@ -347,6 +347,19 @@ impl CodeFiles {
             self.cache.revoke_read_execute(profile)
         }
     }
+    fn check_healthy(&self) -> Result<(), CoreError> {
+        let healthy = self
+            .healthy
+            .lock()
+            .map_err(|_| fail("worker-asset", "code permission state unavailable"))?;
+        if !*healthy {
+            return Err(fail(
+                "worker-asset",
+                "code snapshot permissions unavailable",
+            ));
+        }
+        Ok(())
+    }
     fn lease<'a>(&'a self, profile: &'a Profile) -> Result<CodeLease<'a>, CoreError> {
         let mut healthy = self
             .healthy
@@ -870,10 +883,14 @@ impl WasmArtifact {
                 "Worker image and request transport differ",
             ));
         }
+        let stream_enabled = std::env::var_os("DIY_EXPERIMENT_JIT_STREAM_MODULE").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
         let stream_module = matches!(image, WorkerImage::Jit)
             && (1..=super::runtime::MAX_STREAMED_MODULE_BYTES).contains(&self.0.module.len())
-            && std::env::var_os("DIY_EXPERIMENT_JIT_STREAM_MODULE").as_deref()
-                == Some(std::ffi::OsStr::new("1"));
+            && stream_enabled;
+        let mut streamed_bytes = stream_module.then(|| self.0.module.clone());
+        let mut stream_charge = None;
+        let mut streamed_files = None;
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
             WorkerImage::Jit if stream_module => (
                 None,
@@ -899,12 +916,40 @@ impl WasmArtifact {
                 self.0.module.len(),
                 Some("--compile-jit-v1".into()),
             ),
-            WorkerImage::PreparedCompiled(files, len, digest) => (
-                Some(files),
-                "node.cwasm",
-                len,
-                Some(format!("--prepare-compiled-jit-v1={digest}")),
-            ),
+            WorkerImage::PreparedCompiled(files, len, digest) => {
+                // Charge both Vec and Arc conversion storage conservatively.
+                // If the existing code budget cannot cover it, retain the
+                // file-based path rather than widening a resource limit.
+                let charge = stream_enabled
+                    .then(|| self.0.code_budget.reserve(2 * (len as u64 + 1)))
+                    .and_then(Result::ok);
+                if let Some(charge) = charge {
+                    files.check_healthy()?;
+                    let mut bytes = Vec::with_capacity(len + 1);
+                    std::fs::File::open(files.cache.path().join("node.cwasm"))
+                        .and_then(|file| file.take(len as u64 + 1).read_to_end(&mut bytes))
+                        .map_err(|_| fail("worker-asset", "compiled stream unavailable"))?;
+                    if bytes.len() != len {
+                        return Err(fail("worker-identity", "compiled stream length changed"));
+                    }
+                    stream_charge = Some(charge);
+                    streamed_files = Some(files);
+                    streamed_bytes = Some(Arc::from(bytes));
+                    (
+                        None,
+                        "-",
+                        len,
+                        Some(format!("--prepare-compiled-jit-pipe-v1={digest}")),
+                    )
+                } else {
+                    (
+                        Some(files),
+                        "node.cwasm",
+                        len,
+                        Some(format!("--prepare-compiled-jit-v1={digest}")),
+                    )
+                }
+            }
             WorkerImage::Reuse(files, len, digest) => (
                 Some(files),
                 "node.cwasm",
@@ -960,11 +1005,7 @@ impl WasmArtifact {
         .with_verified_runtime(verified_runtime);
         let (scope, bytes) = match request {
             WorkerRequest::Jit { request, .. } => (
-                scope.with_jit_delivery(
-                    stream_module.then(|| self.0.module.clone()),
-                    request,
-                    control.cancel.clone(),
-                ),
+                scope.with_jit_delivery(streamed_bytes, request, control.cancel.clone()),
                 Vec::new(),
             ),
             WorkerRequest::Immediate(bytes) => (scope, bytes),
@@ -974,6 +1015,9 @@ impl WasmArtifact {
                 .map_err(|_| fail("worker-start", "isolated Worker could not start"))?,
         );
         let process_time = elapsed_micros(process_started);
+        // Original process and all transport owners have settled. No temporary
+        // streamed-code allocation can remain in a running IO closure now.
+        drop(stream_charge);
         drop(process);
         let trace_invocation =
             invocation.or_else(|| deferred_trace.as_deref().and_then(std::sync::OnceLock::get));
@@ -1010,7 +1054,11 @@ impl WasmArtifact {
             if let Some(mut lease) = module_lease.take() {
                 lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
             }
-            runtime_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))
+            runtime_lease.release_measured(measure_cleanup.then_some(&mut lock_wait_us))?;
+            if let Some(files) = &streamed_files {
+                files.check_healthy()?;
+            }
+            Ok(())
         };
         let overlap_cleanup = deferred_trace.is_some()
             && std::env::var_os("DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP").as_deref()
@@ -1943,15 +1991,36 @@ mod tests {
             run_cancel: None,
         };
         for expected_settled in [2, 3] {
+            let before = artifact.0.code_budget.used.load(Ordering::Acquire);
             let owner = ready(&artifact);
             // Exactly one compiler exited before the first spare became ready;
             // the next spare loads that code and owns a new Store/process.
             assert_eq!(artifact.timings().settled_calls, expected_settled - 1);
+            if expected_settled == 3 {
+                let state = artifact.0.jit_compiled.lock().unwrap();
+                let CompiledState::Ready(asset) = &*state else {
+                    unreachable!()
+                };
+                let temporary = if std::env::var_os("DIY_EXPERIMENT_JIT_STREAM_MODULE").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                {
+                    2 * (asset.len as u64 + 1)
+                } else {
+                    0
+                };
+                assert_eq!(
+                    artifact.0.code_budget.used.load(Ordering::Acquire),
+                    before + temporary
+                );
+            }
             let bytes = owner.dispatch(delivery(None), None).unwrap();
             assert_eq!(wire::reply(&bytes).unwrap()["value"], 1);
             assert_eq!(artifact.timings().settled_calls, expected_settled);
             assert_eq!(artifact.active_processes(), 0);
             assert_eq!(host.usage().physical_jobs, 0);
+            if expected_settled == 3 {
+                assert_eq!(artifact.0.code_budget.used.load(Ordering::Acquire), before);
+            }
         }
         let owner = ready(&artifact);
         assert!(
@@ -1970,6 +2039,27 @@ mod tests {
             1
         );
         assert_eq!(artifact.timings().settled_calls, 5);
+
+        let baseline = artifact.0.code_budget.used.load(Ordering::Acquire);
+        let full = artifact
+            .0
+            .code_budget
+            .reserve(artifact.0.code_budget.limit - baseline)
+            .unwrap();
+        let owner = ready(&artifact); // no buffer headroom: preserve file fallback
+        assert_eq!(
+            wire::reply(&owner.dispatch(delivery(None), None).unwrap()).unwrap()["value"],
+            1
+        );
+        assert_eq!(
+            artifact.0.code_budget.used.load(Ordering::Acquire),
+            artifact.0.code_budget.limit
+        );
+        drop(full);
+        assert_eq!(
+            artifact.0.code_budget.used.load(Ordering::Acquire),
+            baseline
+        );
 
         let preparing = artifact
             .with_module(
@@ -2059,7 +2149,9 @@ mod tests {
         assert_eq!(trap.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
 
-        let tail = artifact.with_module(fixture("tail"), policy).unwrap();
+        let tail = artifact
+            .with_module(fixture("tail"), policy.clone())
+            .unwrap();
         let owner = ready(&tail);
         let code_path = {
             let state = tail.0.jit_compiled.lock().unwrap();
@@ -2085,6 +2177,23 @@ mod tests {
             !code_path.exists(),
             "compiled snapshot retained after all owners closed"
         );
+        let poisoned = artifact.with_module(fixture("state"), policy).unwrap();
+        drop(ready(&poisoned));
+        {
+            let state = poisoned.0.jit_compiled.lock().unwrap();
+            let CompiledState::Ready(asset) = &*state else {
+                unreachable!()
+            };
+            *asset.files.healthy.lock().unwrap() = false;
+        }
+        let before = poisoned.0.code_budget.used.load(Ordering::Acquire);
+        let mut refused = PreparedJitOwner::start(&host, poisoned.clone()).unwrap();
+        assert!(refused.ready.recv_timeout(Duration::from_secs(5)).is_err());
+        let error = refused.worker.take().unwrap().join().unwrap().unwrap_err();
+        assert_eq!(error.code, "worker-asset");
+        assert_eq!(poisoned.active_processes(), 0);
+        assert_eq!(host.usage().physical_jobs, 0);
+        assert_eq!(poisoned.0.code_budget.used.load(Ordering::Acquire), before);
     }
 
     #[test]

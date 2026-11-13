@@ -103,6 +103,8 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             ModuleMode::CompileJit
         } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-v1=") {
             ModuleMode::PreparedCompiled(digest.to_owned())
+        } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-pipe-v1=") {
+            ModuleMode::PreparedCompiledPipe(digest.to_owned())
         } else if flag == "--prepare-jit-pipe-v1" {
             ModuleMode::JitPipe
         } else if flag == "--resource-ranges-v1" {
@@ -803,6 +805,7 @@ enum ModuleMode {
     Compile,
     CompileJit,
     PreparedCompiled(String),
+    PreparedCompiledPipe(String),
     Reuse(String),
 }
 
@@ -845,7 +848,10 @@ fn run(
     drop(dll_phase);
     let module_phase = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
     let limit = expected_module.unwrap_or(64 * 1024 * 1024);
-    let streamed = matches!(mode, ModuleMode::JitPipe);
+    let streamed = matches!(
+        mode,
+        ModuleMode::JitPipe | ModuleMode::PreparedCompiledPipe(_)
+    );
     let mut module = if streamed {
         let length = expected_module
             .filter(|&n| (1..=MAX_STREAMED_MODULE_BYTES).contains(&n))
@@ -947,9 +953,14 @@ fn run(
     // and must wait for the Host-owned input.
     let prepared_jit = if matches!(
         mode,
-        ModuleMode::Jit { .. } | ModuleMode::JitPipe | ModuleMode::PreparedCompiled(_)
+        ModuleMode::Jit { .. }
+            | ModuleMode::JitPipe
+            | ModuleMode::PreparedCompiled(_)
+            | ModuleMode::PreparedCompiledPipe(_)
     ) {
-        let prepared = if let ModuleMode::PreparedCompiled(digest) = &mode {
+        let prepared = if let ModuleMode::PreparedCompiled(digest)
+        | ModuleMode::PreparedCompiledPipe(digest) = &mode
+        {
             // SAFETY: only the trusted Parent chooses this private Native mode
             // and supplies its own compiler-produced immutable file and digest.
             unsafe { compiled_jit::prepare(&api, &limits, diagnostics, &module, digest)? }
@@ -962,6 +973,7 @@ fn run(
                 acknowledge_preparation: true
             } | ModuleMode::JitPipe
                 | ModuleMode::PreparedCompiled(_)
+                | ModuleMode::PreparedCompiledPipe(_)
         ) {
             use std::io::Write;
             let mut output = std::io::stdout().lock();
@@ -990,7 +1002,10 @@ fn run(
     };
     drop(input_phase);
     let mut guest = match mode {
-        ModuleMode::Jit { .. } | ModuleMode::JitPipe | ModuleMode::PreparedCompiled(_) => {
+        ModuleMode::Jit { .. }
+        | ModuleMode::JitPipe
+        | ModuleMode::PreparedCompiled(_)
+        | ModuleMode::PreparedCompiledPipe(_) => {
             if input.is_empty() {
                 return Err("empty request before guest instantiation".into());
             }

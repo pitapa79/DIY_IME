@@ -278,11 +278,11 @@ Workerはprivate Native bootstrapで渡されたhandleについて、disk上の�
 
 6番目のprivate引数で検証済みfileと任意の診断pipeを区別し、同一handleの二重所有を拒否する。診断handleだけの準備失敗では、検証済みfileを残した正規の隔離起動を試す。安全側handleの用意・照合の失敗を診断失敗として無視しない。従来のWorkerは未知の任意引数を使わず、従来どおり全hashを行うため、旧Workerを使った成功をこの最適化の性能証拠としない。
 
-NTFSの別streamはbase fileとfile IDを共有し得るため、両側とも絶対パスの無名streamに限定し、ADSを指定するパスを拒否する。検査は未固定bytes拒否、同内容の別file拒否、mutable handle/pipe/相対パス/ADS拒否、複製handleの読み取り限定、所有者交代後も書込・削除拒否、解放後に変更した実DLLのhash拒否、bootstrapの不正値・handle別名による二重所有の拒否を含む。性能比較は同じHost/Worker/DLL/Wasmでコピー・マッピング・Parent所有権引継ぎの順に、単段150件、混合各50件、独立20/100 ms入力各35件を行い、CPU/RAMと回収を含めて記録する。効果・採用・Goal達成は結果確認前に確定しない。
+NTFSの別streamはbase fileとfile IDを共有し得るため、両側とも絶対パスの無名streamに限定し、ADSを指定するパスを拒否する。検査は未固定bytes拒否、同内容の別file拒否、mutable handle/pipe/相対パス/ADS拒否、複製handleの読み取り限定、所有者交代後も書込・削除拒否、解放後に変更した実DLLのhash拒否、bootstrapの不正値・handle別名による二重所有の拒否を含む。性能比較は同じHost/Worker/DLL/Wasmでコピー・マッピング・Parent所有権引継ぎの順に、単段150件、混合各50件、独立20/100 ms入力35ラウンド（1ラウンド7入力、各グラフ・各間隔245件）を行い、CPU/RAMと回収を含めて記録する。効果・採用・Goal達成は結果確認前に確定しない。
 
 `482e4aa` の同一Host/Workerを使ったローカル予備比較は、stream/継承ACL/並行回収/共有予備、物理2枠、単段ウォーム各20件、引継ぎなし→ありの順。追加遅延P50/P95/P99は245.159/368.544/386.595→17.855/114.462/155.971 ms、準備済み10→17/20件。DLL読込P50/P95は168.732/214.437→7.544/10.612 ms、compile P50は35.513→35.268 msだった。Windows10・約4GiBの小標本で、正答・終了後残存ゼロを確認したがGoal合格ではない。レポートSHA-256は `a69947639d41535a8c67cca56dca85ba894474fe690387becef29c0f344eb865` / `1d51c2a5b49b753104e3efec83ea607a83d4a413491d102e30981e4c71340532`。Hostは `c213652a296e8254f566d990202a9494f3ec912099816ee58f673ff33134e590`、Workerは `fe1e20068cdbb662fe38e0cb0d566f984642c1ffca1fc2696ebe75aacdda0bfd`。DLL/fixtureは上記の固定資産。
 
-同HEADの[CI 43410755574](https://github.com/pitapa79/DIY_IME/actions/runs/43410755574)は、先行する独立20ms入力の共有予備条件で `busy / exchange exceeds resource budget` となり失敗した。DLL引継ぎ比較の工程まで到達せず、そのCIによる性能・全回帰成功は未確認。部分資料はartifact `14030217434`。計測はこの受付拒否も `attempts` に残し、`admissionRejected` と `failed` に数える。存在しないrunの照会、応答成功、実process終了の試料にはしない。未知のHostエラーは従来どおり停止し、資源上限を拡大して隠さない。診断CIの完走だけを、失敗件数ゼロやGoalの性能達成と呼ばない。
+同HEADの[CI 43410755574](https://github.com/pitapa79/DIY_IME/actions/runs/43410755574)は、先行する固定間隔の独立入力・共有予備条件で `busy / exchange exceeds resource budget` となり失敗した。停止前の具体的な入力間隔は未記録。DLL引継ぎ比較の工程まで到達せず、そのCIによる性能・全回帰成功は未確認。部分資料はartifact `14030217434`。計測はこの受付拒否も `attempts` に残し、`admissionRejected` と `failed` に数える。存在しないrunの照会、応答成功、実process終了の試料にはしない。未知のHostエラーは従来どおり停止し、資源上限を拡大して隠さない。診断CIの完走だけを、失敗件数ゼロやGoalの性能達成と呼ばない。
 
 ### 入力未配送のコンパイル成果再利用候補
 
@@ -293,3 +293,17 @@ Parentは自分が捕捉した信頼側compilerの元process終了・IO・ACL・
 新しいWorkerでは固定DLL、成果hash・frame・設定を確認し、対応する新しいEngine・Storeへdeserializeする。入力配送前にはinstantiateせず、currentな許可・入力世代の検査後に1回だけguestを開始する。成功結果も元process/IO/ACL/profile回収前には採用しない。公開packageからcwasmを取り込む機能はない。hash・形式・自己申告だけでは信頼できないため、Parentが所有する専用compilerからの来歴が必須。[固定v50.0.1 C API](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/c-api/include/wasmtime/module.h)と[同版の安全要件](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/wasmtime/src/runtime/module.rs#L360)に従い、serializeの未改変出力以外をunsafe deserializeへ渡さない。同一Host内の捕捉物だけを使い、永続cacheの版/CPU移行を認めない。
 
 Native予備検証では、同じ固定APIが生成した成果だけをprivate ownerへ格納し、Winch/標準それぞれで新しいStoreの状態初期化、設定・元Wasm・改変拒否、start trapの延期、fuel・memory制限、標準のみ対応するWasmを検査した。これは信頼済み固定fixtureの同一Native process内の検査で、通常Hostや別processの来歴の証明ではない。最初の各20件で、Winchの生成/serialize中央値40.228msに対し新Engine/Store/deserialize中央値6.888ms、標準は157.325/6.719msだった。ローカル報告SHA `93c9a2ddd1c542b208b790946c9273af8d79c2598d522808d70842a24d58b4da`。通常Hostでは単段150件、混合各10件の初期比較と独立20/100ms入力を行い、採用判断の前に十分な多段反復・権限/異常/再生成・通常経路で再検証する。10件の末尾値を安定したP95/P99としない。
+
+### 80cdab5 のCI結果とコンパイル成果のパイプ配送
+
+[CI 43418081887](https://github.com/pitapa79/DIY_IME/actions/runs/43418081887) は全工程成功（merge source `f8f7bed9327ab1fd4fc5c50b118bd31c37c7875b`）。ただし成功時artifactの保存対象にcache比較とNative serialize計測のJSONが漏れていた。実行成功と数値検証を分け、欠落した性能値は採用証拠にしない。次のCIでは両JSONを保存し、cache比較の各出力存在も検査する。
+
+保存済みDLL比較は同一Host・同一Wasm/DLLで、コピー対照のみ別Worker build。mappedとParent-fileは同一Worker。単段ウォーム150件のhost minus guest-call P95/P99はコピー8.616/9.139、mapped8.420/9.337、Parent-file8.526/9.198msだった。異種直列16段の各50グラフではready→resolved minus guest-call P95が119.496ms（コピー）/53.259ms（Parent-file）で未達。Parent-fileの並列/合流は完全な計測が7/50・16/50グラフのみで、欠落を成功標本へ補完しない。混合Job CPUは249.375→205.109秒、peak commitは202,858,496→156,598,272 bytes。メモリ・CPUと末尾遅延の効果を一括で成功扱いにしない。
+
+独立入力は各構成・各間隔245件。4段100msの正答はコピー108/mapped99/Parent-file192件、20msは全条件35件。残りはsupersededで、3方式ともこの比較のadmissionRejected/failed/timedOut/cancelledはゼロ。旧結果を最新の成功へ数えない。Parent-fileでも20ms補充は未達である。artifact `14034289312` のHost SHAは `91b3c2137493276c07aad9ed56f3aef3e49bdde7548694539387b69d20a74963`、mapped/Parent-file Workerは `c90959c90be556dcac579bf2a98cc4500c38db8e7559e21c86d5e937685addaf`、コピーWorkerは `679e75a10ec35d3827b60ec7eeb592c8ad983ed4316b94e6af0fc1142eeadb6c`。固定DLL/Wasmは前述と同じ。
+
+次の内部候補は、`DIY_EXPERIMENT_JIT_STREAM_MODULE=1` のとき、所有・検証済みのprivate compiled frameを既存の入力前pipeで配送する。compilerの成功した実終了・全回収、元Wasm/policyとの対応、hash検証、単回の新Store/Instanceは維持する。子へcompiled code fileのACLを与えず、その付与・取消費用を比較する。読み込み前と結果採用前に元CodeFilesの健全性を検査する。VecからArcへの一時変換も含め `2*(length+1)` bytesを既存code予算から予約し、元process/IOの確定終了まで保持する。予算不足は上限拡張や実行失敗にせず、従来のfile配送を残す。外部cwasmを受け取る入口は作らない。
+
+実AppContainerでfile/pipe両方のcache lifecycle検査が7.70/7.26秒で成功した。余分なbuffer予算の保持・解放、予算を満たした状態でのfile fallback、健全性を失った元CodeFilesの拒否、取消・再生成、異なる実コード/policy、guest失敗の非再試行、物理process/予約ゼロを含む。CIでも両配送を検査する。
+
+同一バイナリ・物理2枠・コンパイルcacheありのローカル単段各30件、file→pipe順の基盤遅延P50/P95/P99は18.279/139.188/165.618→17.023/225.875/235.398ms、preparedは28→26/30件だった。中央値だけで採用せず、末尾改善は未証明とする。正答とsession終了後の物理所有ゼロは通った。報告SHAは `0cc285aafdb4f586c68d2c1cfee053705e51dd1d68f3e9ee6c3363dcb8d13cbe` / `cb1672713181665eb541f5e7c2b6a711b2bce827e9da50d0b202d4120144420c`。通常defaultへの採用、多段反復、trace OFF、全変更/失効/異常条件、main統合は引き続き未完了。
