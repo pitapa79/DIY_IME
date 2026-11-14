@@ -9,8 +9,9 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {wasmCodeSha256} from './wasm-host-overhead.mjs';
 
 const paths = process.argv.slice(2);
-assert.equal(paths.length, 7, 'HOST PACKAGE_TOOL WORKER DLL WASM ALT_WASM RESOURCE_CONTRACT');
-const [host, tool, worker, dll, wasm, alternate, resourceContract] = paths.map(value => resolve(value));
+assert(paths.length === 7 || paths.length === 8,
+  'HOST PACKAGE_TOOL WORKER DLL WASM ALT_WASM RESOURCE_CONTRACT [OFFICIAL_ROOT]');
+const [host, tool, worker, dll, wasm, alternate, resourceContract, officialRoot] = paths.map(value => resolve(value));
 for (const name of ['DIY_EXPERIMENT_NEUTRAL_JIT_POOL', 'DIY_EXPERIMENT_COMPILED_JIT']) {
   assert.equal(process.env[name], '1', `${name} must select the actual neutral route`);
 }
@@ -41,6 +42,7 @@ policy.maxQueuedJobs = 0;
 policy.retentionMs = 60000;
 const config = join(root, 'host.json');
 writeFileSync(config, JSON.stringify({packageManager: {dataRoot, workspace: join(root, 'workers'), worker, runtimeDll: dll,
+  ...(officialRoot ? {officialRoot} : {}),
   policy: {processMemoryBytes: 536870912, wasmMemoryBytes: 134217728, fuelPerCall: null, walltimeMs: 30000, terminationGraceMs: 5}},
   permissionRoot: join(root, 'permissions'), resourcePolicy: policy, requestBytes: 1048576, responseBytes: 16777216}));
 

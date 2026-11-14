@@ -33,6 +33,7 @@ const moduleCodeSha256 = modules.map(wasmCodeSha256);
 if (alternateWasm) assert.notEqual(moduleCodeSha256[0], moduleCodeSha256[1],
   'alternate fixture must differ in executable code, not only custom sections');
 const kinds = ['fixture.wasm.chain', 'fixture.wasm.chain-alt', 'fixture.wasm.join'];
+const measuredKinds = usesOfficial ? [...kinds, 'demo.identity'] : kinds;
 const port = { id: 'in', dataType: { id: 'text-packet', version: 1 }, language: 'ja-Latn', root: 'text' };
 function command(args) {
   const result = spawnSync(packageTool, args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
@@ -143,8 +144,12 @@ function verify(snapshot, targets, text) {
 async function measure(client, spec) {
   const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
   const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
+  const neutralOfficial = scenario === 'official'
+    && process.env.DIY_EXPERIMENT_NEUTRAL_JIT_POOL === '1'
+    && process.env.DIY_EXPERIMENT_COMPILED_JIT === '1';
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
-    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario);
+    && physicalSlots >= 2 && (neutralOfficial
+      || ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario));
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
   const executedNodeCount = spec.shape === 'skip' ? Math.min(nodeCount, 1) : nodeCount;
   const eligibleNodes = nodeCount + (spec.unused ?? 0);
@@ -261,7 +266,7 @@ async function measure(client, spec) {
   }
   const records = [];
   const paired = scenario === 'single-detailed';
-  const graphTrace = ['mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario) || (preparedExperiment && scenario === 'all');
+  const graphTrace = ['mixed', 'parallel', 'join', 'unused-mixed', 'official'].includes(scenario) || (preparedExperiment && scenario === 'all');
   const traceEachSample = paired || graphTrace;
   const lastRevision = freshGraph ? 1 : samples + 2;
   for (let revision = 1; revision <= lastRevision; revision++) {
@@ -335,7 +340,7 @@ async function measure(client, spec) {
         trace.dropped = Math.max(trace.dropped, page.dropped);
       }
       const complete = trace.dropped === 0;
-      const nodes = trace.events.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
+      const nodes = trace.events.filter(event => event.event === 'node-started' && measuredKinds.includes(event.nodeKind));
       if (complete) assert.equal(nodes.length, executedNodeCount, 'graph did not execute the expected Wasm nodes');
       let cold = 0, prepared = 0;
       for (const { node } of nodes) {
@@ -416,7 +421,8 @@ try {
     maxRetainedRuns: 32, maxDedupeEntries: 32, maxTombstones: 32 });
   const packageManager = { dataRoot, workspace: join(root, 'workers'), worker: resolve(worker), runtimeDll: resolve(dll),
     policy: { processMemoryBytes: 536870912, wasmMemoryBytes: 134217728, fuelPerCall: 50000000, walltimeMs: 30000, terminationGraceMs: 5 } };
-  const officialRoot = resolve(dirname(host), '..', 'official');
+  const officialRoot = process.env.DIY_WASM_SCALING_OFFICIAL_ROOT
+    ? resolve(process.env.DIY_WASM_SCALING_OFFICIAL_ROOT) : resolve(dirname(host), '..', 'official');
   if (usesOfficial) {
     const managerPath = join(root, 'manager.json');
     writeFileSync(managerPath, JSON.stringify({ ...packageManager, officialRoot }));

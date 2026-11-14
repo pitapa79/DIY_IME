@@ -496,7 +496,7 @@ Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Wo
 
 8f44b10の [CI43552959703](https://github.com/pitapa79/DIY_IME/actions/runs/43552959703) は3 Windows segmentと必須集約がすべて成功した。neutral artifact14097702865（68,749,097bytes、SHA `9f8f20b7768994afe259d69b15c1f21dcf8b2728824c8dff6794107d9d51c6b2`）を取得し、GitHubのarchive digest、全24report/accountingの存在、source `19b7feb6f584ea6ebee8371dbc48b46360bf65a0` のmanifestと各ファイルのSHAを実照合した。前回欠落した詳細証拠の取得を確認できた。
 
-同一runner・同一binaryの従来→共有→共有→従来、単段ウォーム各100件の同一試行guest-call除外基盤P95/P99msは9.983/10.943、13.684/15.352、13.708/15.917、10.467/11.217。各100/100preparedでも共有だけでは遅延が増えている。異種16段のNode別P95/P99msは75.122/126.212、20.826/33.381、18.699/65.201、21.144/405.042。並列の完全なグラフ計測は9/7/8/10件（各10件中）で、欠測を速い成功に含めない。
+同一runner・同一binaryの従来→共有→共有→従来、単段ウォーム各100件の同一試行guest-call除外基盤P95/P99msは9.983/10.943、13.684/15.352、13.708/15.917、10.467/11.217。各100/100preparedでも共有だけでは遅延が増えている。異種16段のNode ready→resolvedから同一callを除いたP95/P99msは77.376/126.545、23.799/34.007、23.938/68.215、25.241/405.378。call-start→call-endのみの短い区間に置き換えない。並列の完全なグラフ計測は9/7/8/10件（各10件中）で、欠測を速い成功に含めない。
 
 20ms入力周期では各245件中、単段の正答/置換は68/177、63/182、74/171、68/177、4段では38/207、35/210、35/210、39/205（最後は加えてadmission拒否1件）。これらは取消が正しく働いても全入力に間に合う性能ではない。4段100msでも正答237/214/210/199件。pacedのphysical-end値は総応答でありguest除外Node遅延ではない。Job CPU（単段/mixed/paced）は7.109/42.359/181.078秒、7.359/40.984/179.781秒、7.422/39.984/176.281秒、7.063/41.438/172.906秒。main/default採用とGoal達成を認定しない。
 
@@ -526,3 +526,29 @@ captureの反復copy/hash費用は除去できたが、25件はGoal尾部証明�
 fmt、locked/offline release all-target Clippy、19JS検査が成功した。現在のCore harnessは111成功/9失敗/34ignoredで、9失敗は従来と同じ必須WinHTTP option195/OS12009のplatform不一致。製品の必須設定や期待値は変更していない。
 
 次のCIには既存の共有OFF/ON比較を残したまま、cache ONの両診断lifecycle/製品検査と、neutral常時ONでcache OFF/ONの別ABBAを追加した。単段100件、mixed10構成各10件、逐次/100/20ms各245入力、全24report/accountingとsource/SHA manifestを別directoryに保存する。3segment・45分上限・全既存step・必須集約を維持する。collectorは正常copy/hashと5種類の拒否を合成値で検査し、全PowerShell blockを構文検査した。実CIでの性能・証拠取得はこの候補ではまだ未確認。公式compiled・辞書・networkの適用、初回/再生成、全Goal構成、Core P95、既定採用/main統合は引き続き残る。
+
+### 公式カタログ有効時も実sourceに基づいて準備する（2026-11-14、実験）
+
+従来の `can_prepare_jit` はfactoryにlegacy公式compile cacheがあると一律に対象外にしていた。`officialRoot` が有効な製品Hostでは第三者Nodeもこのfactoryを使うため、公式という出自だけでなく、そのHostの全Nodeが準備対象外になっていた。neutral+compiledの両フラグが有効な実験経路に限り、この一律除外を取り除く。通常既定・従来経路は維持する。legacy cacheの任意bytesを後配送せず、各source自身をcaptured Worker/DLL・同一policyでcompile-onlyした実終了済み成果だけを既存のtyped deliveryで使う。辞書・networkはまだ対象外である。
+
+既存officialベンチマークを全試行の詳細traceに拡張し、公式 `demo.identity` も実行Node数・同一試行区間・経路判定の対象にした。ローカル用の明示officialRootは同じ固定配布sourceを指す。最初の試行では、official構成にspareは存在しないという旧スクリプトの前提で、ON側が待機在庫1個を検出して停止した。ログと成功した旧対照reportは残し、失敗を性能成功に含めない。改訂した比較はofficial実験でも既存と同じspare上限とcloseSession後のprocess/physicalゼロを要求する。実入力Workerを待機在庫へ付け替える変更ではない。
+
+新しい同一binaryのOFF→ON→ON→OFF、6枠、5構成×各5ウォーム入力では全100グラフで正答とrun/session実回収を確認した。OFFではcode cache要求flagも指定するがneutral無効のため実cacheは無効である。以下はNode ready→resolvedから同一guest-callだけを除いたP95ms。5件の尾部はGoal判定に不足する。
+
+| 構成 | OFF 1 | ON 2 | ON 3 | OFF 4 |
+| --- | --- | --- | --- | --- |
+| 第三者相当単段 | 2151.747 | 854.015 | 35.379 | 726.538 |
+| 公式単段 | 1878.187 | 81.421 | 1876.927 | 1383.655 |
+| 第三者相当4段 | 259.070 | 220.536 | 161.121 | 244.318 |
+| 公式4段 | 593.642 | 270.605 | 700.203 | 770.260 |
+| 公式・第三者混合4並列 | 1175.589 | 1208.189 | 318.554 | 3035.165 |
+
+ON2公式4段のNode P99は4597.273ms。coldも除外していない。並列の完全なグラフ区間は2/4/4/4件（各5件中）、ON側の判定preparedは8/12 Node（各20中）で残りはunknown、cold判定0。unknownをpreparedの証明や高速なゼロ値にしない。公式単段はON2で5prepared/0cold、ON3で2prepared/3coldと補充が不安定であり、一律除外の解消だけでは目標に達しない。
+
+Job CPU69234.375/56500/42437.5/60781.25ms、peak commit178737152/178073600/177672192/176738304bytes、process数451/490/491/451（導入・準備・回収を含む）。Host SHA `fc862841ba76834993b0af8426570e178d028f2ce5b4fb7bebfbde2d5b7e5254`、Worker `2ef4ecb0dbfe3212b44bee2b35098c5aa5dfa516f39e0efa692129eedd4bdb01`、固定公式module SHA `105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134`。report SHAは順に `0e1a3b79e61ae570a57b3b26c8efee331f30585ef6809cd59db0195bba8aebba`、`d8ab6fb206230e85fbab9cee98a4c78dd169bd26e4b3fd5c2e24ee168353cd52`、`fa5e8ac947a4392a8b6cd084f8378d1aad717ced68e22fe299eb089e4093b940`、`f251fac8a8cf8bfd5ffe4f0aa3fab5ddcd2e7d9b6789f1b0369ac43e931f16a3`。
+
+公式catalog有効のfactoryで、既存製品Host検査を両診断方式で実行し、mixed code/後配送の証拠、入力置換、空Data/Unicode/ASCII最大長、NoOutput、元の結果予算拒否・回復、計画置換、保護応答fence、失効/回復、close/EOFの実回収が成功した。fmt、release all-target Clippy、CLI/Host/Worker/manager/package build、19JS検査も成功。配布appのcrash検査はローカルでは今回再実行していない。
+
+75efa1cの [CI43556546401](https://github.com/pitapa79/DIY_IME/actions/runs/43556546401) は、neutral区分が新cache検査より前の `Built application and launcher ownership` で失敗した。既存のlauncher強制終了後30秒以内に観測子processが消える検査がtimeoutしたが、当時は生存PID/nameが出ず、原因は未確定である。現候補のcache性能・安全検査をCI合格として扱わない。次回の同じ検査では制限・要求を変えず、timeout時に観測した子processのPID/親PID/作成時刻/nameだけを報告する。所有関係や終了保証を緩めず、ランチャーの修正済みとも主張しない。
+
+次回CIへ公式catalog有効の同じ製品安全検査、別の公式/第三者ABBA（5構成各10件、対照0/1/1/0）を追加する。8report/accountingとsource/hash manifestを別directoryへ保存し、固定公式moduleの実hashも照合する。既存比較・3segment集約・45分上限を維持する。cache候補の全CI証拠、公式経路の安定したcold/refill尾部、辞書・network、全変更/異常条件、Core P95、main/defaultの最終採用は未完了である。

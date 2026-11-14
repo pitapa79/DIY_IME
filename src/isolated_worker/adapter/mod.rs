@@ -1493,7 +1493,12 @@ impl WasmNode {
     }
 
     pub(in crate::isolated_worker) fn can_prepare_jit(&self) -> bool {
-        self.dictionary.is_none() && self.network.is_none() && self.artifact.0.compiled.is_none()
+        self.dictionary.is_none()
+            && self.network.is_none()
+            // The official catalog enables a factory-wide legacy cache, even
+            // for third-party sources. Neutral delivery instead binds each
+            // source to its OWN settled compiler; catalog origin is no gate.
+            && (self.artifact.0.compiled.is_none() || neutral::enabled())
     }
 
     pub(in crate::isolated_worker) fn prepare_jit_slot(
