@@ -640,3 +640,30 @@ CI Host SHA `b2b0e0c7f8e1076afb2f3d29c8a1b888afb20faee542df9f5bf7b95abe06a66a`�
 候補の全Core検査は116成功/9既知WinHTTP option195/OS12009失敗/34ignoredで、全ローカル合格とはしない。19JS検査・スクリプト構文・diff検査は成功した。既存4区分・全step・45分上限・必須集約をそのまま残し、第5区分で両診断/両catalogと元の回帰を実行し、単段100・mixed10構成各10・逐次/20/100ms・公式5構成各10を同じrunner内でbatch ABBA比較する。mapping/cache/neutralは常時ONに固定する。追加32report/accounting・source/SHA manifestのcollectorは合成正常copy/hashと7種類の拒否を通し、40 PowerShell blockの構文と元4区分の厳密な保存を確認した。これは次の実CIの成功・採用やGoalの完了を証明するものではない。
 
 公開前の自己点検で、batchのhealthに加えて従来のCodeFiles healthもlease前に明示確認するguardを追加した。実ACL単体には、実leaseの付与/取消後に従来healthを失敗へ落とし、新しいSID権限を一切付けずworker-assetで拒否する検査を加えた。最終版を再buildし、fmt/Clippy、4単体、実lifecycle両診断15.485/15.250秒、製品plain/official×両診断43.000/36.281/31.359/27.313秒が成功。全Coreも116成功/同じ9失敗/34ignoredだった。最終Host SHA `e1a3c45a70eb67de329b17eb8c332bc243bb3f1be54e83de7a78a21abb23d3a8`、Worker `f1a05267802db8ac1067ff9c535dc68b9f8ffe070777d428714f67d4415c6fed`。上記100単段/120mixedの性能値はこのguard前の異なるprototype binaryによる予備値であり、最終版の性能証明へ流用しない。最終候補の性能と広い回帰は次の実CIで確認する。
+
+### ACL一括更新を実CI後に棄却（2026-11-14）
+
+95c426eの [CI43588754641](https://github.com/pitapa79/DIY_IME/actions/runs/43588754641) は5区分と必須集約がすべて成功した。source `0f3e64b7f42749beda85a1efb6a86bc76f71f5d2` の実artifactを取得し、archive・各report/accounting・manifestのSHAを照合した。ACL区分14112281446（SHA `476329235596507af18df905438311a73c9f20424a90d6f5289b5245be8e3fad`）32件、mapping区分14112241757（`6aa65de7197014a4406479ca9a5b85a35a3594bc837623d33a2c70257f09f3b7`）32件、neutral区分14112387460（`690763d101fc8423b00d9ad8f03244032eb0e490f9e975c8fd8a64e55ee90d6d`）56件、計120件と5manifestを実照合した。各区分の実binary、mode、実code差、試行/構成/入力分母、Job accountingも確認し、異なるrunnerのbinaryや値を混ぜていない。
+
+ACL runnerの同一binaryはHost SHA `797f1eddeea52d408fcc8809ea1ce976b1e022e79676d242d50fdea39249bcb7`、Worker `a51a01fca93bfc1a74cd1d203ad60d8c50793730ce7460080f30e26984972103`、DLLは固定SHA。neutral/cache/mapping常時ON、batch OFF→ON→ON→OFFの単段100ウォーム入力はprepared100/100/100/99件で、**全試行の同一Node ready→resolved minus same guest-call**は次のとおり。
+
+| batch | 単段 P95/P99 ms | 異種16段のNode P95/P99 ms | mixed Job CPU 秒 |
+| --- | --- | --- | --- |
+| OFF 1 | 9.584 / 10.063 | 20.777 / 24.672 | 39.031 |
+| ON 2 | 9.292 / 10.058 | 23.323 / 33.996 | 38.781 |
+| ON 3 | 9.670 / 10.569 | 21.635 / 87.841 | 37.359 |
+| OFF 4 | 9.820 / 11.086 | 21.868 / 31.487 | 37.906 |
+
+16段は各10グラフ/160 Nodeすべてprepared。第三者4並列のNode P95/P99msは34.613/37.000、34.842/35.518、74.479/75.366、35.372/37.273、完全graph計測は9/8/8/8件（各10件中）。公式混合4並列は61.299/74.662、205.953/206.159、194.823/210.220、51.957/55.812msで、完全計測10/9/10/10件。unknownや欠測をゼロにせず、ON3のcold2 Nodeも残した。単段Job CPU秒は7.266/7.219/7.031/6.813、mixed peak commit126255104/126894080/125980672/125972480bytesで、CPU/RAMの一貫した大幅改善もない。
+
+20msの単段正答は74/72/76/68件、4段は37/39/38/39件（各245入力）。4段100ms正答242/222/221/205件。置換も記録し、全入力完了の新要件を追加しない。OFF4の4段20msはbusy拒否1件を含み、driverのfailed1はこの拒否である。pacedのphysical-endは総応答であり、別計測のguest分位点を引いてNode指標にしない。
+
+小さな合成ACL groupの中央値削減は、通常Hostの広い比較へ安定して移らなかった。単段はOFFも目標の部分条件を満たし、16段・公式混合はONで尾部が悪化する。よって**一括更新を採用せず、私的flag・coordinator・専用report control・方式専用比較区分を撤去する**。新方式を除いた実行コードとCIはe18c0f7と一致し、元4区分の全step/条件/45分上限/必須集約と全残存機能の安全検査は保持する。方式の記録や実測を消さず、Goalや数値条件を縮めない。撤去後のfmt、release all-target Clippy、CLI/Host/Worker/harness buildは成功し、Coreは112成功/既知WinHTTP195-OS12009の9失敗/34ignored。最新撤去HEADのCIは別途必要である。
+
+### 次の律速調査：起動imageとDLLの権限を切り分ける（実験のみ）
+
+95c426eの検証済みWorkerを、保護されたowner-only DACLの新規コピーから、製品のexecute/Job/token/元process・IO終了確認で起動した。最初は不正引数でDLLを読む前に終了させ、追加ACLなし、directoryのみ、全asset、追加ACLなし反復の4条件すべてでAppContainerを確認したWorker入口まで到達した。各試行はfresh profileで、ACL取消・profile・正確なコピーの実削除も確認した。これはNode実行や起動性能の証明ではない。
+
+次に、Wasmコード・入力・Store/Instanceを渡さず、空runtimeのreadiness後にEOFとする5条件を測った。DLLとexeはそれぞれowner-onlyの保護DACLとdeny-write/delete pinで保持した。追加ACLなし、directoryのみ、追加ACLなし反復は `runtime read-only file unavailable` で拒否。**DLLだけ許可、全asset許可は、ともに同じ空runtime readinessへ到達した**。全5件で元process/IO/Jobを実回収してからACL/profileと2コピーを削除した。現在の動的DLLに必要なread権限を単純に省略できる結果ではない。製品の権限やbootstrapは変更していない。
+
+固定済み公式C API archive（SHA `8b461d9dc12b076d0414b1023433bbb2dc08d3b1c0f0a156853ede35f0147802`）を検査すると、full静的libraryは82672010bytes、minは2753274bytesだった。[公式C API資料](https://docs.wasmtime.dev/c-api/)に静的リンク方法があるが、minのconf.hはcompiler/Winch/GC/threads等を無効としており、汎用Node用の代用品にはしない。GNU Rustへmin libraryを直接リンクする小プローブはrust_eh_personalityの重複と__chkstk未解決で失敗し、実行していない。stdを二重にリンクしない小プローブと、[LLVMのx64 stack probeのABI説明](https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/builtins/x86_64/chkstk.S)に基づく既存probe symbolのaliasではリンクできたが、生成物の実行は出力なしで0xC00000FD終了した。終了地点は未特定で、Wasmも入力も実行していない。例外処理の強制置換やstack検査の無効化で通したことにせず、static相互運用は未検証として採用しない。製品のtoolchain・runtime・公開APIも変更していない。

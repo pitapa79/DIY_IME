@@ -1,5 +1,4 @@
 //! Host-owned validated Wasm composition for v3. No default registry/GUI activation.
-mod acl_batch;
 mod dictionary;
 mod gate;
 #[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
@@ -291,7 +290,6 @@ impl Drop for CodeReservation {
 }
 /// Captured immutable code only; every invocation still has a fresh process and profile.
 struct CodeFiles {
-    acl_batch: Option<acl_batch::Batch>,
     verified_runtime: std::sync::OnceLock<Result<super::runtime::VerifiedRuntimeFile, String>>,
     reservation: Option<CodeReservation>,
     locks: Vec<std::fs::File>,
@@ -315,11 +313,6 @@ impl CodeFiles {
         // Own the reservation together with the directory before the first write,
         // so partial construction has the same cleanup/accounting as a live cache.
         let mut files = Self {
-            acl_batch: (std::env::var_os("DIY_EXPERIMENT_BATCHED_CODE_ACL").as_deref()
-                == Some(std::ffi::OsStr::new("1"))
-                && std::env::var_os("DIY_EXPERIMENT_INHERITED_CODE_ACL").as_deref()
-                    == Some(std::ffi::OsStr::new("1")))
-            .then(acl_batch::Batch::new),
             verified_runtime: std::sync::OnceLock::new(),
             reservation: Some(reservation),
             locks: Vec::new(),
@@ -361,11 +354,6 @@ impl CodeFiles {
         }
     }
     fn check_healthy(&self) -> Result<(), CoreError> {
-        if let Some(batch) = &self.acl_batch {
-            batch
-                .check_healthy()
-                .map_err(|_| fail("worker-asset", "batched code permission state unavailable"))?;
-        }
         let healthy = self
             .healthy
             .lock()
@@ -379,16 +367,6 @@ impl CodeFiles {
         Ok(())
     }
     fn lease<'a>(&'a self, profile: &'a Profile) -> Result<CodeLease<'a>, CoreError> {
-        if let Some(batch) = &self.acl_batch {
-            self.check_healthy()?;
-            self.batched_access(batch, profile, true)
-                .map_err(|_| fail("worker-isolation", "batched code permission unavailable"))?;
-            return Ok(CodeLease {
-                files: self,
-                profile,
-                active: true,
-            });
-        }
         let mut healthy = self
             .healthy
             .lock()
@@ -410,21 +388,6 @@ impl CodeFiles {
             files: self,
             profile,
             active: true,
-        })
-    }
-    fn batched_access(
-        &self,
-        batch: &acl_batch::Batch,
-        profile: &Profile,
-        allow: bool,
-    ) -> Result<u64, String> {
-        batch.change(acl_batch::Sid::copy(profile)?, allow, |changes| {
-            let entries = changes
-                .iter()
-                .map(|change| (change.sid(), change.allow))
-                .collect::<Vec<_>>();
-            self.cache
-                .change_inherited_code_access_batch(self.locks.len(), &entries)
         })
     }
 }
@@ -453,17 +416,6 @@ impl CodeLease<'_> {
 
     fn release_measured(&mut self, lock_wait_us: Option<&mut u64>) -> Result<(), CoreError> {
         if !self.active {
-            return Ok(());
-        }
-        if let Some(batch) = &self.files.acl_batch {
-            let waited = self
-                .files
-                .batched_access(batch, self.profile, false)
-                .map_err(|_| fail("worker-cleanup", "batched code permission cleanup failed"))?;
-            if let Some(total) = lock_wait_us {
-                *total = total.saturating_add(waited);
-            }
-            self.active = false;
             return Ok(());
         }
         let waiting = lock_wait_us.as_ref().map(|_| std::time::Instant::now());
