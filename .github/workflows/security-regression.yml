@@ -432,6 +432,92 @@ jobs:
           }
           if ($taskEvidenceEntries.Count -ne 24) { throw 'Neutral evidence must contain all 24 report/accounting files' }
           @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-evidence-manifest.json" -Encoding utf8
+      - name: Cached neutral single-use factory and code ownership
+        if: matrix.segment == 'neutral'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::neutral::tests::real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_cleanup -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Neutral code cache same-binary ABBA comparison
+        if: matrix.segment == 'neutral'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = $neutral
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $taskEvidenceRoot = 'target/neutral-code-cache-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $taskStem = "windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = if ($scenario -eq 'mixed') { 10 } elseif ($scenario -eq 'paced') { 2 } else { 1 }
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralCodeCache -ne ($neutral -eq '1') -or $taskReport.requestedNeutralJitPool -ne $true) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 24) { throw 'Neutral evidence must contain all 24 report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-code-cache-evidence-manifest.json" -Encoding utf8
       - name: Immediate input after activation readiness comparison
         if: matrix.segment == 'prepared'
         run: |
@@ -479,6 +565,7 @@ jobs:
             target/windows-prepared-jit-activation-*.json
             target/windows-prepared-jit-diagnostics-*.json
             target/neutral-stock-evidence/*.json
+            target/neutral-code-cache-evidence/*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

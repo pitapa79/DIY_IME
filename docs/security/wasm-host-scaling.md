@@ -491,3 +491,38 @@ Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Wo
 残るconsoleの単段**総応答**P95/P99msは従来→共有→共有→従来で11.391/12.303、15.110/15.914、14.156/15.700、10.409/10.963。これは同一試行guest除外のNode基盤遅延ではなく、別計測のguest percentileを引かない。詳細欠落のため、この回から基盤目標達成や全matrixの採否を認定しない。
 
 是正は、ABBA後に全24report/Jobファイル、100/10/35の指定試行、1/10/2の構成数、単段/混合の入力record数、各paced区間245入力、実際のHost/Worker/DLL hash、対照mode、異なるcode、Job accountingの存在を検査し、専用evidence directoryへcopyする処理。全ファイルのSHAとsourceを持つmanifestも作り、このdirectoryを明示的なartifact対象へ追加した。既存の保存対象・検査・45分上限・3segment集約は保持する。collectorの合成試験は正常24件+manifestのcopy/hash一致を確認し、欠落・binary不一致・mode不一致・短いrecord・短いpacedをそれぞれ拒否した。これは保存処理の試験であり、合成値を性能証拠に使わない。修正後の実CIとdownloaded artifactで完全性を再確認する必要がある。
+
+### 保存是正後の実CIと共有在庫の限界（2026-11-14）
+
+8f44b10の [CI43552959703](https://github.com/pitapa79/DIY_IME/actions/runs/43552959703) は3 Windows segmentと必須集約がすべて成功した。neutral artifact14097702865（68,749,097bytes、SHA `9f8f20b7768994afe259d69b15c1f21dcf8b2728824c8dff6794107d9d51c6b2`）を取得し、GitHubのarchive digest、全24report/accountingの存在、source `19b7feb6f584ea6ebee8371dbc48b46360bf65a0` のmanifestと各ファイルのSHAを実照合した。前回欠落した詳細証拠の取得を確認できた。
+
+同一runner・同一binaryの従来→共有→共有→従来、単段ウォーム各100件の同一試行guest-call除外基盤P95/P99msは9.983/10.943、13.684/15.352、13.708/15.917、10.467/11.217。各100/100preparedでも共有だけでは遅延が増えている。異種16段のNode別P95/P99msは75.122/126.212、20.826/33.381、18.699/65.201、21.144/405.042。並列の完全なグラフ計測は9/7/8/10件（各10件中）で、欠測を速い成功に含めない。
+
+20ms入力周期では各245件中、単段の正答/置換は68/177、63/182、74/171、68/177、4段では38/207、35/210、35/210、39/205（最後は加えてadmission拒否1件）。これらは取消が正しく働いても全入力に間に合う性能ではない。4段100msでも正答237/214/210/199件。pacedのphysical-end値は総応答でありguest除外Node遅延ではない。Job CPU（単段/mixed/paced）は7.109/42.359/181.078秒、7.359/40.984/179.781秒、7.422/39.984/176.281秒、7.063/41.438/172.906秒。main/default採用とGoal達成を認定しない。
+
+CI Host SHA `fc018d4b86470c7126bc2452212e311e4dddf64fc118db3db12b45e83eb671a2`、Worker `fa58f999653d0ecea98e259030b1f8e3e43e660bd94c283713ac0fd6f3705082`、DLLは上記固定SHA。下記ローカルの未コミット候補binaryと混同しない。
+
+### 入力を持たない不変code bytesの有界キャッシュ（2026-11-14、実験）
+
+late-code捕捉区間を既存の詳細Host `worker-staging` phaseで測った。共有在庫ONの25ウォーム入力では18prepared/7cold、preparedのcapture P50/P95は6.449/15.037ms、親cleanupは10.974/37.570msだった。全試行基盤P95は346.798msで、上位5件はcoldである。区間別分位点を引いて架空の基盤分位点を作らない。
+
+追加の `DIY_EXPERIMENT_NEUTRAL_CODE_CACHE=1` はneutral+compiledの両制御が有効な場合のみ、自身の実終了済みcompiler成果から読み取り・hash照合した不変code bytesをsource別に共有する。既定OFF。入力・結果・Module/Store/Instance・入力後Workerを保持しない。新しいsource/policyは別slotになり、factory identity、compiled files所有、digest、配送前/実回収後のhealth照合を維持する。cache ownerはsource Imageやslotを参照せず、強参照cycleを作らない。
+
+追加storageは既存512MiB code budgetに課金し、必須storageの予約が不足した際はcache-held Arcを非blockingに退避する。実行中のpayloadが持つArcとchargeは元process/IO/Job/ACL/profile回収まで残る。退避してもactive pinを未課金にせず、使用中のbytesで予算が埋まる場合は従来どおり拒否する。未使用Nodeのbytesを一括先読みにしない。
+
+実AppContainer lifecycleは入力時/旧診断FDで22.77/13.17秒、製品Host検査も両方式で成功した。異種codeの後選択、fresh state、他factory/policy拒否、fuel/memory制限、許可拒否・scope取消/回復、入力置換・計画変更・保護・失効/回復・EOF実回収を維持する。cache再利用のArc identity、source/payload破棄後にImage/code/filesのWeakがすべて消えること、必須storage優先の退避とactive pin課金を検査した。
+
+同一binary、neutral常時ON、cache OFF→ON→ON→OFF、物理2枠、単段各25ウォーム入力（完了後100ms休止）の結果は次のとおり。全100件が正答とrun/session実回収を通ったが、coldを含めた基盤尾部はなお未達。
+
+| cache | prepared / 25 | 全試行基盤 P95/P99 ms | prepared capture P95 µs | prepared cleanup P95 µs |
+| --- | --- | --- | --- | --- |
+| OFF 1 | 17 | 402.603 / 1104.232 | 11236 | 78312 |
+| ON 2 | 25 | 35.936 / 36.440 | 19 | 13482 |
+| ON 3 | 23 | 207.695 / 213.266 | 14 | 13304 |
+| OFF 4 | 18 | 367.213 / 467.970 | 29464 | 160809 |
+
+captureの反復copy/hash費用は除去できたが、25件はGoal尾部証明ではない。Job CPU6968.75/6359.375/6000/7453.125ms、peak commit115671040/117936128/116056064/114913280bytes、process数91/91/91/90。Host SHA `314fcd539e31a80f980994638599eebbda4379704cac7ae7b34e0a4b5dfeb9e1`、Worker `59997cb048bf62e11aa8c23896e3b8ff8c0126138228336820ad09c0869ac5f1`。report SHAは順に `7fd8aa0f1a29fb014e3dbac1706a5a351959809ff0c1793c05070507e71425d0`、`52c6cf3ea8e033d121d18700ae0cf7d82e9df83bb3f0c1b93c47f0c922180a7f`、`959774a29ad5313f22fac9057fe56c6705228676011552dbb9b113474ba9539d`、`2f7746abc3057830087f6418fdfa4be87b6304b2d47fa281955297f33f7cf437`。
+
+fmt、locked/offline release all-target Clippy、19JS検査が成功した。現在のCore harnessは111成功/9失敗/34ignoredで、9失敗は従来と同じ必須WinHTTP option195/OS12009のplatform不一致。製品の必須設定や期待値は変更していない。
+
+次のCIには既存の共有OFF/ON比較を残したまま、cache ONの両診断lifecycle/製品検査と、neutral常時ONでcache OFF/ONの別ABBAを追加した。単段100件、mixed10構成各10件、逐次/100/20ms各245入力、全24report/accountingとsource/SHA manifestを別directoryに保存する。3segment・45分上限・全既存step・必須集約を維持する。collectorは正常copy/hashと5種類の拒否を合成値で検査し、全PowerShell blockを構文検査した。実CIでの性能・証拠取得はこの候補ではまだ未確認。公式compiled・辞書・networkの適用、初回/再生成、全Goal構成、Core P95、既定採用/main統合は引き続き残る。

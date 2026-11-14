@@ -123,6 +123,11 @@ fn real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_c
         let owner = ready();
         let baseline = factory.0.code_budget.used.load(Ordering::Acquire);
         let code = source.late_jit_code(&CancellationToken::default()).unwrap();
+        let captured_budget = factory.0.code_budget.used.load(Ordering::Acquire);
+        if source.0.late_code_cache.is_some() {
+            let again = source.late_jit_code(&CancellationToken::default()).unwrap();
+            assert!(Arc::ptr_eq(&code.captured, &again.captured));
+        }
         assert!(code.matches(&factory));
         let weak = Arc::downgrade(&code);
         let reply = owner.dispatch(delivery(code, None), None).unwrap();
@@ -131,7 +136,14 @@ fn real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_c
             weak.upgrade().is_none(),
             "late code pin survived settled dispatch"
         );
-        assert_eq!(factory.0.code_budget.used.load(Ordering::Acquire), baseline);
+        assert_eq!(
+            factory.0.code_budget.used.load(Ordering::Acquire),
+            if source.0.late_code_cache.is_some() {
+                captured_budget
+            } else {
+                baseline
+            }
+        );
         assert_eq!(factory.active_processes(), 0);
         assert_eq!(host.usage().physical_jobs, 0);
     }
@@ -193,4 +205,75 @@ fn real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_c
     );
     assert_eq!(factory.active_processes(), 0);
     assert_eq!(host.usage().physical_jobs, 0);
+    if cache_enabled() {
+        let victim = factory
+            .with_module(fixture("state"), factory.0.policy.clone())
+            .unwrap();
+        let image = Arc::downgrade(&victim.0);
+        let payload = {
+            let _compiler = host
+                .try_reserve(ResourceUsage {
+                    physical_jobs: 1,
+                    ..ResourceUsage::default()
+                })
+                .unwrap();
+            victim.late_jit_code(&CancellationToken::default()).unwrap()
+        };
+        let captured = Arc::downgrade(&payload.captured);
+        let files = Arc::downgrade(&payload.captured.files);
+        drop(victim);
+        assert!(
+            image.upgrade().is_some(),
+            "in-flight source pin was released"
+        );
+        drop(payload);
+        assert!(image.upgrade().is_none(), "source/cache strong cycle");
+        assert!(captured.upgrade().is_none(), "cached byte owner leaked");
+        assert!(files.upgrade().is_none(), "compiled files remained locked");
+    }
+}
+
+#[test]
+fn cached_code_yields_to_essential_storage_without_releasing_active_pins() {
+    let budget = Arc::new(CodeBudget {
+        limit: 64,
+        ..CodeBudget::default()
+    });
+    let files = Arc::new(
+        CodeFiles::new(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            &[("node.cwasm", b"data")],
+            &budget,
+        )
+        .unwrap(),
+    );
+    let slot = budget.code_cache_slot();
+    let make = || {
+        Arc::new(CapturedCode {
+            files: files.clone(),
+            bytes: Arc::from(b"data".as_slice()),
+            digest: "synthetic-never-deserialized".into(),
+            _charge: budget.reserve(8).unwrap(),
+        })
+    };
+    *slot.lock().unwrap() = Some(make());
+    assert_eq!(budget.used.load(Ordering::Acquire), 12);
+    let essential = budget.reserve(60).unwrap();
+    assert_eq!(budget.used.load(Ordering::Acquire), 64);
+    assert!(slot.lock().unwrap().is_none());
+    drop(essential);
+    let active = make();
+    *slot.lock().unwrap() = Some(active.clone());
+    assert!(
+        budget.reserve(60).is_err(),
+        "eviction forgot an active payload's charge"
+    );
+    assert!(slot.lock().unwrap().is_none());
+    assert_eq!(budget.used.load(Ordering::Acquire), 12);
+    assert_eq!(&*active.bytes, b"data");
+    drop(active);
+    let essential = budget.reserve(60).unwrap();
+    drop(essential);
+    drop(files);
+    assert_eq!(budget.used.load(Ordering::Acquire), 0);
 }

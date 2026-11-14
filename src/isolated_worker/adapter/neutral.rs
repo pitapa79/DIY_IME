@@ -12,20 +12,58 @@ pub(in crate::isolated_worker) fn enabled() -> bool {
 
 pub(in crate::isolated_worker) struct LateJitCode {
     source: WasmArtifact,
+    captured: Arc<CapturedCode>,
+}
+// No Image/WasmArtifact/slot reference: storing this owner in an Image's cache
+// cannot create a strong cycle that retains code/files/budget indefinitely.
+pub(super) struct CapturedCode {
     files: Arc<CodeFiles>,
     bytes: Arc<[u8]>,
     digest: String,
     _charge: CodeReservation,
 }
+pub(super) type CodeCacheSlot = std::sync::Mutex<Option<Arc<CapturedCode>>>;
+pub(super) fn cache_enabled() -> bool {
+    enabled()
+        && std::env::var_os("DIY_EXPERIMENT_NEUTRAL_CODE_CACHE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+}
+impl CodeBudget {
+    pub(super) fn code_cache_slot(self: &Arc<Self>) -> Arc<CodeCacheSlot> {
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let mut caches = self.code_caches.lock().unwrap_or_else(|p| p.into_inner());
+        caches.retain(|known| known.strong_count() != 0);
+        caches.push(Arc::downgrade(&slot));
+        slot
+    }
+    pub(super) fn evict_code_caches(&self) {
+        let mut caches = self.code_caches.lock().unwrap_or_else(|p| p.into_inner());
+        caches.retain(|known| {
+            let Some(slot) = known.upgrade() else {
+                return false;
+            };
+            // Never block on a caller filling another slot under this budget.
+            // Active invocations retain their OWN Arc and charge until real
+            // process/IO/Job/ACL/profile cleanup, even after cache eviction.
+            if let Ok(mut captured) = slot.try_lock() {
+                captured.take();
+            }
+            true
+        });
+    }
+}
 impl LateJitCode {
     pub(in crate::isolated_worker) fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.captured.bytes
     }
     pub(in crate::isolated_worker) fn digest(&self) -> &str {
-        &self.digest
+        &self.captured.digest
     }
     pub(in crate::isolated_worker) fn check(&self) -> Result<(), String> {
-        self.files.check_healthy().map_err(|e| e.to_string())
+        self.captured
+            .files
+            .check_healthy()
+            .map_err(|e| e.to_string())
     }
     pub(super) fn matches(&self, factory: &WasmArtifact) -> bool {
         self.source.same_runtime_factory(factory)
@@ -49,8 +87,36 @@ impl WasmArtifact {
                 "own compiled code is not ready for late delivery",
             ));
         };
-        let charge = self.0.code_budget.reserve(2 * (len as u64 + 1))?;
         files.check_healthy()?;
+        let capture = || self.capture_late_bytes(files.clone(), len, digest.clone());
+        let captured = if let Some(slot) = &self.0.late_code_cache {
+            let mut cached = slot.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(code) = cached.as_ref() {
+                if code.digest != digest || !Arc::ptr_eq(&code.files, &files) {
+                    return Err(fail("worker-identity", "cached code binding changed"));
+                }
+                code.clone()
+            } else {
+                let code = capture()?;
+                *cached = Some(code.clone());
+                code
+            }
+        } else {
+            capture()?
+        };
+        Ok(Arc::new(LateJitCode {
+            source: self.clone(),
+            captured,
+        }))
+    }
+
+    fn capture_late_bytes(
+        &self,
+        files: Arc<CodeFiles>,
+        len: usize,
+        digest: String,
+    ) -> Result<Arc<CapturedCode>, CoreError> {
+        let charge = self.0.code_budget.reserve(2 * (len as u64 + 1))?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(len + 1)
@@ -62,8 +128,7 @@ impl WasmArtifact {
             return Err(fail("worker-identity", "late compiled code changed"));
         }
         files.check_healthy()?;
-        Ok(Arc::new(LateJitCode {
-            source: self.clone(),
+        Ok(Arc::new(CapturedCode {
             files,
             bytes: Arc::from(bytes),
             digest,

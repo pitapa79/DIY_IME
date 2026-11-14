@@ -126,6 +126,7 @@ struct Image {
     code_budget: Arc<CodeBudget>,
     compiled: Option<Arc<std::sync::Mutex<CompiledState>>>,
     jit_compiled: std::sync::Mutex<CompiledState>,
+    late_code_cache: Option<Arc<neutral::CodeCacheSlot>>,
 }
 struct CompiledAsset {
     files: Arc<CodeFiles>,
@@ -247,12 +248,14 @@ impl Drop for ScopedCache {
 struct CodeBudget {
     used: AtomicU64,
     limit: u64,
+    code_caches: std::sync::Mutex<Vec<std::sync::Weak<neutral::CodeCacheSlot>>>,
 }
 impl Default for CodeBudget {
     fn default() -> Self {
         Self {
             used: AtomicU64::new(0),
             limit: 512 * 1024 * 1024,
+            code_caches: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -262,11 +265,18 @@ struct CodeReservation {
 }
 impl CodeBudget {
     fn reserve(self: &Arc<Self>, bytes: u64) -> Result<CodeReservation, CoreError> {
-        self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
-                old.checked_add(bytes).filter(|new| *new <= self.limit)
-            })
-            .map_err(|_| fail("worker-asset", "immutable code storage limit exceeded"))?;
+        let reserve = || {
+            self.used
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                    old.checked_add(bytes).filter(|new| *new <= self.limit)
+                })
+        };
+        if reserve().is_err() {
+            if bytes <= self.limit {
+                self.evict_code_caches();
+            }
+            reserve().map_err(|_| fail("worker-asset", "immutable code storage limit exceeded"))?;
+        }
         Ok(CodeReservation {
             budget: self.clone(),
             bytes,
@@ -550,6 +560,8 @@ impl WasmArtifact {
             ));
         }
         let identity = format!("{}:{}:{}", sha256(&worker)?, dll_hash, sha256(&module)?);
+        let code_budget = Arc::new(CodeBudget::default());
+        let late_code_cache = neutral::cache_enabled().then(|| code_budget.code_cache_slot());
         Ok(Self(Arc::new(Image {
             profile_pool: None,
             workspace,
@@ -561,11 +573,12 @@ impl WasmArtifact {
             requests: AtomicU64::new(0),
             activity: Arc::new(AtomicU64::new(0)),
             timings: Arc::new(TimingCounters::default()),
-            code_budget: Arc::new(CodeBudget::default()),
+            code_budget,
             runtime_files: Arc::new(std::sync::Mutex::new(None)),
             module_files: std::sync::Mutex::new(None),
             compiled: None,
             jit_compiled: std::sync::Mutex::new(CompiledState::Pending),
+            late_code_cache,
         })))
     }
     pub(super) fn enable_profile_preparation(mut self, physical_slots: u64) -> Self {
@@ -619,6 +632,7 @@ impl WasmArtifact {
             compiled: self.0.compiled.clone(),
             // A new captured module/policy never inherits another source's code.
             jit_compiled: std::sync::Mutex::new(CompiledState::Pending),
+            late_code_cache: neutral::cache_enabled().then(|| self.0.code_budget.code_cache_slot()),
         })))
     }
     pub fn identity(&self) -> &str {
@@ -1610,9 +1624,12 @@ impl WasmNode {
                         {
                             let bytes = serde_json::to_vec(&request)
                                 .map_err(|_| fail("worker-request", "request serialization failed"))?;
+                            let capture_phase = prepared.neutral_factory.as_ref()
+                                .map(|_| invocation.trace_host_phase(HostTracePhase::WorkerStaging));
                             let late_code = if prepared.neutral_factory.is_some() {
                                 node.artifact.late_jit_code(&cancel).map(Some)
                             } else { Ok(None) };
+                            drop(capture_phase);
                             match late_code {
                                 Err(_) => {
                                     // This spare has seen no input. Settle it before
@@ -2961,6 +2978,7 @@ mod tests {
         let budget = Arc::new(CodeBudget {
             used: AtomicU64::new(0),
             limit: 8,
+            ..CodeBudget::default()
         });
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let first = CodeFiles::new(root, &[("node.wasm", b"12345")], &budget).unwrap();
@@ -2993,6 +3011,7 @@ mod tests {
         let budget = Arc::new(CodeBudget {
             used: AtomicU64::new(0),
             limit: 16,
+            ..CodeBudget::default()
         });
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(
