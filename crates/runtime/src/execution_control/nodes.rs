@@ -101,6 +101,58 @@ impl OwnedInvocation {
             t.lost_diagnostics();
         }
     }
+    /// Internal native-Host bridge. Queue one bounded received metadata bundle
+    /// without competing with execution events for the recording mutex.
+    #[doc(hidden)]
+    pub fn trace_worker_intervals(
+        &self,
+        instance: u32,
+        intervals: impl IntoIterator<
+            Item = (
+                super::WorkerTracePhase,
+                std::time::Duration,
+                Option<std::time::Duration>,
+            ),
+        >,
+    ) {
+        if !self.host_trace_is_detailed() {
+            return;
+        }
+        let mut received = Vec::new();
+        for (phase, start, end) in intervals
+            .into_iter()
+            .take(super::trace::MAX_WORKER_INTERVALS + 1)
+        {
+            if instance == 0
+                || instance > 20_000
+                || end.is_some_and(|end| end < start)
+                || start.as_micros() > u128::from(u64::MAX)
+                || end.is_some_and(|end| end.as_micros() > u128::from(u64::MAX))
+            {
+                self.trace_worker_diagnostics_lost();
+                return;
+            }
+            received.push((
+                phase,
+                start.as_micros() as u64,
+                end.map(|end| end.as_micros() as u64),
+            ));
+        }
+        if received.is_empty() || received.len() > super::trace::MAX_WORKER_INTERVALS {
+            self.trace_worker_diagnostics_lost();
+            return;
+        }
+        let p = &self.plan.nodes[self.index];
+        self.trace.as_ref().expect("enabled ticket").queue_workers(
+            (
+                self.index,
+                &p.node.definition.kind,
+                p.node.definition.version,
+            ),
+            instance,
+            received.into_boxed_slice(),
+        );
+    }
     /// Trusted Host metadata. Disabled/basic recording does no clock read or formatting.
     pub fn trace_host_phase(&self, phase: HostTracePhase) -> HostTraceSpan<'_> {
         let (started, finished) = phase.events();

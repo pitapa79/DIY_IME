@@ -7,6 +7,7 @@ use std::{
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
     time::Duration,
 };
@@ -15,6 +16,12 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RUNS: usize = 200;
 const MAX_CALLS: usize = 20_000;
 const RETENTION_US: u64 = 60_000_000;
+pub(crate) const MAX_WORKER_INTERVALS: usize = 12;
+const WORKER_QUEUE_SLOTS: usize = 128;
+// Reserve conservative storage for each bounded native metadata bundle from
+// the existing diagnostic budget, rather than growing it with concurrency.
+const WORKER_QUEUE_BYTES: usize = WORKER_QUEUE_SLOTS * 4096;
+pub(crate) type QueuedWorkerInterval = (WorkerTracePhase, u64, Option<u64>);
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TraceKind {
@@ -142,6 +149,35 @@ struct RunAlias {
     ended: bool,
     published: bool,
 }
+struct WorkerBundle {
+    run: u64,
+    received: Duration,
+    node: usize,
+    kind: Box<str>,
+    version: u32,
+    instance: u32,
+    intervals: Box<[QueuedWorkerInterval]>,
+}
+struct WorkerSink {
+    sender: SyncSender<WorkerBundle>,
+    lost: AtomicU64,
+}
+struct WorkerInbox {
+    sink: Arc<WorkerSink>,
+    receiver: Receiver<WorkerBundle>,
+}
+impl WorkerInbox {
+    fn new() -> Self {
+        let (sender, receiver) = sync_channel(WORKER_QUEUE_SLOTS);
+        Self {
+            sink: Arc::new(WorkerSink {
+                sender,
+                lost: AtomicU64::new(0),
+            }),
+            receiver,
+        }
+    }
+}
 struct Recording {
     id: String,
     generation: u64,
@@ -158,8 +194,51 @@ struct Recording {
     bytes: usize,
     dropped: u64,
     calls: usize,
+    worker_inbox: Option<WorkerInbox>,
 }
 impl Recording {
+    fn byte_limit(&self) -> usize {
+        MAX_BYTES - 4096 - usize::from(self.worker_inbox.is_some()) * WORKER_QUEUE_BYTES
+    }
+    fn drain_workers(&mut self, clock: &ExecutionClock) {
+        // Continuous producers cannot make a Host event consume an unbounded
+        // amount of diagnostic work while it owns the recorder.
+        for _ in 0..WORKER_QUEUE_SLOTS {
+            let Some(bundle) = self
+                .worker_inbox
+                .as_ref()
+                .and_then(|inbox| inbox.receiver.try_recv().ok())
+            else {
+                break;
+            };
+            let expired = clock.now().map_or(true, |now| {
+                now.saturating_sub(bundle.received).as_micros() > u128::from(RETENTION_US)
+            });
+            if !self.enabled || expired || !self.runs.contains_key(&bundle.run) {
+                self.dropped = self.dropped.saturating_add(bundle.intervals.len() as u64);
+                continue;
+            }
+            for &(phase, started, finished) in &bundle.intervals {
+                // This Host timestamp is when the recorder consumes metadata,
+                // never a reconstructed process/guest timestamp. Worker-local
+                // durations remain exactly the original received evidence.
+                append_event(
+                    self,
+                    clock,
+                    bundle.run,
+                    TraceKind::WorkerInterval,
+                    Some((bundle.node, &bundle.kind, bundle.version)),
+                    None,
+                    Some(WorkerTraceInterval {
+                        instance: bundle.instance,
+                        phase,
+                        started_us: started.to_string(),
+                        finished_us: finished.map(|end| end.to_string()),
+                    }),
+                );
+            }
+        }
+    }
     fn trim(&mut self, at: u64) {
         while self.events.front().is_some_and(|(e, _)| {
             e.at_us
@@ -262,6 +341,7 @@ impl TraceSession {
             bytes: 0,
             dropped: 0,
             calls: 0,
+            worker_inbox: detailed.then(WorkerInbox::new),
         });
         self.contention.store(0, Ordering::Release);
         self.publication_loss_through.store(0, Ordering::Release);
@@ -273,6 +353,15 @@ impl TraceSession {
         self.enabled.store(false, Ordering::Release);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(r) = state.as_mut() {
+            r.drain_workers(&self.clock);
+            if let Some(inbox) = r.worker_inbox.take() {
+                // A producer can have captured the old sink just before stop.
+                // Disconnect it and snapshot its loss count so late producers
+                // cannot mutate the frozen recording, even on queue overflow.
+                r.dropped = r
+                    .dropped
+                    .saturating_add(inbox.sink.lost.load(Ordering::Relaxed));
+            }
             r.enabled = false;
             r.stopped = self.clock.now().ok();
             self.enabled.store(false, Ordering::Release);
@@ -359,6 +448,10 @@ impl TraceSession {
             session: Arc::downgrade(self),
             generation: r.generation,
             run: key.run_id.get(),
+            worker_sink: r
+                .worker_inbox
+                .as_ref()
+                .map(|inbox| Arc::downgrade(&inbox.sink)),
         };
         drop(state);
         ticket.emit(TraceKind::RunAccepted, None, None);
@@ -405,6 +498,10 @@ impl TraceSession {
             session: Arc::downgrade(self),
             generation: r.generation,
             run: key.run_id.get(),
+            worker_sink: r
+                .worker_inbox
+                .as_ref()
+                .map(|inbox| Arc::downgrade(&inbox.sink)),
         };
         drop(state);
         t.emit(event, None, None);
@@ -430,6 +527,7 @@ impl TraceSession {
                 events: vec![],
             });
         };
+        r.drain_workers(&self.clock);
         let now = self.clock.now()?;
         let at = u64::try_from(
             r.stopped
@@ -461,7 +559,12 @@ impl TraceSession {
             next_sequence: r.sequence.to_string(),
             dropped: r
                 .dropped
-                .saturating_add(self.contention.load(Ordering::Relaxed)),
+                .saturating_add(self.contention.load(Ordering::Relaxed))
+                .saturating_add(
+                    r.worker_inbox
+                        .as_ref()
+                        .map_or(0, |inbox| inbox.sink.lost.load(Ordering::Relaxed)),
+                ),
             events,
         })
     }
@@ -471,6 +574,7 @@ pub(crate) struct TraceTicket {
     session: Weak<TraceSession>,
     generation: u64,
     run: u64,
+    worker_sink: Option<Weak<WorkerSink>>,
 }
 impl std::fmt::Debug for TraceTicket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -501,6 +605,56 @@ impl TraceTicket {
     }
     pub(crate) fn emit_worker(&self, node: (usize, &str, u32), worker: WorkerTraceInterval) {
         self.emit_data(TraceKind::WorkerInterval, Some(node), None, Some(worker));
+    }
+    pub(crate) fn queue_workers(
+        &self,
+        node: (usize, &str, u32),
+        instance: u32,
+        intervals: Box<[QueuedWorkerInterval]>,
+    ) {
+        if !self.is_detailed() {
+            return;
+        }
+        if intervals.is_empty()
+            || intervals.len() > MAX_WORKER_INTERVALS
+            || instance == 0
+            || instance > 20_000
+            || intervals
+                .iter()
+                .any(|(_, start, end)| end.is_some_and(|end| end < *start))
+        {
+            self.lost_diagnostics();
+            return;
+        }
+        let Some(registry) = self.session.upgrade() else {
+            return;
+        };
+        let Some(sink) = self.worker_sink.as_ref().and_then(Weak::upgrade) else {
+            return;
+        };
+        let Ok(received) = registry.clock.now() else {
+            return;
+        };
+        let count = intervals.len() as u64;
+        let bundle = WorkerBundle {
+            run: self.run,
+            received,
+            node: node.0,
+            kind: node
+                .1
+                .chars()
+                .take(128)
+                .collect::<String>()
+                .into_boxed_str(),
+            version: node.2,
+            instance,
+            intervals,
+        };
+        // Never acquire the recording mutex or wait for the consumer. A full
+        // or disconnected queue loses diagnostics, not execution ownership.
+        if sink.sender.try_send(bundle).is_err() {
+            sink.lost.fetch_add(count, Ordering::Relaxed);
+        }
     }
     pub(crate) fn lost_diagnostics(&self) {
         let Some(s) = self.session.upgrade() else {
@@ -554,72 +708,88 @@ impl TraceTicket {
         else {
             return;
         };
-        let Some(alias) = r.runs.get_mut(&self.run) else {
-            return;
-        };
-        if event == TraceKind::HostResponsePublished {
-            if alias.published {
-                return;
-            }
-            alias.published = true;
-        }
-        if event == TraceKind::PhysicalEnded {
-            if alias.ended {
-                return;
-            }
-            alias.ended = true;
-        }
-        let call = if let Some(job) = job {
-            if let Some(c) = alias.calls.get(&job) {
-                Some(*c)
-            } else {
-                if r.calls >= MAX_CALLS {
-                    r.dropped = r.dropped.saturating_add(1);
-                    return;
-                }
-                let Some(next) = r.next_call.checked_add(1) else {
-                    return;
-                };
-                r.next_call = next;
-                r.calls += 1;
-                alias.calls.insert(job, next);
-                Some(next)
-            }
-        } else {
-            None
-        };
-        let (run, input, plan) = (alias.run, alias.input.map(|(_, n)| n), alias.plan.1);
-        let Ok(now) = registry.clock.now() else {
-            return;
-        };
-        let at = u64::try_from(now.saturating_sub(r.origin).as_micros()).unwrap_or(u64::MAX);
-        r.trim(at);
-        let Some(sequence) = r.sequence.checked_add(1) else {
-            return;
-        };
-        r.sequence = sequence;
-        let e = TraceEvent {
-            sequence: sequence.to_string(),
-            at_us: at.to_string(),
-            run,
-            input,
-            plan,
-            node: node.map(|(i, _, _)| format!("{plan}:{}", i + 1)),
-            call,
-            node_kind: node.map(|(_, kind, _)| kind.chars().take(128).collect()),
-            node_version: node.map(|(_, _, v)| v),
-            event,
-            worker,
-        };
-        let Ok(bytes) = serde_json::to_vec(&e).map(|v| v.len() + 1) else {
-            return;
-        };
-        while r.events.len() >= MAX_EVENTS || r.bytes.saturating_add(bytes) > MAX_BYTES - 4096 {
-            r.evict();
-        }
-        r.bytes += bytes;
-        r.events.push_back((e, bytes));
+        // A bundle is queued before its invocation can complete. Adopt pending
+        // native metadata before the next recorded Host event, preserving the
+        // existing ordering before call-ended/resolved/publication whenever
+        // those anchors are recorded. Lock acquisition remains try_lock only.
+        r.drain_workers(&registry.clock);
+        append_event(r, &registry.clock, self.run, event, node, job, worker);
     }
+}
+fn append_event(
+    r: &mut Recording,
+    clock: &ExecutionClock,
+    run_key: u64,
+    event: TraceKind,
+    node: Option<(usize, &str, u32)>,
+    job: Option<u64>,
+    worker: Option<WorkerTraceInterval>,
+) {
+    let Some(alias) = r.runs.get_mut(&run_key) else {
+        return;
+    };
+    if event == TraceKind::HostResponsePublished {
+        if alias.published {
+            return;
+        }
+        alias.published = true;
+    }
+    if event == TraceKind::PhysicalEnded {
+        if alias.ended {
+            return;
+        }
+        alias.ended = true;
+    }
+    let call = if let Some(job) = job {
+        if let Some(c) = alias.calls.get(&job) {
+            Some(*c)
+        } else {
+            if r.calls >= MAX_CALLS {
+                r.dropped = r.dropped.saturating_add(1);
+                return;
+            }
+            let Some(next) = r.next_call.checked_add(1) else {
+                return;
+            };
+            r.next_call = next;
+            r.calls += 1;
+            alias.calls.insert(job, next);
+            Some(next)
+        }
+    } else {
+        None
+    };
+    let (run, input, plan) = (alias.run, alias.input.map(|(_, n)| n), alias.plan.1);
+    let Ok(now) = clock.now() else {
+        return;
+    };
+    let at = u64::try_from(now.saturating_sub(r.origin).as_micros()).unwrap_or(u64::MAX);
+    r.trim(at);
+    let Some(sequence) = r.sequence.checked_add(1) else {
+        return;
+    };
+    r.sequence = sequence;
+    let e = TraceEvent {
+        sequence: sequence.to_string(),
+        at_us: at.to_string(),
+        run,
+        input,
+        plan,
+        node: node.map(|(i, _, _)| format!("{plan}:{}", i + 1)),
+        call,
+        node_kind: node.map(|(_, kind, _)| kind.chars().take(128).collect()),
+        node_version: node.map(|(_, _, v)| v),
+        event,
+        worker,
+    };
+    let Ok(bytes) = serde_json::to_vec(&e).map(|v| v.len() + 1) else {
+        return;
+    };
+    while r.events.len() >= MAX_EVENTS || r.bytes.saturating_add(bytes) > r.byte_limit() {
+        r.evict();
+    }
+    r.bytes += bytes;
+    r.events.push_back((e, bytes));
 }
 #[cfg(test)]
 mod tests {
@@ -716,6 +886,199 @@ mod tests {
         let r = s.read(0, 256).unwrap();
         assert_eq!(r.dropped, 1);
         assert_eq!(r.events.len(), 1);
+    }
+    fn native_intervals() -> Box<[QueuedWorkerInterval]> {
+        vec![
+            (WorkerTracePhase::Main, 0, Some(100)),
+            (WorkerTracePhase::GuestCall, 11, Some(32)),
+        ]
+        .into_boxed_slice()
+    }
+    #[test]
+    fn native_metadata_producer_does_not_wait_for_the_recording_mutex() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        let guard = s.state.lock().unwrap();
+        let (done, observed) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+            let _ = done.send(());
+        });
+        let result = observed.recv_timeout(Duration::from_secs(2));
+        drop(guard);
+        producer.join().unwrap();
+        result.expect("native metadata waited behind the execution-event recorder");
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        let intervals: Vec<_> = page
+            .events
+            .iter()
+            .filter_map(|event| event.worker.as_ref())
+            .collect();
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[1].started_us, "11");
+        assert_eq!(intervals[1].finished_us.as_deref(), Some("32"));
+    }
+    #[test]
+    fn native_metadata_queue_is_bounded_counts_loss_and_keeps_the_existing_budget() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        for _ in 0..WORKER_QUEUE_SLOTS + 2 {
+            t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+        }
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 4, "two bundles of two intervals were refused");
+        let state = s.state.lock().unwrap();
+        let r = state.as_ref().unwrap();
+        assert_eq!(
+            r.events
+                .iter()
+                .filter(|(event, _)| event.worker.is_some())
+                .count(),
+            2 * WORKER_QUEUE_SLOTS
+        );
+        assert!(r.bytes + WORKER_QUEUE_BYTES <= MAX_BYTES);
+        assert!(
+            std::mem::size_of::<WorkerBundle>()
+                + 128 * 4
+                + MAX_WORKER_INTERVALS * std::mem::size_of::<QueuedWorkerInterval>()
+                < 4096
+        );
+    }
+    #[test]
+    fn captured_native_metadata_precedes_its_recorded_terminal_anchors() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        t.emit(
+            TraceKind::NodeStarted,
+            Some((0, "fixture.wasm", 1)),
+            Some(1),
+        );
+        t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+        t.emit(TraceKind::CallEnded, Some((0, "fixture.wasm", 1)), Some(1));
+        t.emit(TraceKind::NodeResolved, Some((0, "fixture.wasm", 1)), None);
+        t.emit(TraceKind::HostResponsePublished, None, None);
+        let page = s.read(0, 256).unwrap();
+        let ended = page
+            .events
+            .iter()
+            .position(|event| event.event == TraceKind::CallEnded)
+            .unwrap();
+        assert_eq!(
+            page.events[..ended]
+                .iter()
+                .filter(|event| event.worker.is_some())
+                .count(),
+            2
+        );
+        assert!(
+            page.events[ended..]
+                .iter()
+                .all(|event| event.worker.is_none())
+        );
+        assert_eq!(page.dropped, 0);
+    }
+    #[test]
+    fn cleared_generation_cannot_receive_old_native_metadata_or_its_loss_counter() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let old = s.accept(&key(9001)).unwrap();
+        let retained = old.worker_sink.as_ref().unwrap().upgrade().unwrap();
+        old.queue_workers((0, "old", 1), 1, native_intervals());
+        s.clear();
+        s.start_detailed().unwrap();
+        let current = s.accept(&key(9001)).unwrap();
+        old.queue_workers((0, "old", 1), 1, native_intervals());
+        retained.lost.store(999, Ordering::Release);
+        assert!(
+            retained
+                .sender
+                .try_send(WorkerBundle {
+                    run: 9001,
+                    received: Duration::ZERO,
+                    node: 0,
+                    kind: "old".into(),
+                    version: 1,
+                    instance: 1,
+                    intervals: native_intervals(),
+                })
+                .is_err()
+        );
+        current.queue_workers((0, "current", 1), 1, native_intervals());
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.worker.is_some())
+                .count(),
+            2
+        );
+        assert!(
+            page.events
+                .iter()
+                .filter(|event| event.worker.is_some())
+                .all(|event| event.node_kind.as_deref() == Some("current"))
+        );
+    }
+    #[test]
+    fn stopping_drains_captured_native_metadata_and_then_freezes_it() {
+        let (clock, s) = setup();
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        let in_flight = t.worker_sink.as_ref().unwrap().upgrade().unwrap();
+        t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+        clock.advance_to(Duration::from_millis(10)).unwrap();
+        s.stop();
+        let before = serde_json::to_value(s.read(0, 256).unwrap()).unwrap();
+        clock.advance_to(Duration::from_millis(20)).unwrap();
+        t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+        in_flight.lost.fetch_add(999, Ordering::Relaxed);
+        assert!(
+            in_flight
+                .sender
+                .try_send(WorkerBundle {
+                    run: 9001,
+                    received: Duration::ZERO,
+                    node: 0,
+                    kind: "late".into(),
+                    version: 1,
+                    instance: 1,
+                    intervals: native_intervals(),
+                })
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            serde_json::to_value(s.read(0, 256).unwrap()).unwrap()
+        );
+        assert_eq!(before["events"].as_array().unwrap().len(), 3);
+    }
+    #[test]
+    fn native_metadata_expires_and_basic_recording_allocates_no_queue() {
+        let (clock, s) = setup();
+        s.start().unwrap();
+        assert!(
+            s.state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .worker_inbox
+                .is_none()
+        );
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        t.queue_workers((0, "fixture.wasm", 1), 1, native_intervals());
+        clock
+            .advance_to(Duration::from_micros(RETENTION_US + 1))
+            .unwrap();
+        let page = s.read(0, 256).unwrap();
+        assert!(page.events.iter().all(|event| event.worker.is_none()));
+        assert!(page.dropped >= 2);
     }
     #[test]
     fn sessions_have_independent_queues_and_loss_counts() {

@@ -57,26 +57,29 @@ pub struct Profile {
     sid: PSID,
     deleted: bool,
 }
+fn private_worker_name() -> Result<String, String> {
+    let mut random = [0u8; 16];
+    // SAFETY: system-preferred RNG accepts a null provider and initialized buffer.
+    let status = unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            random.as_mut_ptr(),
+            16,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(format!("private nonce unavailable {status:#x}"));
+    }
+    let suffix = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok(format!("DIYIME2.Worker.{suffix}"))
+}
 impl Profile {
     pub fn new() -> Result<Self, String> {
-        let mut random = [0u8; 16];
-        // SAFETY: system-preferred RNG accepts a null provider and initialized buffer.
-        let status = unsafe {
-            BCryptGenRandom(
-                ptr::null_mut(),
-                random.as_mut_ptr(),
-                16,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        };
-        if status < 0 {
-            return Err(format!("profile nonce unavailable {status:#x}"));
-        }
-        let suffix = random
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let name = wide(OsStr::new(&format!("DIYIME2.Worker.{suffix}")));
+        let name = wide(OsStr::new(&private_worker_name()?));
         let mut sid = ptr::null_mut();
         // SAFETY: valid terminated names, no requested OS capabilities, owned returned SID.
         let hr = unsafe {
@@ -104,11 +107,18 @@ impl Profile {
         })
     }
     pub fn delete(&mut self) -> Result<(), String> {
-        let hr = unsafe { DeleteAppContainerProfile(self.name.as_ptr()) };
+        Self::delete_named(&self.name)?;
+        self.deleted = true;
+        Ok(())
+    }
+    fn delete_named(name: &[u16]) -> Result<(), String> {
+        if name.last() != Some(&0) {
+            return Err("profile name is not terminated".into());
+        }
+        let hr = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
         if hr < 0 {
             return Err(format!("profile cleanup failed {hr:#x}"));
         }
-        self.deleted = true;
         Ok(())
     }
     pub fn name(&self) -> String {
@@ -151,6 +161,16 @@ pub struct Cache {
 }
 impl Cache {
     pub fn new(workspace: &Path, profile: &Profile) -> Result<Self, String> {
+        Self::new_named(workspace, &profile.name())
+    }
+    /// Immutable code storage has no token, SID or process. It only needs an
+    /// exclusive unpredictable directory name; invocation isolation still
+    /// requires its own real Profile and per-profile ACL lease.
+    pub(super) fn new_code_snapshot(workspace: &Path) -> Result<Self, String> {
+        Self::new_named(workspace, &private_worker_name()?)
+    }
+    fn new_named(workspace: &Path, name: &str) -> Result<Self, String> {
+        asset_name(name)?;
         let workspace = std::fs::canonicalize(workspace).map_err(|e| e.to_string())?;
         let target = workspace.join("target/appcontainer-probes");
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -158,7 +178,7 @@ impl Cache {
         if !target.starts_with(&workspace) {
             return Err("Worker cache escapes workspace".into());
         }
-        let root = target.join(profile.name());
+        let root = target.join(name);
         std::fs::create_dir(&root).map_err(|e| e.to_string())?;
         Ok(Self { root })
     }
@@ -205,6 +225,33 @@ impl Cache {
         drop(file);
         private_acl(&path)?;
         Ok(path)
+    }
+    fn change_inherited_code_access(
+        &self,
+        profile: &Profile,
+        expected_files: usize,
+        allow: bool,
+    ) -> Result<(), String> {
+        use std::os::windows::fs::MetadataExt;
+
+        // The caller owns read locks on every captured asset. Reject other
+        // entries before propagating the SID to existing child files.
+        let mut count = 0;
+        for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
+            let metadata = entry
+                .and_then(|entry| entry.metadata())
+                .map_err(|e| e.to_string())?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err("unexpected immutable code cache object".into());
+            }
+            count += 1;
+        }
+        if count != expected_files {
+            return Err("unexpected immutable code cache file count".into());
+        }
+        let mode = if allow { GRANT_ACCESS } else { REVOKE_ACCESS };
+        change_access_with_inheritance(&self.root, profile.sid, mode, OBJECT_INHERIT_ACE)
     }
     /// Remove only this invocation's unique SID after its actual process ending.
     pub fn revoke_read_execute(&self, profile: &Profile) -> Result<(), String> {
@@ -322,6 +369,14 @@ fn revoke(path: &Path, sid: PSID) -> Result<(), String> {
     change_access(path, sid, REVOKE_ACCESS)
 }
 fn change_access(path: &Path, sid: PSID, mode: ACCESS_MODE) -> Result<(), String> {
+    change_access_with_inheritance(path, sid, mode, 0)
+}
+fn change_access_with_inheritance(
+    path: &Path,
+    sid: PSID,
+    mode: ACCESS_MODE,
+    inheritance: u32,
+) -> Result<(), String> {
     let name = wide(path.as_os_str());
     let mut old = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
@@ -352,7 +407,7 @@ fn change_access(path: &Path, sid: PSID, mode: ACCESS_MODE) -> Result<(), String
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         grfAccessMode: mode,
-        grfInheritance: 0,
+        grfInheritance: inheritance,
         Trustee: trustee,
     };
     let mut acl = ptr::null_mut();

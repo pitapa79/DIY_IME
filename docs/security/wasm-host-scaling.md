@@ -161,3 +161,509 @@ python scripts/measure-windows-benchmark-job.py --command JOB_JSON NODE scripts/
 混合 Wasm の並列4段を物理4枠、ウォーム各20件で比較した。入力も ACL も未使用プロファイルには割り当てず、Worker の起動は要求後。Windows Job 内の変更前1個と上限4個の試作は、応答 P95 が117.42→92.42 ms、CPU 時間が11.94→10.91秒、ピークコミットが139.11→162.57 MiBだった。CPU とメモリはパッケージ導入・ドライバー込み。単段の試作では同一試行のゲスト呼び出しを差し引いた P95 が57.10 msで、単段目標には届いていない。
 
 上限を `min(物理枠, 4)` にした版では、同じ混合並列4段を物理1枠と4枠で各20件測定し、全件正答と実行後の物理枠ゼロを確認した。応答 P95/P99 は1枠で213.52/217.28 ms、4枠で96.88/120.85 ms。こちらは Windows Job による外側の資源計測なし。再現は上記スケーリングドライバーに `20 1 parallel` または `20 4 parallel` を渡す。
+
+### 通常 Host の使い捨て Worker 事前起動試作
+
+`DIY_EXPERIMENT_PREPARED_JIT=1` で先頭の対象ノードに1個、`2` で先頭に最大2個、`all` で物理枠の空きを1枠以上残しながら対象ノードに各1個を準備する。各 Worker は単回使用で、準備中・待機中も物理予約を保持する。実行が別途予約を取得した後、配送側は実行予約を共有して待機予約を手放す。実終了と回収の完了後に結果を扱う。
+
+- 物理2枠、単段、結果取得から100 ms待つ条件で、ウォーム150/150件が準備済み Worker で正答した。同じ試行の Host 受付→公開からゲスト呼び出しを引いた P50/P95/P99 は11.73/12.52/12.85 ms。ローカル `issue95-host-handoff-detailed-150.json` の SHA-256 は `5148684bdaa7ac814854e874ce26c512be77d912d94ed2955347dc5c3402324e`。
+- 同一バイナリ・物理6枠で `10 6 paced` を実行。直列4段・100 ms間隔では先頭のみの正答10/70件に対し全段の事前起動は70/70件。全段の準備済み利用は69/70件。正答時の応答 P95 は191.71→88.44 ms。20 ms間隔では正答10→11/70件、全段の準備済み利用は5件。各セッション終了後の Worker と物理枠はゼロ。
+
+直列4段の比較ログはローカルの `issue95-prepared-first-node-6-slots.json`（`010ab9e78affd5a40ef2ade6cfa2f27815a7ac8913ca14b363b50ad70111b72c`）と `issue95-prepared-all-nodes-6-slots.json`（`c4f3b393e0bec00f0bf405d2bda7fb54cb1942ac44b87da39276ac57021cef8a`）。100 ms条件と20 ms条件の応答 P95 は正答が観測された試行だけを母集団にする。
+
+#### 配布版 Windows CI での再測定
+
+各150件の単段試行は物理2枠、準備枠1個、前回の結果取得から次の要求まで100 ms。受付から結果公開までの時間から同じ試行のゲスト呼び出しだけを差し引いた。
+
+| 実行 | 準備済み | P95 | P99 |
+| --- | ---: | ---: | ---: |
+| [CI 42806960627](https://github.com/pitapa79/DIY_IME/actions/runs/42806960627) | 149/150 | 13.71 ms | 27.80 ms |
+| [CI 42809001740](https://github.com/pitapa79/DIY_IME/actions/runs/42809001740) | 150/150 | 11.99 ms | 13.35 ms |
+| [CI 42810925661](https://github.com/pitapa79/DIY_IME/actions/runs/42810925661)・並列 Winch | 150/150 | 9.84 ms | 10.55 ms |
+| 同ランナー・直列 Winch | 150/150 | 9.73 ms | 11.58 ms |
+
+CI 42806960627 の最遅試行は冷間で91.57 ms。準備済み149件だけでも P95 は13.65 msだった。CI 42809001740 以降は各試行のトレースで Worker 後処理、物理終了、結果公開の順序を確認した。CI 42810925661 の同一ランナー比較では直列化でコンパイルの P95 が18.09→31.81 msに増えたため、直列 Winch を採用しない。
+
+同じ CI の物理6枠・直列4段では、先頭のみから全段準備への変更で100 ms間隔の正答が5/35→19/35件。20 ms間隔は両方5/35件。未正答はすべて後続入力で失効し、誤答は0件だった。固定間隔の応答時間と単段の基盤追加遅延は測定境界が異なる。単段の一部の CI が目標を満たしても、再現性、グラフ構成、固定間隔、通常設定での統合は引き続き検証対象。
+
+ローカルの合成回収試験で、既存のパス指定 ACL API と、同一ファイルハンドルで DACL を読み書きする試作を対照→試作→試作→対照の順に各100件測定した。ACL 撤去の P95 は対照1.07〜1.14 ms、試作1.01〜1.03 ms。プロファイル削除込みでは対照6.31〜6.59 ms、試作6.35〜6.47 msと範囲が重なった。実 Worker の改善を示す結果は得られず、試作は採用しない。
+
+[取消確認の比較](https://github.com/pitapa79/DIY_IME/actions/runs/42819454886)では、全段準備の直列4段で10 msから2 msに短縮しても、20 ms間隔の正答は両方5/35件、100 ms間隔は13→12/35件だった。短い設定を採用せず、既存の取消・失効・実終了のテストを CI に残す。
+
+[混合グラフの試行別トレース](https://github.com/pitapa79/DIY_IME/actions/runs/42821904574/artifacts/13767414855)では、全段準備で直列2段・4段の各10試行すべてが全段準備済みだった。並列4段の100 ms超の5件では全件に冷間起動があり、残る5件はトレース欠落のため経路を確定できなかった。単段150件の追加遅延は P95 11.64 ms、P99 16.27 ms。
+
+[Worker の終了方式比較](https://github.com/pitapa79/DIY_IME/actions/runs/42914904925/artifacts/13809292940)では、同一ランナーの単段各150件で基盤追加遅延 P95/P99 が通常終了10.90/152.63 ms、応答のフラッシュと Wasmtime の終了後にプロセスを終了させる試験方式9.96/19.13 msだった。準備済みは148/150件と150/150件。試験方式の最遅件でも Host 側の回収に127.07 msかかった。並列4段では物理6枠と8枠で、100 ms超は各10件中4件だった。
+
+[補充順の比較](https://github.com/pitapa79/DIY_IME/actions/runs/42920137854/artifacts/13811588742)では、補充を Core 完了通知後に移すと単段150件の P95 は12.47→12.14 ms、直列4段・100 ms間隔で全段準備済みだった試行は12→0/35件。終了方式の試作も別ランナーで P95 10 ms未満を再現できなかったため、比較コードを削除した。
+
+[専用ランタイムキャッシュの比較](https://github.com/pitapa79/DIY_IME/actions/runs/42947873097/artifacts/13824885693)では、全段の事前準備を有効にした混合グラフ各10件で、直列4段の最遅値は68.72→38.49 ms、並列4段は97.17→409.87 msだった。固定100 ms間隔の直列4段で正答は25→20/35件。20 ms間隔では両方式とも6/35件。専用キャッシュの採用を見送り、長い回収の診断で Job 閉鎖と ACL ロック待ちを計測する。
+
+ローカル NTFS の合成キャッシュで、既存の子ファイル2件に SID を個別付与・撤去する方式と、親フォルダーの継承 ACE を付与・撤去する方式を各200件比較した。すべての子ファイルで同じ SID の付与と撤去を確認し、ACL 撤去 P95 は個別0.78〜0.82 ms、継承0.39〜0.43 msだった。実 Worker の書き換え防止ハンドル、同時使用中の別 SID、対象外ファイルに対する実 Windows 検査が次の採用条件。 [Microsoft の継承仕様](https://learn.microsoft.com/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+
+
+[同一ランナーの継承 ACL 比較](https://github.com/pitapa79/DIY_IME/actions/runs/42951581543/artifacts/13825683237)では、両方式ともウォーム150件すべてが準備済みだった。既存 ACL → 継承 ACL で、基盤追加遅延 P95/P99 は11.660/13.161 → 11.198/12.588 ms、回収 P95 は5.192 → 4.717 msだった。各試行から個別に回収時間を引いた残りの P95 は6.334 → 6.395 ms。10 ms以上の試行は126 → 75件で、回収時間を引いた値が10 ms以上の試行は両方式とも0件だった。この差分は回収の改善余地を調べるための集計で、基盤追加遅延の合否判定には回収込みの値を使う。
+
+
+[実 Windows の DLL イメージ保持と予備数の比較](https://github.com/pitapa79/DIY_IME/actions/runs/42953438942/artifacts/13826204503)は各ウォーム150件。物理2枠では対照の P95/P99 が12.795/14.647 ms、DLL イメージ保持は14.456/104.140 ms。準備済みは150/150 → 148/150件だったため、イメージ保持の試験コードを撤去した。物理4枠で同一モジュールの予備を1→2個に増やしても準備済みは両方150/150件で、P95/P99 は13.291/16.352 → 14.336/27.281 ms、外側の Windows Job の CPU 時間は23.28→23.88秒、ピークコミットは108.81→115.54 MiBだった。
+
+
+混合グラフの詳細計測では、同じ実行の各ノード開始→呼び出し終了からゲスト呼び出し区間を差し引く。直列グラフでは受付→公開から全ゲスト呼び出し時間を引く。並列・合流では Worker 間の時計の原点が異なるため、総和を引いた値を下限、最長の呼び出しを引いた値を上限として報告する。全ノードと計測に必要な区間が一意に対応した試行を集計し、測定できた分母と、それ以外のトレースイベントに欠落があった件数を併記する。
+
+
+[パイプ転送の実 Windows 比較](https://github.com/pitapa79/DIY_IME/actions/runs/42955358768)で、モジュールをファイルで渡す対照のウォーム150件は P95/P99 16.978/115.528 ms、準備済み147件。パイプ転送は11.377/13.151 ms、準備済み150件で、回収 P95 は6.926→4.721 msだった。実 AppContainer のライフサイクル検査にも合格。単段の P95 は10 ms未満の目標に未達で、同一ランナー上で継承 ACL との組み合わせ、20/100 ms 入力、混合グラフを追試する。
+
+
+ローカルの合成試験で、起動に使っていない一意なプロファイルの削除と、試験用コードの ACL 撤去を逐次・並行で各100件ずつ測定した。2回の反復で回収合計の P95 は逐次6.775/6.431 ms、並行5.910/5.962 ms。並行値にはスレッドの起動と join を含む。実 Worker の回収順序や、パイプ転送と継承 ACL を適用した構成での短縮効果は未検証。
+
+
+Core の同期受け渡し診断は Windows x64・Rust GNU 1.90.0 の release、コミット 72977ce で実行した。runtime_benchmark 版2の14ケース各500試行（ウォームアップ30回）では出力照合が全件成功し、ケースごとの実行 P95 は3.0〜6.0 µs。ローカルの生データは target/issue95-core-handoff-72977ce.json（SHA-256 bdefec6aeb7cb09c895bedb7c0a39d92531945fe86926f07ce91d0319973de7a）。この同期計測の範囲は入力ノードとテスト用 identity 3段で、非同期 Worker の予約引き継ぎや External Host を含まない。
+
+
+[パイプ転送と継承 ACL の組み合わせ比較](https://github.com/pitapa79/DIY_IME/actions/runs/42981975100/artifacts/13838273339)では、ウォーム単段150件すべてが準備済み。パイプ転送単独 → 継承 ACL 追加で基盤追加遅延の P95/P99 は11.818/15.045 → 11.209/12.995 ms、回収 P95 は4.772 → 4.532 ms。物理6枠の連続入力では、全段準備・個別 ACL と比べて、100 ms単段の正答が29→35/35件、直列4段は9→11/35件。20 msでは単段12→7/35件、直列4段5→5/35件で、全段準備済みの直列4段は両方0件だった。全条件で失敗0件。並列混合4段のノード別 P95 は組み合わせでも156.853 ms（計測可能なグラフ6/10件）。
+
+
+[並行回収の実 Windows 比較](https://github.com/pitapa79/DIY_IME/actions/runs/42984327542)では、パイプ転送と継承 ACL の構成で逐次回収→並行回収の単段ウォーム各150件を測定した。基盤追加遅延の P95/P99 は9.655/68.646→9.431/10.384 ms、準備済みは148→150件、回収 P95 は3.742→3.758 msだった。実 Worker のライフサイクル検査は両方式で成功。逐次回収の P99 には冷間2件が入り、回収の P95 自体は短縮していない。並行回収付きの単段はこの1ランで両閾値を満たした。再現性、混合グラフ、20/100 ms入力、既定の通常 Host への統合は未確認。
+
+
+[独立入力・早期補充の比較](https://github.com/pitapa79/DIY_IME/actions/runs/42986533975/artifacts/13840248934)で、並行回収の単段ウォーム150件は全件準備済み、基盤追加遅延 P95/P99 9.286/10.091 msだった。同じランナーの逐次回収は9.666/10.105 ms、回収 P95 は3.801→3.526 ms。パイプ転送・継承 ACL・物理6枠の20 ms入力では、結果照会から入力発行を独立させると、予定からの遅れ P95 は単段55.65→14.14 ms、直列4段45.20→13.61 ms。独立入力のまま早期補充を加えると、20 ms単段の正答は14→11/35件、直列4段は5→5/35件。100 ms直列4段の正答は19→11/35件、全段準備済みは13→5/35件だった。失敗は各条件0件。早期補充の採用を支持する再現性は得られていない。
+
+
+[初回入力と多段グラフの Windows 比較](https://github.com/pitapa79/DIY_IME/actions/runs/42989649660/artifacts/13841304370)では、並行回収の単段ウォーム150件の P95/P99 は11.330/26.533 ms、準備済み149件に限っても11.174/13.114 msだった。有効化から0.888 msで入力を発行した初回は冷間起動で102.599 ms。物理6枠、異種 Wasm 直列8段・16段は各ウォーム10グラフすべてで計測でき、各々の80/160ノード実行に対し準備済み50件ずつ、冷間30/110件だった。異種直列4段では40件すべて準備済みでもノード単位の基盤追加遅延 P95 は23.936 ms。枠の不足と、準備済み経路そのものの遅延をそれぞれ確認した。
+
+
+同じ異種直列4段・全40ノード準備済みのトレースでは、第1〜4段の後処理 P95 が19.150/6.014/8.179/33.255 ms。第4段では入力準備完了から後処理開始までの P95 も18.639 msだった。各段10件のため、ここでの P95 は最大値。準備済み経路の残差には後処理と終了前後の待ちの両方があり、他段の補充との競合は原因候補として残る。
+
+
+[実入力間隔と資源費の実測](https://github.com/pitapa79/DIY_IME/actions/runs/42992499634/artifacts/13843168793)では、並行回収の単段ウォーム P95/P99 は10.962/11.759 ms。独立入力・直列4段の20 ms条件は、入力発行間隔 P50/P95 が16.012/31.865 ms、Host 受付応答までの P95 が20.215 ms、正答5/35件だった。逐次回収の同条件も正答5/35件。多段・並列・合流をまとめた外側の Windows Job の CPU 時間は逐次81.875秒、並行82.703秒、ピークコミットはそれぞれ177,934,336/177,737,728 bytes。計測用 Node.js とセットアップを含む。
+
+
+同じ CI の並行回収・単段ウォーム150件はすべて準備済みだった。P95 は受付→入力準備完了0.844 ms、入力準備完了→回収開始4.546 ms、回収4.232 ms、回収完了→公開1.265 ms。回収込みで10 ms以上の15件も、各試行から回収を除いた診断値ではすべて10 ms未満だった。各区間の P95 は別試行になり得るため合算しない。
+
+
+[補充と物理枠の実機比較](https://github.com/pitapa79/DIY_IME/actions/runs/43025996702/artifacts/13858882570)で、異種直列4段の最初の入力は補充あり・なし各10件すべてが全段準備済みだった。補充なしで応答中央値は57.124→31.453 ms、P95（各10件の最大値）は99.048→34.797 ms。補充を無効にする条件は、プランを毎回作り直す原因切り分け用であり、次の入力を扱う製品方式の検証ではない。補充あり・並行回収の異種直列8段・16段では、物理6→18枠で応答 P95 は416.897→363.413 ms、1166.065→623.162 msだった。
+
+[グラフ終了後の補充試験](https://github.com/pitapa79/DIY_IME/actions/runs/43029641685)では、物理6枠の異種直列2段のノード別追加遅延 P95 は11.573→9.113 msだった。一方、異種直列4段の応答 P95 は93.822→136.101 ms、並列4段は159.936→327.029 ms。各構成ウォーム10件の比較で、4段では次の入力に準備が間に合わない例があり、一律の遅延補充を採用する根拠にはならない。同ランの単段ウォーム150件は P95/P99 10.940/12.531 msで、P95目標は未達。
+
+次の比較候補 `DIY_EXPERIMENT_POOLED_JIT=1` は、同じプランで同一の検証済み実装を使うインスタンス間に入力未配送の予備を配る。モジュールhashだけで共有せず、プラン準備時に作る実装の所有identityが一致する場合に限る。設定と入力は呼出し時の要求から読み、配送直前の許可・取消検査を維持する。予備は単回使用で、準備・待機時から既存の物理枠を予約し、元プロセスの終了とIO・ACL・profile回収後にだけ結果を扱う。従来のインスタンス別予備と同じ上限で、8/16段を含む混合グラフと連続入力を比較する。既定経路への採用や性能合格は、この候補の追加だけでは成立しない。
+
+2026-11-13 のローカル予備比較は Windows 10 build 19045、メモリ約4 GiB、Rust 1.90 GNU release、Node 24.22.1、物理6枠。同一Host `db56272511c4eb4302bd5adcf50db42001fe0e2a` の環境変数だけを切り替え、従来→共有の順に各5件を測定した。同一実装の直列8段の応答中央値/最大は2430.878/3349.171→1823.112/1989.072 ms、16段は6528.349/9780.037→2754.631/3493.357 ms。16段のウォーム80ノード実行では、準備済みの観測数が4→70件になった。全構成の正答とセッション終了後のWorker・予約ゼロは通ったが、速度は目標から大きく離れている。計測中に空きメモリ約300 MiBを観測し、ACLの待ちやprofile削除に長い例があった。5件の最大値を安定したP95とは扱わない。第二moduleの差はcustom sectionだけであり、このローカル比較は異なる実行コードの検証ではない。
+
+ローカルレポートの SHA-256 は従来 `973e6b48b498b092cefc83212dbacd6ecc246ea2035be135e37fb55a8e3f86a7`、共有 `151efeda618316161862ccfd550dfe965eca6f3d3fc614135c30f0fab23b4f3a`。共通HostのSHA-256は `c40176c2f9f934ffd635cd4d4a4978e57caf5390d18c5144d4ed9f6b889e1ce6`、Workerは `27c974b3f32476457af87d796ae7716107f9b6d4103b30f0c043a35e2babda56`。Worker・DLL・fixtureはCI 43029641685の資産を使用した。実行は上記のstream/継承ACL/並行回収を有効にした `5 6 all`、共有側だけ `DIY_EXPERIMENT_POOLED_JIT=1`。計測ドライバーには `all` の予備所有とNoOutput後のSkipped数の補正を含む。生ログはローカル資料であり、新しいCIの検証結果とは別である。
+
+多段レポートの `nodeMinusGuestCallUs` は従来どおり開始→call終了の診断値。追加した `readyToResolvedMinusGuestCallUs` は、同じrun/plan/input/nodeの `node-ready`→`node-resolved` から同じ呼出しのguest-callだけを引き、実行枠の待ちと出力解決を含める。グラフ全体の受付→公開の値も維持する。欠落・重複・逆順の時刻を成功値に置き換えず、`attempts` / `measured` / `unmeasured` を記録する。測定できた一部の速い試行だけで性能合格を宣言しない。
+
+[共有予備のWindows CI比較](https://github.com/pitapa79/DIY_IME/actions/runs/43385626837/artifacts/14018878986)は `db56272511c4eb4302bd5adcf50db42001fe0e2a`（CIのmerge sourceは `e30d890178175b3c2e4b546352db53768e95ecb8`）で全回帰に成功した。同一ランナー・物理6枠、stream/継承ACL/並行回収、従来→共有の各ウォーム10件で、異なる実行コードを含む直列8段の応答中央値は285.413→168.676 ms、16段は730.849→395.908 ms。準備済みノード数は8段で50→76/80、16段で50→147/160だった。一方、応答最大値は8段314.070→229.995 ms、16段755.563→765.541 msであり、共有だけで末尾遅延は解決しない。混合グラフ全体のJob CPUは55.750→53.719秒、ピークコミットは169.3→166.9 MiB（導入とNode.jsを含む）。
+
+同CIの独立100 ms入力・直列4段では正答22→23/35件、20 msでは両方式5/35件で、各条件の失敗は0件だった。並列・合流には診断の欠落があり、保存済みトレースの全ノードのready/resolve/call時刻まで照合できた共有側のグラフは、それぞれ1/10、2/10件に留まった。これらの一部の分位点は目標判定に使わない。Goal #95は、単段の反復確認、多段と連続入力の改善、診断の完全性、通常経路への採用が残る。
+
+同ランのstream/継承ACL/並行回収・単段150件はすべて準備済みで、受付→公開から同じguest-callを引いたP95/P99は8.552/10.678 msだった。ただし直列16段の共有方式では、準備済み147件だけでもready→resolve追加遅延P95は57.502 ms、冷間13件では111.513 ms。Worker内のDLL読込・コンパイルはそれぞれ中央値23.323/24.328 msで、単段の合格だけでは多段のGoalは達成していない。
+
+次の候補はDLLの全体コピーを避ける読み取り専用マッピング。固定の全SHA-256照合、ロードするコードのHost所有、各Workerの単回使用と終了条件は維持する。`PAGE_READONLY` / `FILE_MAP_READ` で作った非実行viewの全バイトを照合し、書込・削除共有を許可しない元のfile handleとviewをLoadLibraryとsymbol解決の完了まで保持する。範囲は64 MiB以下。読み込み・マッピング・hashが失敗した場合は実行せず拒否する。[MapViewOfFile](https://learn.microsoft.com/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile)、[CreateFileMappingW](https://learn.microsoft.com/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw)、[ファイル共有](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew)。開発用 `copied-runtime-verification-baseline` featureのWorkerを従来のコピー対照とし、同じHost/DLL/Wasmで単段150件・混合グラフ各50件のCPU/RAMと遅延を比較する。効果は測定前に確定しない。
+
+[コピー対照とマッピングのWindows比較](https://github.com/pitapa79/DIY_IME/actions/runs/43392042984/artifacts/14023495129)は `36c46fd15b20ad1c677358effa404739c5adbe4b`（merge source `047a6b77c438adc5f3c10c5bde92952e50b79ab9`）で全回帰に成功。同じHost/DLL/実Wasm、共有予備・stream・継承ACL・並行回収で、単段各150件の追加遅延P95/P99はコピー11.523/12.581 ms、マッピング10.974/13.327 msだった。準備済みは150/149件。P95は依然10 ms未満に届かない。物理6枠の混合グラフ全体ではJob CPU336.016→327.859秒、ピークコミット215,822,336→157,343,744 bytes（約55.8 MiB減）。計測用Node.jsとセットアップを含む、コピー→マッピングの1回の逐次比較であり、再現性の証明ではない。
+
+同ランの異種直列16段は各50グラフで、応答中央値608.167→585.208 ms、P95は877.648→939.708 ms。ノードのready→resolve追加遅延P95は161.425→130.516 msだった。並列4段の完全な時刻が揃うグラフは37→33/50、合流2段は30→28/50に留まる。メモリ削減は確認できたが、多段の末尾遅延・診断欠落・目標達成は未解決。
+
+次の比較 `DIY_EXPERIMENT_JIT_ACTIVATION_READY=1` は、新プランを公開する前に入力未配送の予備のreadyを確認する。確認済みの単発通知を所有者に記録し、後の配送でも再利用できるようにする。全予備で共通の3秒上限を使い、枠不足・準備タイムアウトでは既存の冷間経路を残す。準備完了と実終了の証拠は区別する。取消・許可撤回はプランに属する待機所有者にも伝わり、個別所有者の片付けではプランや他の予備を取り消さない。公開前の世代・取消・保護状態の再検査を維持する。新しいプラン30件ずつについて、有効化時間と直後の初回入力を別々に記録する。これは初回の準備待ちの比較であり、長期待機・補充・通常経路の採用まで検証済みとはしない。
+
+[有効化前の準備待ち比較](https://github.com/pitapa79/DIY_IME/actions/runs/43400152668/artifacts/14027005721)は `526dfa977398e83f032a626344850a0791d620c2`（merge source `a2b1d500d95034d2ada47b2d25da4e64319be903`）で全回帰に成功。同一runner・物理6枠、異種Wasm直列4段、新規プラン各30件の直後の初回入力で、ready待ちなし→ありの応答P50/P95/P99は210.254/244.725/399.857→54.301/77.333/107.452 msだった。全段準備済みは0→30/30グラフ、ノード呼出し120件中の冷間は30→0件。代わりに有効化自体のP95は1.269→172.321 ms、全準備のP95は772.716→1031.580 msに増える。診断は両条件30/30グラフを照合できたが、ノードのready→resolved追加遅延P95/P99は189.748/208.364→22.874/36.102 msであり、準備済みでも目標未達。入力待ちを準備へ移した効果と準備の費用を両方記録し、ウォーム補充や長期待機の改善と混同しない。
+
+### 固定DLLの検証済みファイル所有権の引継ぎ候補
+
+`DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE=1` は、JIT予備の補充時に同じDLL全体を毎回hashする費用を切り分ける内部候補。通常の既定経路は変更しない。Parentは元のcapture時の照合に加え、実際にロードするHost専用キャッシュファイルを読み取り専用・書込/削除共有なしで開き、その全バイトを固定SHA-256と照合する。成功した場合だけ、非公開型の検証済みファイル所有者を作る。同じruntime snapshot内で保持し、複製した読み取り専用handleだけを子の明示的な継承リストに加える。単なるhash文字列・パス・Nodeの自己申告を検証済みの証拠にしない。
+
+Workerはprivate Native bootstrapで渡されたhandleについて、disk上の有界な通常ファイルであること、DLLパスを読み取り専用・書込/削除共有なしで再度開けること、両handleのvolume番号・128-bit file ID・長さが一致することを確認する。対応しないfilesystem・別file・pipe・書込handle・不一致は実行を拒否する。パス側handleはLoadLibraryとsymbol解決中、継承した元handleはrun中保持する。Parent側も元のprocess/IO/ACL/profile回収を終えるまでsnapshotを所有する。[FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)による同一性と[ファイル共有の競合拒否](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)を組み合わせ、Parentが全体照合したファイルと実際にロードするファイルを結び付ける。
+
+信頼の根は既存の信頼側ParentとNative Worker。NodeパッケージやWasmの入力からbootstrap引数・継承handle・検証済み型を作れない。Nativeを自由に起動できるFullUser自身を敵とした新しい保証は主張しない。継承は[DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)で元と同じ読み取り権限に限定し、既にcode ACLで許している固定DLL以外のファイル、Parentのprocess、入力、秘密情報のhandleを追加しない。複数Nodeのcodeを同居させず、公開Node/guest ABI・許可・実終了条件を変更しない。
+
+6番目のprivate引数で検証済みfileと任意の診断pipeを区別し、同一handleの二重所有を拒否する。診断handleだけの準備失敗では、検証済みfileを残した正規の隔離起動を試す。安全側handleの用意・照合の失敗を診断失敗として無視しない。従来のWorkerは未知の任意引数を使わず、従来どおり全hashを行うため、旧Workerを使った成功をこの最適化の性能証拠としない。
+
+NTFSの別streamはbase fileとfile IDを共有し得るため、両側とも絶対パスの無名streamに限定し、ADSを指定するパスを拒否する。検査は未固定bytes拒否、同内容の別file拒否、mutable handle/pipe/相対パス/ADS拒否、複製handleの読み取り限定、所有者交代後も書込・削除拒否、解放後に変更した実DLLのhash拒否、bootstrapの不正値・handle別名による二重所有の拒否を含む。性能比較は同じHost/Worker/DLL/Wasmでコピー・マッピング・Parent所有権引継ぎの順に、単段150件、混合各50件、独立20/100 ms入力35ラウンド（1ラウンド7入力、各グラフ・各間隔245件）を行い、CPU/RAMと回収を含めて記録する。効果・採用・Goal達成は結果確認前に確定しない。
+
+`482e4aa` の同一Host/Workerを使ったローカル予備比較は、stream/継承ACL/並行回収/共有予備、物理2枠、単段ウォーム各20件、引継ぎなし→ありの順。追加遅延P50/P95/P99は245.159/368.544/386.595→17.855/114.462/155.971 ms、準備済み10→17/20件。DLL読込P50/P95は168.732/214.437→7.544/10.612 ms、compile P50は35.513→35.268 msだった。Windows10・約4GiBの小標本で、正答・終了後残存ゼロを確認したがGoal合格ではない。レポートSHA-256は `a69947639d41535a8c67cca56dca85ba894474fe690387becef29c0f344eb865` / `1d51c2a5b49b753104e3efec83ea607a83d4a413491d102e30981e4c71340532`。Hostは `c213652a296e8254f566d990202a9494f3ec912099816ee58f673ff33134e590`、Workerは `fe1e20068cdbb662fe38e0cb0d566f984642c1ffca1fc2696ebe75aacdda0bfd`。DLL/fixtureは上記の固定資産。
+
+同HEADの[CI 43410755574](https://github.com/pitapa79/DIY_IME/actions/runs/43410755574)は、先行する固定間隔の独立入力・共有予備条件で `busy / exchange exceeds resource budget` となり失敗した。停止前の具体的な入力間隔は未記録。DLL引継ぎ比較の工程まで到達せず、そのCIによる性能・全回帰成功は未確認。部分資料はartifact `14030217434`。計測はこの受付拒否も `attempts` に残し、`admissionRejected` と `failed` に数える。存在しないrunの照会、応答成功、実process終了の試料にはしない。未知のHostエラーは従来どおり停止し、資源上限を拡大して隠さない。診断CIの完走だけを、失敗件数ゼロやGoalの性能達成と呼ばない。
+
+### 入力未配送のコンパイル成果再利用候補
+
+`DIY_EXPERIMENT_COMPILED_JIT=1` は、同じ捕捉済みWasm・不変のWorker/DLL・実行policyについて、予備Workerを補充するたびのコンパイルを切り分ける内部候補。Parent自身で外部Wasmをコンパイルせず、既存のAppContainer/Job/環境・handle制限を受ける専用Workerを使う。準備用の既存物理1枠を先に予約し、compilerと次の使い捨てWorkerを順番に動かす。compilerはModuleの生成・serializeのみで、Store/Instance・guest start・入力・brokerを持たない。Winchで生成できなければ標準を試す。guest実行後の再試行は行わない。
+
+Parentは自分が捕捉した信頼側compilerの元process終了・IO・ACL・profile回収を確認した後だけ成果を受け取り、元Wasmのdigest、fuel/memory設定、選ばれたstrategyを有界なprivate frameで照合する。frame全体をhashし、Host専用の読み取り専用code snapshotとして512MiBの既存総予算内に保持する。1成果はframe込み8MiB以下。別module/policyへ所有状態を引き継がず、準備中の競合・生成失敗は従来JITを残す。取消で未完の成果を成功として固定しない。公式限定の既存cacheとは分離する。`node.cwasm` はHostが生成した固定名の通常ファイルとして回収し、未知名・link/reparseの拒否は維持する。
+
+新しいWorkerでは固定DLL、成果hash・frame・設定を確認し、対応する新しいEngine・Storeへdeserializeする。入力配送前にはinstantiateせず、currentな許可・入力世代の検査後に1回だけguestを開始する。成功結果も元process/IO/ACL/profile回収前には採用しない。公開packageからcwasmを取り込む機能はない。hash・形式・自己申告だけでは信頼できないため、Parentが所有する専用compilerからの来歴が必須。[固定v50.0.1 C API](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/c-api/include/wasmtime/module.h)と[同版の安全要件](https://github.com/bytecodealliance/wasmtime/blob/v50.0.1/crates/wasmtime/src/runtime/module.rs#L360)に従い、serializeの未改変出力以外をunsafe deserializeへ渡さない。同一Host内の捕捉物だけを使い、永続cacheの版/CPU移行を認めない。
+
+Native予備検証では、同じ固定APIが生成した成果だけをprivate ownerへ格納し、Winch/標準それぞれで新しいStoreの状態初期化、設定・元Wasm・改変拒否、start trapの延期、fuel・memory制限、標準のみ対応するWasmを検査した。これは信頼済み固定fixtureの同一Native process内の検査で、通常Hostや別processの来歴の証明ではない。最初の各20件で、Winchの生成/serialize中央値40.228msに対し新Engine/Store/deserialize中央値6.888ms、標準は157.325/6.719msだった。ローカル報告SHA `93c9a2ddd1c542b208b790946c9273af8d79c2598d522808d70842a24d58b4da`。通常Hostでは単段150件、混合各10件の初期比較と独立20/100ms入力を行い、採用判断の前に十分な多段反復・権限/異常/再生成・通常経路で再検証する。10件の末尾値を安定したP95/P99としない。
+
+### 80cdab5 のCI結果とコンパイル成果のパイプ配送
+
+[CI 43418081887](https://github.com/pitapa79/DIY_IME/actions/runs/43418081887) は全工程成功（merge source `f8f7bed9327ab1fd4fc5c50b118bd31c37c7875b`）。ただし成功時artifactの保存対象にcache比較とNative serialize計測のJSONが漏れていた。実行成功と数値検証を分け、欠落した性能値は採用証拠にしない。次のCIでは両JSONを保存し、cache比較の各出力存在も検査する。
+
+保存済みDLL比較は同一Host・同一Wasm/DLLで、コピー対照のみ別Worker build。mappedとParent-fileは同一Worker。単段ウォーム150件のhost minus guest-call P95/P99はコピー8.616/9.139、mapped8.420/9.337、Parent-file8.526/9.198msだった。異種直列16段の各50グラフではready→resolved minus guest-call P95が119.496ms（コピー）/53.259ms（Parent-file）で未達。Parent-fileの並列/合流は完全な計測が7/50・16/50グラフのみで、欠落を成功標本へ補完しない。混合Job CPUは249.375→205.109秒、peak commitは202,858,496→156,598,272 bytes。メモリ・CPUと末尾遅延の効果を一括で成功扱いにしない。
+
+独立入力は各構成・各間隔245件。4段100msの正答はコピー108/mapped99/Parent-file192件、20msは全条件35件。残りはsupersededで、3方式ともこの比較のadmissionRejected/failed/timedOut/cancelledはゼロ。旧結果を最新の成功へ数えない。Parent-fileでも20ms補充は未達である。artifact `14034289312` のHost SHAは `91b3c2137493276c07aad9ed56f3aef3e49bdde7548694539387b69d20a74963`、mapped/Parent-file Workerは `c90959c90be556dcac579bf2a98cc4500c38db8e7559e21c86d5e937685addaf`、コピーWorkerは `679e75a10ec35d3827b60ec7eeb592c8ad983ed4316b94e6af0fc1142eeadb6c`。固定DLL/Wasmは前述と同じ。
+
+次の内部候補は、`DIY_EXPERIMENT_JIT_STREAM_MODULE=1` のとき、所有・検証済みのprivate compiled frameを既存の入力前pipeで配送する。compilerの成功した実終了・全回収、元Wasm/policyとの対応、hash検証、単回の新Store/Instanceは維持する。子へcompiled code fileのACLを与えず、その付与・取消費用を比較する。読み込み前と結果採用前に元CodeFilesの健全性を検査する。VecからArcへの一時変換も含め `2*(length+1)` bytesを既存code予算から予約し、元process/IOの確定終了まで保持する。予算不足は上限拡張や実行失敗にせず、従来のfile配送を残す。外部cwasmを受け取る入口は作らない。
+
+実AppContainerでfile/pipe両方のcache lifecycle検査が7.70/7.26秒で成功した。余分なbuffer予算の保持・解放、予算を満たした状態でのfile fallback、健全性を失った元CodeFilesの拒否、取消・再生成、異なる実コード/policy、guest失敗の非再試行、物理process/予約ゼロを含む。CIでも両配送を検査する。
+
+同一バイナリ・物理2枠・コンパイルcacheありのローカル単段各30件、file→pipe順の基盤遅延P50/P95/P99は18.279/139.188/165.618→17.023/225.875/235.398ms、preparedは28→26/30件だった。中央値だけで採用せず、末尾改善は未証明とする。正答とsession終了後の物理所有ゼロは通った。報告SHAは `0cc285aafdb4f586c68d2c1cfee053705e51dd1d68f3e9ee6c3363dcb8d13cbe` / `cb1672713181665eb541f5e7c2b6a711b2bce827e9da50d0b202d4120144420c`。通常defaultへの採用、多段反復、trace OFF、全変更/失効/異常条件、main統合は引き続き未完了。
+
+### コード保存用の命名と、補充開始を早める案の切り分け
+
+CodeFilesのディレクトリは、以前は名前を得るためだけのAppContainer profileを作成・削除していた。このSIDはtoken・process・ACLに使っていない。ここを同じOS RNGの128bit乱数名と排他的create_dirへ置き換え、名前だけのOS profile操作を除く。固定prefix、workspace内の正規化・既存directory拒否、資産名の制限、private ACL、書込/削除共有拒否、有界code予算、固定名だけの回収は維持する。実行用Profile::newとCache::new(workspace, profile)は従来どおりで、入力を扱う各Workerの実profile作成・元process終了後の削除を省略しない。
+
+局所検査には初期readinessの5秒timeoutが残る。失敗例の観測はattempt1/active0/settled0、attempt1/active0/settled1、命名変更後にはattempt1/active1/settled1だった。settledはcompilerを含む元process/IO/ACL/profile回収済み呼出し数で、readyや成功実行の代用ではない。timeoutや失敗条件を緩めず、命名変更だけで冷間起動の問題を解決したとはしない。現在のローカルCore単体検査は102成功/9失敗/32ignoreで、9失敗は必須WinHTTP option195がこのWindowsで利用できないnetwork-platformに関係する。CIとローカル検査を区別する。
+
+補充案を除去した最終版はfmt、locked/offline release all-target Clippy、release Host/Workerと検査binaryのbuildを確認した。コードキャッシュの既存検査10件（各profileへの個別許可/取消、他profileの許可維持、書込・置換・削除共有拒否、部分構築、健全性失効、追加ファイル拒否、予算/回収）は成功。同じ最終binaryの実cache lifecycleはfileの最初のreadyが5秒timeout（全体6.68秒）で失敗し、その後のpipeは8.92秒、従来raw JITは4.07秒で成功した。fileを成功扱いにせず、実profile・入力世代・取消・回収の条件を緩めない。pipeline全体の判定は未合格であり、冷間の起動待ちを引き続き調べる。
+
+コンパイル済みの場合だけ、既存予備の予約を現在のdispatchへ引き継いだ直後に次の入力未配送Workerを別枠で補充する案もローカルで比較した。別process/Store/Instanceと2物理枠は実fixtureで検査したが、性能の見込みが乏しいため追加flag・callback・専用検査を取り下げた。残す実装は従来どおり現在のWorkerの回収後に補充する。
+
+この一時版の同一Host/Worker・物理2枠・独立入力各35件、通常補充→早期補充の順では、単段逐次の応答P95が192.715→768.837ms、100msの正答23→22/35、20msは10→6/35。4段逐次P95は526.312→1370.880ms、100/20ms正答は双方各5/35だった。すべてadmitted、admissionRejected/failed/timedOutは0、残りはsuperseded。各session終了後の元process/予約ゼロは通った。低メモリのローカル小標本、順序固定、4段の別digestはcustom section追加であり異なる実コードではないため、Goalの異種Wasm達成根拠にしない。別の先行測定はローカル検査と重なったため比較から除外した。
+
+一時版レポートSHAは `5c4fa4173f3ba9dee44aa493d716a08e6189c484838603dac09ef3fe04c3486e` / `3714164e12062908b621b7e21f0fccaa7461c7832d2fff6a370ee50dd34d70b1`、Host `c2cd79f95b7c97464ec12fa5ac5c50c811b41604f9bc01098b4f1ae951a5ed4a`、Worker `9835ef58149c71c9074737e745fbee4d8e4b3f9b7d1fa3e103e1de0719d80028`。削除後の最終バイナリの性能値へ流用しない。
+
+### 95bdf50 のコンパイルcache比較結果
+
+[CI 43427234957](https://github.com/pitapa79/DIY_IME/actions/runs/43427234957) は `95bdf50adb61a5191041d438d5e3f84cb418e7b5` で全工程成功し、file/pipe双方の実cache lifecycleも通った。artifact `14040711070` に以前欠落したcache比較とNative probe JSONがある。これは上記の命名専用profile削減を含まない。同一Host/Worker/DLLと実Wasm2種を照合し、cache0→cache1（pipe）の順で測った。単段は2物理枠・ウォーム150件、混合は6枠・各10グラフ、固定間隔は6枠・各245入力。反復順は固定で、10グラフの多段末尾値には十分な再現性がない。
+
+| 構成・測定区間 | cache0 P95/P99 (ms) | cache1 P95/P99 (ms) |
+| --- | --- | --- |
+| 単段、Host受付→公開 minus 同じ実行のguest-call | 11.156 / 12.404 | 9.962 / 85.282 |
+| 異種直列4段、各Nodeのready→resolved minus guest-call | 50.839 / 242.552 | 20.666 / 63.170 |
+| 異種直列8段、同上 | 69.618 / 210.559 | 19.173 / 613.425 |
+| 異種直列16段、同上 | 65.613 / 241.481 | 21.681 / 309.493 |
+
+単段のpreparedは150→149/150。cache1の遅い2件は同一試行の記録から、#82がpreparedで基盤85.282ms・回収78.795ms、#83がcoldで154.649ms・staging96.567msだった。#82の対応するcleanupログはprofile削除78.367ms、Job/ACL1.835ms、ACL lock待ち0ms。これを結果公開から除外しない。異種4段でもcache1の最大63.170ms中、同じNodeの回収が58.760msだった。通常の初期化費用だけでなく、実回収・冷間補充・Coreの待機を引き続き対象にする。
+
+並列4段は完全な測定4→5/10グラフ、合流2段は8→7/10。欠落したグラフを合格標本へ補完しない。同じWasm4段の独立入力は、100msで正答57→211/245、superseded188→34、20msでは正答35/245・superseded210で両者同じ。両構成の逐次は245/245正答。受付拒否・failed・timedOut・cancelledはこの比較の全間隔で0。単段20msは正答82→107/245で、残りはsuperseded。これらpacedは同じ実装の1/4段であり、異種Wasmを20/100msで測った証拠ではない。
+
+混合Job CPUは65.266→37.063秒、peak commit134,918,144→132,956,160 bytes。paced Job CPUは292.547→159.391秒、peak commit135,303,168→125,759,488 bytesだった。CPU削減は確認できるが、通常default経路・必要な全行列・P95/P99・欠落のない証拠は未達。単段150件でP95が10ms未満だったことを全体の成功にしない。
+
+Host SHAは `b920d74251406fe31dbb0e2df322c92ceea744da62bb2a89c0205eb299f96793`、Workerは `69f1c619a5c4e8e0b7429a88619ae09e147e970f703cabc8461b27cd16d20192`。DLLは前述の固定SHA、Wasmは `824de18259c64c2b07663a2419445651d53ddb7a72f4da582a07cd9c74331d2d` / `c95623ea297e98e35b32ad1d3b17d92079d0b68d17699bdefa664ea57c5b7ea3`。レポートSHAは次のとおり。
+
+| JSON | cache0 | cache1 |
+| --- | --- | --- |
+| single-detailed | `6b4c0fe38e9e0c99ce7bba79053f51dcd5266cd4d348e70651477e43ef488632` | `344d6ca42bd05782a096bdec187a18c343c453f5814a60d90ee12c04ee26df72` |
+| mixed | `3839f7c4458ce319de4d332a18b4e1d941dbe3ace74f57c20975df7b4ea7c6d0` | `b9bdcd7136d7a73869d42623c29f5127b5ca6ffa696a88da44892f317f703851` |
+| paced | `9c01361b23d59f8cc9ffefbd209250508cd3e2b617d4ca191b4e68b4b35471bc` | `5bb5a37cad997ef7426458256f82d0b87036542f96fcb3cfde5831acfbe11a70` |
+
+### 独立CIと並列計測の欠落（2026-11-14）
+
+同じ95bdf50の独立PR CI [43427311107](https://github.com/pitapa79/DIY_IME/actions/runs/43427311107) も成功した。各run内でHost/Worker/DLL/moduleを照合したが、別runnerのbinary・負荷は同一とはみなさない。単段150件のcache0→1は基盤P95/P99が7.675/8.492→6.722/12.404ms、異種直列4段は38.648/159.805→11.487/16.605ms、8段は38.401/289.459→13.748/287.733ms、16段は38.553/191.062→12.521/164.737msだった。一方、同一Wasm2段はP95が6.224→129.054ms、未使用15個を含む単段は29.116→505.117msへ悪化した。並列の完全測定は1→0/10、合流は3→4/10。速かった別runだけを選んで成功とはしない。
+
+同じ実装4段の100ms正答は208→212/245、20msは35→47/245、逐次は双方245/245。混合Job CPU37.922→23.063秒、peak commit138,027,008→128,479,232 bytes、paced CPU187.703→104.672秒、peak143,421,440→124,416,000 bytes。CPU削減と尾部/欠測の未達は併記する。最新b000adeのCI [43458009441](https://github.com/pitapa79/DIY_IME/actions/runs/43458009441) は45分の上限でcancelled、activation-readiness比較は未完了で、成果物保存もskippedだった。合格とはしない。
+
+詳細記録ではNativeの最大12区間を1束として128枠の非待機キューへ渡し、記録側が既存の8MiB予算内で採用する。入力・設定・権限・process所有は渡さない。OFF/basicではキューを確保せず、clear/stop後の旧producerと欠落counterも新記録や停止済み記録を変更できない。これは計測欠落の改善であり、prepared経路の診断OFF時にも専用pipe等を準備する既存の費用は未解消。
+
+ローカル実Windowsで同一Host/Worker/DLL/module、4並列・6物理枠・各10件、direct→queue→queue→directのABBA比較を実施した。元runの物理所有ゼロ、準備枠上限、session終了後の全process/予約ゼロと正答を全試行で確認した。preparedはall、pooled/verified-runtime/compiled/stream/inherited-ACL/overlapは1。`DIY_EXPERIMENT_DIRECT_WORKER_TRACE=1` だけで旧配送を選び、基盤の実行方式・安全条件は同じとした。alternateはcustom sectionだけの別hashなので、異種実コードの証拠ではない。
+
+| 順番・配送 | guest-call取得 / 40 | グラフ完全計測 / 10 | 全欠落イベント | 応答P95 ms | ready→resolved基盤P95 ms（計測できたNodeのみ） |
+| --- | --- | --- | --- | --- | --- |
+| 1 direct | 39 | 9 | 19 | 916.498 | 859.039 |
+| 2 queue | 40 | 8 | 6 | 1218.145 | 1161.019 |
+| 3 queue | 40 | 9 | 5 | 420.126 | 380.102 |
+| 4 direct | 38 | 7 | 35 | 393.300 | 317.339 |
+
+guest区間は77/80→80/80となったが、Host側anchorの欠落は残る。完全グラフは16/20→17/20で、遅延の改善を示す比較ではない。サンプル数もGoalの尾部合否には不足する。前回のparallel専用試験はスクリプトがprepared枠を許容しておらずidle検査で停止したため破棄し、今回parallel/joinも上限内の準備枠と最終ゼロを区別して検査した。
+
+Host SHA `94bccc06e2a1dfc539e758939de4c414d82debb4288f9728939cab82602f463c`、Worker `4a7808cbd60a56e004989f7db802f68e4ad61ec504638f0d3bfd5f33979ffc12`、DLLと原本Wasmは上記固定SHA。比較JSONのSHAは順番に `6c5bd63d7edd739ef86d2f3ed333a3d2638e059e0fb9a01c64c8b9901be4b87f`、`a6b2f9c658f97eddbd08b3ece9446153128d19fc3adf325666e3dd3ff9b2d0eb`、`1dcc5455c3d9ccc068f4b413b10e6288002e72a4a153854b3a457dcaf8aed6f6`、`11399bbd7f209a623cb6ab0aa2ca295d9f8e10834a5402e3d2a9dd79258d499e`。この後のstop競合修正は単体検査で別途確認し、上記のbinary実測に含めない。
+
+今後の明示ALT_WASM指定はmodule全体hashだけでなくWasm code節のhash差も必須とし、両方をJSONへ残す。custom section別名は同一実装対照として使えるが、異種実コードの合格材料にはしない。CIは既存検査コマンドを保った2つのWindows segmentへ分割し、従来名の必須checkは両方successの場合のみsuccessにする。45分上限、fixture、権限・物理回収の条件を緩めず、失敗/取消時の部分JSON保存も試みる。
+
+### 同時所有者ごとのRuntimeコード複製案を棄却（2026-11-14）
+
+同一のruntime snapshotへのACL更新・lock待ちを減らすため、入力を含まない固定Worker/DLLだけを同時所有者ごとに複製する案を比較した。実行済みprocess/profile/Store/Instanceは保持せず、immutable fileの共有拒否・健全性・個別ACL取消と既存512MiB予算を維持した。pool上限18枚、予算不足・複製失敗時はguest開始前に既存共有経路へ戻り、実回収後だけコードを再利用する。所有分離・再利用・上限/予算・poison拒否の3検査、および実AppContainerのcompiled-file/pipe lifecycleは成功した（8.87/6.60秒）。これは候補の検査結果であり、採用済みの機能ではない。
+
+同じHost/Worker/DLL/Wasm、4並列・6枠・各10件、shared→private→private→sharedのABBAでJob全子processのCPU/peak commitを測った。他の準備・cache・stream・ACL・overlap条件は直前の比較と同じで、直接記録controlは0。全runの正答・実物理所有ゼロとsession終了後の全process/予約ゼロは通った。
+
+| 順番・方式 | 応答P50 / P95 ms | 完全グラフ / 10 | ready→resolved基盤P95 ms（観測できたNodeのみ） | Job CPU ms | peak commit bytes |
+| --- | --- | --- | --- | --- | --- |
+| 1 shared | 364.400 / 1230.902 | 9 | 1005.174 | 8312.500 | 150388736 |
+| 2 private | 409.144 / 6653.347 | 8 | 6557.252 | 10484.375 | 153612288 |
+| 3 private | 208.561 / 806.993 | 5 | 560.104 | 8609.375 | 136732672 |
+| 4 shared | 345.985 / 868.322 | 10 | 703.229 | 8781.250 | 156508160 |
+
+20ms以上の回収ログにおけるACL lock待ちの最大は172244→0→1→48313us、Job/ACL全体は716171→86894→87959→195312us、profile削除は617761→88894→101287→85815usだった。特定の共有待ちは減ったが、全体の応答・欠測・CPUが一貫して改善せず、大きな遅延も残った。コード複製、startup/補充、profile回収を除外して成功とはしない。private方式の実装・環境flag・専用検査を取り下げ、共有runtime snapshotの実装を維持した。このtemporary binaryを以降の確定ソースの測定に流用しない。
+
+Host SHA `95f3c95a996ef403cc814a881c5eaeb515ab0d99c481b147a10e569662fef216`、Worker `27934c4b85e669c2e128905d82f8799d4da97e7e32bd8e1d59a68d0730d2dfec`。全moduleのcode節SHAは同じ `6899f503843ebd604755ce2cb2d3bc70a8ad88c865734e9eac45f1de4cd62fa2` で、異種実コードの証拠ではない。レポートSHAは順に `9f97bf60c0e102cbecc49c35c19a8bdbb33539dd595d128053768f0f4aa96bf7`、`4c3ba372eebe170f9a7882dc83a3b13439ede57be107c11b0e02ff7f8924d80d`、`b17aad9635ee7174944997b7461fa4aa20a65029748f06e12816d4a06c58dbe3`、`e8f681064b8dc51a6d864d6f71d4263a9a2a18adabff61ab914c48ec5154118e`。保存した候補patchのSHAは `cca79686aafaaa55105e1c5ed4d25653a96244e74b81a06b7bea78c93e363744`。
+
+c651a0fのCI [43471554069](https://github.com/pitapa79/DIY_IME/actions/runs/43471554069) のruntime-cache segmentは既存のservice fault検査で失敗した。意図的なcontrol thread panicの拒否自体は通ったが、停止通知の直後、threadが最後のArcを解放する前に再接続してservice-faultになっていた。検査は生存中の旧ownerに対する拒否を維持し、既存の有界待ちでWeakの失効を確認してから新serviceを作る。製品のfault・再接続方針や待ち時間の上限は変更しない。
+
+### 分割後の必須CIと入力時選択の診断（2026-11-14）
+
+ad7ce24の [CI 43474360689](https://github.com/pitapa79/DIY_IME/actions/runs/43474360689) はprepared/runtime-cache両Windows segmentと必須集約checkがすべて成功した。テスト対象のmerge sourceは43f7a042a85f298cacc4fd05e2228030b8a2192a。prepared archiveのSHAは `1bf9350444cd404a095dfbd0baa1be19c3c067bb49c27881d26950bec4544366`、runtime-cacheは `1a132fb30b382cd203ffc18958453abc3c7fc897027a4bf7c68a9413fd2fc465`。JSONをそれぞれ24,783,023 / 41,359,390 bytes保存した。2つのrunnerの分布を同一条件の一組として混ぜない。
+
+runtime-cache segment内の同一binary/moduleによるcache0→1は、単段150件の基盤P95/P99が9.561/11.399→8.467/113.178ms、prepared150→147/150だった。異種直列2段のNode ready→resolvedから同一guest callを除いたP95/P99は208.315/267.437→7.711/65.920ms、4段は123.823/192.172→19.118/1450.232ms、8段は55.825/630.577→69.929/734.616ms、16段は57.144/172.278→50.296/214.122ms。並列の完全計測6→9/10、合流10→9/10。同じWasm2段はP95が9.439→70.585ms、未使用15個を含む単段は7.267→29.305msへ悪化した。合格CIを性能目標の合格にしない。
+
+同じ実装4段・各245入力で100ms正答125→184、20msは双方35、逐次は双方245。単段20msは91→110/245。受付拒否/failedは0で、残りはsuperseded。混合Job CPU54.484→29.938秒、peak commit130,396,160→136,024,064 bytes、paced CPU239.594→130.875秒、peak142,364,672→123,801,600 bytes。これらも逐次・固定間隔・資源・失効を分離して扱う。
+
+canary artifactから既定/opt-level2の実Wasmを取得し、source receiptと全module hashを確認した。code節SHAは `6899f503843ebd604755ce2cb2d3bc70a8ad88c865734e9eac45f1de4cd62fa2` / `5e196cc6571232ff3d2080ce36ef0b5eb015f75d6c4a1bd5e65609d045361a7f` で異なる。canary archive SHA `9906fc846a78472ffefcd63b953b932feeb1d3a788faf8e9f43f63697d6fb032`。custom sectionだけの別名とは区別できる。
+
+その後の変更は、prepared Workerの入力配送時に詳細記録の要否をNative controlで渡し、ONの場合だけ既存stdoutの私的フレームへ診断を返す方式。OFFの常設診断FD/reader thread/Worker計測時計/bufferを除去し、guest JSON/ABIを変えずに最大8MiBの応答原文を取り出す。診断は別の4096byte上限を維持し、確保失敗・不正・上限超過は欠測とする。未観測のstartupは再構成しない。元process/IO/Job/ACL/profileと現在の許可・入力世代の条件は維持する。内部比較control `DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS=1` だけで旧常設pipe方式を選べる。
+
+同一Host/Workerの旧→新→新→旧ABBA、単段・物理2枠・各25件の局所比較を行った。逐次要求の間には100ms待機し、固定100ms間隔の連続入力とは区別する。preparedall/pooled/verified-runtime/compiled/stream/inherited-ACL/overlapは1。全正答、run物理所有ゼロ、session終了後のprocess/予約ゼロを確認した。
+
+| 配送順 | OFF総応答P95 / P99 ms | ON同一guest call除外の基盤P95 / P99 ms | OFF Job CPU ms | ON Job CPU ms |
+| --- | --- | --- | --- | --- |
+| 1 旧 | 29.913 / 175.644 | 31.588 / 3189.871 | 5109.375 | 5031.250 |
+| 2 新 | 197.767 / 377.469 | 19.375 / 21.809 | 6093.750 | 4937.500 |
+| 3 新 | 78.899 / 971.846 | 21.755 / 22.010 | 5312.500 | 4718.750 |
+| 4 旧 | 271.236 / 287.662 | 23.486 / 46.719 | 5218.750 | 5093.750 |
+
+OFFではguest区間を測っていないため独立した別計測のguest分布を引かず、総応答のまま示す。OFFの速度改善は一貫せず、新方式の初回応答にも243.629/1249.719msを要した。ONのpreparedは24/25→25/25→25/25→25/25。新ONの回収P95は12.155/14.191msで、これだけでも大きな残差がある。Job CPU/peak commitは導入・準備・終了を含む全子processの費用であり、1入力のCPU時間ではない。ONの改善例をGoal達成やOFFの改善保証にしない。
+
+比較時Host SHA `dff56357e1ca152c805fb907c40b0bbb892ca833f9b611f7300138c9a14f4ca5`、Worker `fa4b010fe7f0d7627bbf6820ed2ed9351b87460ca59ea86434e2bf1445f261a8`。OFF report SHA（順番通り）は `3842f64b7c85623937ab95afec51daf595cf5f9e68a149496035387e4ee12466`、`8a27ab487732105081443cb383e73ea4cb01240eb6813f800dcf40c74448e1a6`、`6ea2a763e9fa71f4aec7bb89afdd3797e5548e61a254db1138111cdc5731fab1`、`c8ec56a49f798b1cce2ef225d685d9ac8ec044dde406c6c219905f16f4f331d7`。ONは `c259fc38cef062056c528074042749bb3f7e45ee613756b952a61f719ee58cc9`、`73450a2c67b3c03f4c3131153fcd54ddc391b39dc17b33e47d7908d7b12996c2`、`bbbbc89738c0072471fc503dc1a4810d1a131f36af7a8de169222ffd3e228e48`、`1e683ac19a4aa80a39511f6c9a4f6089a277da5847031b0ff77a792f51bb8821`。計測後に確保失敗の明示処理を追加して再検査したため、このbinaryの時刻を最終版の実測と読み替えない。
+
+異なる実コードを使う新方式の局所結合検査も実施した。2/4/8/16直列・4並列・合流・未使用Nodeを含む9構成、各5件で45/45グラフの同一試行計測、正答と元process/資源回収を確認したが、Node基盤P95は異種4段130.204ms、並列788.639ms、合流1128.456ms、16段92.141ms等で未達。Job CPU39.375秒、peak commit184,487,936 bytes。JSON SHA `34777d4e419d9197a7b78341dcd72f9d600c9f083e8205fd17a16c88c5faa1ed`。5件ではGoalの尾部の合否を判断しない。
+
+OFF無時計/無buffer、実測済み工程だけの開始/退出、停止後の再開拒否、上限と欠測、応答原文/重複keyの保持、truncation/過大応答/過大診断、bootstrapの不正mode/handle拒否を検査する。実WorkerのOFF/ON/配送拒否と、compiled file/pipeの単回状態・取消・元process/資源回収も検査する。Core単体は109成功/9失敗/33ignoreで、9失敗はこのWin10の必須WinHTTP option195/OS12009による既存のplatform不一致。必須設定・fixture・待ち上限を緩めず、最新のCIで別途確認する。
+
+### 既存の取消検査におけるfuel枯渇の分離（2026-11-14）
+
+e1740d2の [CI43516314068](https://github.com/pitapa79/DIY_IME/actions/runs/43516314068) はprepared segmentが成功したが、runtime-cache segmentの通常保持Host検査で失敗し、集約もfailureとなった。取消検査の4096個のASCII `a` が、取消より先に先頭のローマ字Nodeで失敗した場合を、検査が正常な完了と誤って仮定していた。`reason=completed` でも `delivery=failed`、hiraganaがFailedで後段がBlockedだった。出力Packetなしを正常データとして扱う修正は行わない。
+
+同じ製品binary/公式Wasmで20回の即時取消は20/20成功し、初回取消を1秒遅らせると完了失敗を再現した。固定公式Wasm SHA `105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134` を同じWasmtime DLL・標準compiler・50,000,000 fuel / 128MiB / fresh Storeで検証すると、ASCII4096はromaji.convert内で `all fuel consumed`、かな4096とASCII1024は正答だった。この同一プロセス調査はNodeの燃料要因の検証であり、Hostの性能値には使わない。調査用Rustコードは製品差分から除去した。
+
+通常Hostの検査は、元のASCII4096を独立した資源枯渇例として残し、失敗・全後段Blocked・非Inputポートに成功データなし・元process/物理予約ゼロ・次の正答への回復を要求する。取消例は4096個の `あ` とし、同じ4096 code pointと同じ期待出力を保持しつつ、入力UTF-8は4096→12288 bytesへ増える。事前に最大長Unicodeの通常完了を確認し、取消できなかった試行は `delivery=complete` と全文一致を要求する。既定3回で少なくとも1回の実取消と実回収が必要な条件も維持する。fuel・memory・正式fixture・Node実装・既定配布bytesは変更しない。
+
+修正後、実Windows製品Hostで既定3回は2取消+1正答、初回のみ1秒遅延した20回は19取消+1正答で、ASCII枯渇とUnicode最大長の事前確認、全試行の実回収・補充、Session/辞書の切替、保護/失効/EOFまで通った。`DIY_RETAINED_CANCEL_TRIALS` は3〜100回、`DIY_RETAINED_FIRST_CANCEL_DELAY_MS` は0〜1000msの検査用制御で、既定条件は3回/遅延なし。これは検査の誤った入力前提の訂正と範囲の分離であり、基盤遅延目標やNode自身の計算費用の削減を実証するものではない。
+
+### Runtimeだけを先行準備する私的経路の予備比較（2026-11-14）
+
+`DIY_EXPERIMENT_RUNTIME_ONLY_SPARE=1` は、Host自身のcompile-only成果を利用でき、同じ既存code budgetで配送bufferを確保できる場合に限り、実験的な `--prepare-runtime-jit-v1` を選ぶ。Native Workerは固定DLLと空の標準/Winch Engineだけを準備し、Node用のModule/Store/Instanceを持たず `DIY-RUNTIME-READY-v1\0` を返す。通常のJIT-readyとは別の通知である。module pathは `-`、事前module lengthは0に限定する。
+
+Hostの入力サイズ・許可・世代・取消検査後にだけ、長さ・digest・実際のcompiled bytesと入力を配送する。Nativeは最大8MiBのcompiled frameと最大8MiBの入力を制限し、同じcompiler-originの前提、digest、policyを確認して、Engineを1つだけ消費してfresh Store/Module/Instanceを作る。他方の空Engineは破棄する。Engineの所有権移転はStore/deserialize失敗時も解放される。Nodeコードを複数ロードせず、入力後の再利用・再試行もしない。既存の原文replyと入力時診断選択を保ち、Module読込み・Store/deserialize・instantiateは入力後費用として計測する。元process/IO/Job/ACL/profile回収、資源予算、結果採用条件を省略しない。
+
+これはまだ**Node間で在庫を共有しない**。現在のNode別ownerに新Native経路を接続した段階であり、Node非依存の共有poolや任意のNodeへの後選択が実装済みとは主張しない。既定OFF、予算不足なら既存のfile経路へ戻る。公開ABI・許可・標準配布Nodeは変更しない。単に読込みを後へ動かした方式を速度改善として採用しない。
+
+同じHost/Workerで旧→新→新→旧、各25ウォーム入力（初回は別記）、物理2枠、詳細診断ONの予備比較を実施した。各要求終了後100ms待機であり、固定100ms周期ではない。preparedall/pooled/compiled/stream/verified-runtime/inherited-ACL/overlapは1。全入力の正答、各runとsession終了の物理回収をdriverが検証した。
+
+| 順序 | 基盤P95 / P99 ms（同一guest callだけ除外） | prepared / 25 | 初回総応答 ms | Job CPU ms | peak commit bytes |
+| --- | --- | --- | --- | --- | --- |
+| 旧1 | 171.621 / 198.820 | 22 | 208.718 | 5828.125 | 116883456 |
+| 新2 | 436.240 / 1001.570 | 16 | 844.216 | 6453.125 | 115101696 |
+| 新3 | 57.535 / 681.875 | 24 | 199.845 | 6125.000 | 116531200 |
+| 旧4 | 23.260 / 38.880 | 25 | 191.670 | 5671.875 | 116211712 |
+
+新経路のprepared入力16/24件はすべて入力後のmodule-read実区間を持ち、旧のprepared入力には同区間がなかった。要求環境変数だけで経路選択を認定していない。新の回収P95は48.810/40.815msで依然大きく、単段での改善は認められない。25件では尾部の合否も判定せず、Goalは未達。次に検証すべき点は、Nodeコードを持たない状態の在庫を実際に共有した場合に、異種・未使用Nodeによる準備不足と費用を減らせるかである。
+
+Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Worker `b4de83ccd757ae224dc31b33e0c8b2d900c21dd9f5aa4ec5a3b5f7abaf27bf1d`、DLL `fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef`。report SHA（順序通り）は `21392eab665741d7c1368748515256c185923c336009ac37de481919c220b3ab`、`af5377abae9f8b02dc483748de955046b3c2798d04dff830396a2ecce4a55bb9`、`119deb6fcb27a56894956553994a9f22c87e9d8e9a6ee37aab2c438b8fb1ef0d`、`8ca641b9612beeefced030ab76bb1a9f1424574f76d759d3d7dd9127fc625623`。
+
+実AppContainerの既存ライフサイクル検査を標準compiler fallback・fuel枯渇・memory.grow拒否まで拡張した。新経路の入力時診断では全ケース成功した一方、このWin10で従来file経路の起動前準備タイムアウト2回、新経路+旧診断FDの準備タイムアウト3回（うち1回は継承ACL条件）も記録した。5秒の準備待ちやfixtureを緩めず、成功だけを残して安定性を認定しない。CIにも新経路の入力時/旧診断FD比較を追加し、全既存run行・条件・45分上限・集約ゲートを維持した。
+
+### 同じfactoryのNode間で空の単回Worker在庫を共有する実験（2026-11-14）
+
+73ee8c7の [CI43526381804](https://github.com/pitapa79/DIY_IME/actions/runs/43526381804) は両Windows segmentと必須集約が成功した。これを性能目標の達成と読み替えず、次の共有在庫を実装した。
+
+`DIY_EXPERIMENT_NEUTRAL_JIT_POOL=1` と `DIY_EXPERIMENT_COMPILED_JIT=1` を共に指定した場合だけ、同じ準備計画内で捕捉済みruntime files・code budgetの所有identityと完全なWorkerPolicyが一致するNodeをまとめる。module hashの一致やNodeの自己申告だけでは共有しない。各memberへ同じslotを接続し、stock自体はNode Module/Store/Instanceを持たない。準備時の既存物理予約で各sourceのcompile-only成果を逐次作り、そのcompilerの実終了・IO/ACL/profile回収後の成果だけを後選択できる。stockは実行枠を残して最大physical slots−1に制限する。
+
+配送時に実行対象Node自身の成果を捕捉し、既存512MiB code budgetでVec/Arcの一時storageを課金する。私的な型は他factory・異なるpolicyへの配送を拒否し、通常の許可・世代・取消検査後にだけ1つのcode/inputを送る。そのsource/code/budgetのpinを元Workerのprocess/IO/Job/ACL/profile回収完了まで保持し、配送前と回収後のcode healthも確認する。準備不能・予算不足・未配送なら未使用stockを実回収して通常経路へ戻す。guest実行後のretry、入力後のWorker再利用、複数Node codeの同居は行わない。既定OFFである。
+
+実AppContainerで、runtime-ready後に異なる挙動の実codeを選択し、毎回fresh stateになること、標準compiler fallback、fuel枯渇・memory.grow拒否、他factory・policy拒否、配送拒否、scope取消と回復、code pin/予算の解放を確認した。入力時診断21.61秒、旧診断FD14.33秒で成功した。製品Hostの別検査では異種codeによる同一入力・旧入力の抑止、設定/計画切替、保護後の応答fence、実行権限失効と回復、close/EOF回収を両診断方式で確認した。これらは性能の合格ではない。
+
+最終Host検査は空Data、4096文字ASCII、1024文字のかな/emoji、NoOutputと資源拒否後の回復も含む。4096かなでは3つの祖先Text出力が既存16KiB結果予算を超え、初回の検査前提が誤っていた。実際の `result-limit` を確認した後、予算を変えず、失敗・Data/Node結果なし・実回収と次入力での正答を要求した。正式fixtureや入力/結果上限は変更しない。fmt、locked/offline release all-target Clippy、CLI/Host/Worker build、19JS検査が成功した。Coreは110成功/9失敗/34ignoredで、9失敗は従来と同じ必須WinHTTP設定のplatform不一致。従来compiled検査の5秒準備待ちが1回失敗し、同じ上限の再実行は15.79秒で全ケース成功。raw検査の初回はcompiled制御を誤指定したためcall数が一致せず、正しいraw条件では7.32秒、deferred Nativeでは3.87秒で成功した。これらの履歴を新経路の失敗や全環境での安定性認定に置き換えない。
+
+同一binaryの従来→共有→共有→従来ABBA、物理6枠、異なる実codeを含む2/4/8/16直列・並列・合流・未使用Nodeの9構成×各5ウォーム入力を比較した。要求終了後100ms待機であり固定100ms入力周期ではない。全180ウォームグラフは正答とrun/sessionの物理回収を通ったが、同一試行のguest callを除いたNode ready→resolved P95は一貫して改善しなかった。
+
+| 構成 | 従来1 P95 ms | 共有2 P95 ms | 共有3 P95 ms | 従来4 P95 ms |
+| --- | --- | --- | --- | --- |
+| 異種2段 | 43.063 | 59.391 | 57.621 | 25.483 |
+| 異種4段 | 122.559 | 72.488 | 101.522 | 237.256 |
+| 異種8段 | 115.085 | 188.103 | 188.547 | 86.082 |
+| 異種16段 | 184.503 | 137.576 | 101.873 | 123.040 |
+| 4並列 | 223.468 | 671.694 | 210.848 | 109.277 |
+| 合流 | 126.644 | 76.689 | 102.938 | 108.893 |
+
+異種4段の共有2 P99は979.561ms、16段の共有2/3 P99は690.424/260.535ms。並列の完全な計測は5/4/4/3件（各5件中）で、欠測を高速結果にしない。無関係なHost phase欠落でも経路判定はunknownになり得るため、要求flagや正答だけで全preparedを認定しない。従来4の同種2段ではcoldを含む2158.573msのP95も記録し、除外していない。5件の構成別比較は方式選別用でありGoalの尾部証明には不足する。
+
+全子processのJob CPUは38.672/36.313/38.375/40.375秒、peak commit176967680/150106112/149483520/178479104bytes、process数838/839/839/839。共有によるmemory削減は観測できたが、遅延合格やCPU全般の改善を主張しない。これらの費用は導入・準備・回収も含む。
+
+さらに、未使用15個が別の実codeも含む単段を各25件でABBA比較した。全100件で正答・同一試行の区間・実回収を確認し、基盤P95/P99msは94.063/107.868→35.093/66.037→178.571/210.403→76.697/151.712だった。Job CPU6437.5/5812.5/7437.5/6906.25ms、peak145362944/124813312/124477440/138063872bytes。ここでも遅延改善は一貫せず、共有を速度改善として採用しない。
+
+比較時Host SHA `30845a5954d9b43884a04e44a3e5cb0954c22be8e5e3994f2f3d9c07ae36fcb3`、Worker `1addd356322b47a056866161cd9bd04ec4bc18e4f99c0f667cf828a13232ea9f`、DLLは上記固定SHA。mixed report SHA（順序通り）は `6f6bec0a076177fcad2bccee18de379b050d74cf137c301728b5babfaa38e2e4`、`d1f7b7a73e2bf6f0d618c7dcbd7d2e0fc8d2af3fe0aa99ae7796325bb4df0f94`、`6651722d2beda27b1792e616d96272286f089b95293d247ec08f54c33730f931`、`f78d062c69f58c785c8f1c399c3f7f7e9d5b9e6a90ce3219bc9b037282d6f326`。異種未使用Node reportは `2c7a91022524d99e3aa9612c1efcee09d16e4c3cf6d78208ec2e47c0009096b6`、`8ef58e203efced07d9a89d23eadbb462a4d0a0e9564cbd53d1a9fe8b41c3e437`、`5d6e77ac988b8eba89af1c905f9a4d801b2aa845c17affd89fa80895d394e197`、`efec765334fba1346f249c43960f63f4170f9fa8b4ebabac83370b2974a34873`。
+
+追加検査・比較は45分上限の第3 Windows segmentへ分離した。既存32run block・条件・検査・必須集約を維持し、3segmentすべての成功を必要とする。新比較は同一runner内ABBAで単段100件、異種/未使用10構成各10件、逐次/20/100ms各245入力を計測し、CPU/RAM・欠測・失敗・supersededを保存する。公式compiled artifact・辞書・networkはまだこのpoolの対象外であり、任意Nodeの全適用性、通常Host既定採用、Core P95<1ms、main統合と全条件の最終確認が残る。Goal #95は未達である。
+
+### a236cc7 CIの保存漏れと是正（2026-11-14）
+
+[CI43534262153](https://github.com/pitapa79/DIY_IME/actions/runs/43534262153) はWindows3segmentと必須集約がすべて成功し、neutralの所有/製品Host検査とABBA比較も実行成功した。しかし、新しいneutral report名をartifact保存一覧へ追加し忘れており、24件の詳細/Job reportが保存されなかった。neutral artifact14090130729（57,310,786bytes、SHA `e63a6a4e7b24d5ccf4a91c9eaa3d9f570d076a3f125464015634f9a55995ea1e` をGitHub metadataと照合）は4件の既存smoke/manifest JSONだけを含み、必要な24件はすべて欠けていた。抽出時の必須件数検査がこれを拒否した。CI合格を計測証拠の取得成功に読み替えない。
+
+残るconsoleの単段**総応答**P95/P99msは従来→共有→共有→従来で11.391/12.303、15.110/15.914、14.156/15.700、10.409/10.963。これは同一試行guest除外のNode基盤遅延ではなく、別計測のguest percentileを引かない。詳細欠落のため、この回から基盤目標達成や全matrixの採否を認定しない。
+
+是正は、ABBA後に全24report/Jobファイル、100/10/35の指定試行、1/10/2の構成数、単段/混合の入力record数、各paced区間245入力、実際のHost/Worker/DLL hash、対照mode、異なるcode、Job accountingの存在を検査し、専用evidence directoryへcopyする処理。全ファイルのSHAとsourceを持つmanifestも作り、このdirectoryを明示的なartifact対象へ追加した。既存の保存対象・検査・45分上限・3segment集約は保持する。collectorの合成試験は正常24件+manifestのcopy/hash一致を確認し、欠落・binary不一致・mode不一致・短いrecord・短いpacedをそれぞれ拒否した。これは保存処理の試験であり、合成値を性能証拠に使わない。修正後の実CIとdownloaded artifactで完全性を再確認する必要がある。
+
+### 保存是正後の実CIと共有在庫の限界（2026-11-14）
+
+8f44b10の [CI43552959703](https://github.com/pitapa79/DIY_IME/actions/runs/43552959703) は3 Windows segmentと必須集約がすべて成功した。neutral artifact14097702865（68,749,097bytes、SHA `9f8f20b7768994afe259d69b15c1f21dcf8b2728824c8dff6794107d9d51c6b2`）を取得し、GitHubのarchive digest、全24report/accountingの存在、source `19b7feb6f584ea6ebee8371dbc48b46360bf65a0` のmanifestと各ファイルのSHAを実照合した。前回欠落した詳細証拠の取得を確認できた。
+
+同一runner・同一binaryの従来→共有→共有→従来、単段ウォーム各100件の同一試行guest-call除外基盤P95/P99msは9.983/10.943、13.684/15.352、13.708/15.917、10.467/11.217。各100/100preparedでも共有だけでは遅延が増えている。異種16段のNode ready→resolvedから同一callを除いたP95/P99msは77.376/126.545、23.799/34.007、23.938/68.215、25.241/405.378。call-start→call-endのみの短い区間に置き換えない。並列の完全なグラフ計測は9/7/8/10件（各10件中）で、欠測を速い成功に含めない。
+
+20ms入力周期では各245件中、単段の正答/置換は68/177、63/182、74/171、68/177、4段では38/207、35/210、35/210、39/205（最後は加えてadmission拒否1件）。これらは取消が正しく働いても全入力に間に合う性能ではない。4段100msでも正答237/214/210/199件。pacedのphysical-end値は総応答でありguest除外Node遅延ではない。Job CPU（単段/mixed/paced）は7.109/42.359/181.078秒、7.359/40.984/179.781秒、7.422/39.984/176.281秒、7.063/41.438/172.906秒。main/default採用とGoal達成を認定しない。
+
+CI Host SHA `fc018d4b86470c7126bc2452212e311e4dddf64fc118db3db12b45e83eb671a2`、Worker `fa58f999653d0ecea98e259030b1f8e3e43e660bd94c283713ac0fd6f3705082`、DLLは上記固定SHA。下記ローカルの未コミット候補binaryと混同しない。
+
+### 入力を持たない不変code bytesの有界キャッシュ（2026-11-14、実験）
+
+late-code捕捉区間を既存の詳細Host `worker-staging` phaseで測った。共有在庫ONの25ウォーム入力では18prepared/7cold、preparedのcapture P50/P95は6.449/15.037ms、親cleanupは10.974/37.570msだった。全試行基盤P95は346.798msで、上位5件はcoldである。区間別分位点を引いて架空の基盤分位点を作らない。
+
+追加の `DIY_EXPERIMENT_NEUTRAL_CODE_CACHE=1` はneutral+compiledの両制御が有効な場合のみ、自身の実終了済みcompiler成果から読み取り・hash照合した不変code bytesをsource別に共有する。既定OFF。入力・結果・Module/Store/Instance・入力後Workerを保持しない。新しいsource/policyは別slotになり、factory identity、compiled files所有、digest、配送前/実回収後のhealth照合を維持する。cache ownerはsource Imageやslotを参照せず、強参照cycleを作らない。
+
+追加storageは既存512MiB code budgetに課金し、必須storageの予約が不足した際はcache-held Arcを非blockingに退避する。実行中のpayloadが持つArcとchargeは元process/IO/Job/ACL/profile回収まで残る。退避してもactive pinを未課金にせず、使用中のbytesで予算が埋まる場合は従来どおり拒否する。未使用Nodeのbytesを一括先読みにしない。
+
+実AppContainer lifecycleは入力時/旧診断FDで22.77/13.17秒、製品Host検査も両方式で成功した。異種codeの後選択、fresh state、他factory/policy拒否、fuel/memory制限、許可拒否・scope取消/回復、入力置換・計画変更・保護・失効/回復・EOF実回収を維持する。cache再利用のArc identity、source/payload破棄後にImage/code/filesのWeakがすべて消えること、必須storage優先の退避とactive pin課金を検査した。
+
+同一binary、neutral常時ON、cache OFF→ON→ON→OFF、物理2枠、単段各25ウォーム入力（完了後100ms休止）の結果は次のとおり。全100件が正答とrun/session実回収を通ったが、coldを含めた基盤尾部はなお未達。
+
+| cache | prepared / 25 | 全試行基盤 P95/P99 ms | prepared capture P95 µs | prepared cleanup P95 µs |
+| --- | --- | --- | --- | --- |
+| OFF 1 | 17 | 402.603 / 1104.232 | 11236 | 78312 |
+| ON 2 | 25 | 35.936 / 36.440 | 19 | 13482 |
+| ON 3 | 23 | 207.695 / 213.266 | 14 | 13304 |
+| OFF 4 | 18 | 367.213 / 467.970 | 29464 | 160809 |
+
+captureの反復copy/hash費用は除去できたが、25件はGoal尾部証明ではない。Job CPU6968.75/6359.375/6000/7453.125ms、peak commit115671040/117936128/116056064/114913280bytes、process数91/91/91/90。Host SHA `314fcd539e31a80f980994638599eebbda4379704cac7ae7b34e0a4b5dfeb9e1`、Worker `59997cb048bf62e11aa8c23896e3b8ff8c0126138228336820ad09c0869ac5f1`。report SHAは順に `7fd8aa0f1a29fb014e3dbac1706a5a351959809ff0c1793c05070507e71425d0`、`52c6cf3ea8e033d121d18700ae0cf7d82e9df83bb3f0c1b93c47f0c922180a7f`、`959774a29ad5313f22fac9057fe56c6705228676011552dbb9b113474ba9539d`、`2f7746abc3057830087f6418fdfa4be87b6304b2d47fa281955297f33f7cf437`。
+
+fmt、locked/offline release all-target Clippy、19JS検査が成功した。現在のCore harnessは111成功/9失敗/34ignoredで、9失敗は従来と同じ必須WinHTTP option195/OS12009のplatform不一致。製品の必須設定や期待値は変更していない。
+
+次のCIには既存の共有OFF/ON比較を残したまま、cache ONの両診断lifecycle/製品検査と、neutral常時ONでcache OFF/ONの別ABBAを追加した。単段100件、mixed10構成各10件、逐次/100/20ms各245入力、全24report/accountingとsource/SHA manifestを別directoryに保存する。3segment・45分上限・全既存step・必須集約を維持する。collectorは正常copy/hashと5種類の拒否を合成値で検査し、全PowerShell blockを構文検査した。実CIでの性能・証拠取得はこの候補ではまだ未確認。公式compiled・辞書・networkの適用、初回/再生成、全Goal構成、Core P95、既定採用/main統合は引き続き残る。
+
+### 公式カタログ有効時も実sourceに基づいて準備する（2026-11-14、実験）
+
+従来の `can_prepare_jit` はfactoryにlegacy公式compile cacheがあると一律に対象外にしていた。`officialRoot` が有効な製品Hostでは第三者Nodeもこのfactoryを使うため、公式という出自だけでなく、そのHostの全Nodeが準備対象外になっていた。neutral+compiledの両フラグが有効な実験経路に限り、この一律除外を取り除く。通常既定・従来経路は維持する。legacy cacheの任意bytesを後配送せず、各source自身をcaptured Worker/DLL・同一policyでcompile-onlyした実終了済み成果だけを既存のtyped deliveryで使う。辞書・networkはまだ対象外である。
+
+既存officialベンチマークを全試行の詳細traceに拡張し、公式 `demo.identity` も実行Node数・同一試行区間・経路判定の対象にした。ローカル用の明示officialRootは同じ固定配布sourceを指す。最初の試行では、official構成にspareは存在しないという旧スクリプトの前提で、ON側が待機在庫1個を検出して停止した。ログと成功した旧対照reportは残し、失敗を性能成功に含めない。改訂した比較はofficial実験でも既存と同じspare上限とcloseSession後のprocess/physicalゼロを要求する。実入力Workerを待機在庫へ付け替える変更ではない。
+
+新しい同一binaryのOFF→ON→ON→OFF、6枠、5構成×各5ウォーム入力では全100グラフで正答とrun/session実回収を確認した。OFFではcode cache要求flagも指定するがneutral無効のため実cacheは無効である。以下はNode ready→resolvedから同一guest-callだけを除いたP95ms。5件の尾部はGoal判定に不足する。
+
+| 構成 | OFF 1 | ON 2 | ON 3 | OFF 4 |
+| --- | --- | --- | --- | --- |
+| 第三者相当単段 | 2151.747 | 854.015 | 35.379 | 726.538 |
+| 公式単段 | 1878.187 | 81.421 | 1876.927 | 1383.655 |
+| 第三者相当4段 | 259.070 | 220.536 | 161.121 | 244.318 |
+| 公式4段 | 593.642 | 270.605 | 700.203 | 770.260 |
+| 公式・第三者混合4並列 | 1175.589 | 1208.189 | 318.554 | 3035.165 |
+
+ON2公式4段のNode P99は4597.273ms。coldも除外していない。並列の完全なグラフ区間は2/4/4/4件（各5件中）、ON側の判定preparedは8/12 Node（各20中）で残りはunknown、cold判定0。unknownをpreparedの証明や高速なゼロ値にしない。公式単段はON2で5prepared/0cold、ON3で2prepared/3coldと補充が不安定であり、一律除外の解消だけでは目標に達しない。
+
+Job CPU69234.375/56500/42437.5/60781.25ms、peak commit178737152/178073600/177672192/176738304bytes、process数451/490/491/451（導入・準備・回収を含む）。Host SHA `fc862841ba76834993b0af8426570e178d028f2ce5b4fb7bebfbde2d5b7e5254`、Worker `2ef4ecb0dbfe3212b44bee2b35098c5aa5dfa516f39e0efa692129eedd4bdb01`、固定公式module SHA `105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134`。report SHAは順に `0e1a3b79e61ae570a57b3b26c8efee331f30585ef6809cd59db0195bba8aebba`、`d8ab6fb206230e85fbab9cee98a4c78dd169bd26e4b3fd5c2e24ee168353cd52`、`fa5e8ac947a4392a8b6cd084f8378d1aad717ced68e22fe299eb089e4093b940`、`f251fac8a8cf8bfd5ffe4f0aa3fab5ddcd2e7d9b6789f1b0369ac43e931f16a3`。
+
+公式catalog有効のfactoryで、既存製品Host検査を両診断方式で実行し、mixed code/後配送の証拠、入力置換、空Data/Unicode/ASCII最大長、NoOutput、元の結果予算拒否・回復、計画置換、保護応答fence、失効/回復、close/EOFの実回収が成功した。fmt、release all-target Clippy、CLI/Host/Worker/manager/package build、19JS検査も成功。配布appのcrash検査はローカルでは今回再実行していない。
+
+75efa1cの [CI43556546401](https://github.com/pitapa79/DIY_IME/actions/runs/43556546401) は、neutral区分が新cache検査より前の `Built application and launcher ownership` で失敗した。既存のlauncher強制終了後30秒以内に観測子processが消える検査がtimeoutしたが、当時は生存PID/nameが出ず、原因は未確定である。現候補のcache性能・安全検査をCI合格として扱わない。次回の同じ検査では制限・要求を変えず、timeout時に観測した子processのPID/親PID/作成時刻/nameだけを報告する。所有関係や終了保証を緩めず、ランチャーの修正済みとも主張しない。
+
+次回CIへ公式catalog有効の同じ製品安全検査、別の公式/第三者ABBA（5構成各10件、対照0/1/1/0）を追加する。8report/accountingとsource/hash manifestを別directoryへ保存し、固定公式moduleの実hashも照合する。既存比較・3segment集約・45分上限を維持する。cache候補の全CI証拠、公式経路の安定したcold/refill尾部、辞書・network、全変更/異常条件、Core P95、main/defaultの最終採用は未完了である。
+
+### 公開SHAプロバイダーの先行準備案を棄却（2026-11-14）
+
+公式単段のprepared5件で、同じWorker時計のinput-read終了からengine-setup開始まで20〜29msの区間を観測した。この区間にはコード全体のSHA256照合とframe検証がある。[Microsoftの説明](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptopenalgorithmprovider)でもproviderのopenは比較的高コストとされるため、入力前の空runtime準備時に公開SHA256 algorithm handleだけを開いて保持する候補を作った。コード到着後の実BCryptHash、digest/policy照合、Store/Instanceの新規作成、実終了・回収は省かない。
+
+候補はfmt、locked/offline release all-target Clippy、実CLI/Host/Workerとharnessのbuildを通した。空文字/abcの既知SHA256を交互に反復してone-shot hash状態が混ざらないことと、両private bootstrapで事前module指定が拒否されることを確認。実AppContainer lifecycleは入力時/旧診断FDで20.67/11.72秒で成功した。
+
+同一binary、neutral+immutable code cacheは常時ON、digest先行準備だけOFF→ON→ON→OFF、2枠、各25ウォーム入力で全100件の正答と実回収を確認した。prepared件数24/23/23/23。input-read→engine-setupの同一Worker区間P95は7.240/6.313/8.403/8.149ms、Native main P95は10.065/9.291/12.252/11.613ms。全試行Host-minus-sameGuest P95/P99msは255.494/274.108、438.389/1380.596、231.292/367.307、124.689/168.276だった。coldやcleanup尾部を除外していない。一貫した改善がなく、provider openだけを律速とする仮説を採用しない。区間内の実hash・frame検証などはまだ切り分けが必要である。
+
+Job CPU5343.75/5375/5640.625/5343.75ms、peak commit115167232/116584448/114679808/117784576bytes、process90/90/91/91。実験Host SHA `4b1aafb406ca17aa54b9fabaa4f2fb6cb41ecb39131947fd8334d642b2824f68`、Worker `9cb653354ccb3c67e2a8e98611923fab76bb22e32ae9ab9ce2449021d26134c6`、DLLは上記固定SHA。report SHAは順に `18a99d5d0ee0b3c07270814079455371ddd0c3af800f0904e4f6723daac56d34`、`55aee3f0a10eda7225a24d04161eccd32777fda6934f252bbd848dc891d12906`、`1c25d35d3f465d02f0d7c0837aea65800d8d8f897fde935a5f9575e9c2ebd39c`、`3f153b0bf41407daa54731331a0a11c836ccf36267e0c13d1b74d70e96f438c2`。
+
+未コミット候補のprovider型、private flag、Native分岐、報告flagと専用テストは撤去した。上記は棄却した別binaryの検証記録で、現HEADにこの方式があることや、実行中のde9afff CIでこの方式を検査していることを意味しない。実測と失敗を残し、入力時コード配送・不変性証明・実照合と物理cleanupの次の改善を検討する。
+
+### de9afffの実CIで全56reportを取得（2026-11-14）
+
+[CI43559440619](https://github.com/pitapa79/DIY_IME/actions/runs/43559440619) はprepared/runtime-cache/neutralと必須集約がすべて成功した。前回失敗したlauncher所有検査も3区分で成功したが、以前のtimeout原因が判明・修正されたとは扱わない。neutral artifact14100333922（86,052,383bytes、SHA `6adb5ac19280fde275fcf8454c1e6309750b41734ce387f465e6b1d995fea57d`）を実取得し、GitHub archive digest、source `ec135567bbc81d40e7e3eb24a3a284bdbdb4ee30`、共有24+cache24+公式8の全report/accountingと3manifestの各SHAを照合した。各reportのbinary、mode、試行数、構成数、paced分母、Job accountingを確認し、binary hashは配布manifestとも一致した。
+
+CI Host SHA `bcda27b3cc63ca16ae6a4aa1bcaded7ffff15f1aa78063fbe6c3ed4d1da2f75d`、Worker `be590e16b3a1aa6699879ae49165b2a7e45495f3b513228d82ea3084c7d7fcc9`、DLLは上記固定SHA。cache OFF→ON→ON→OFFの単段100ウォーム入力について、**Node ready→resolvedから同一guest-callを引いた**P95/P99msは10.049/11.231、9.007/10.228、8.808/9.783、10.015/10.511だった。Host受付→公開全体を使うと11.251/12.394、10.076/11.966、9.917/10.920、11.267/12.024であり、異なる区間を同じ指標として混同しない。単段ウォームの部分条件が満たされたことを全Goal達成へ拡張しない。
+
+異種16段はcache比較で全160 Node/回がprepared判定でも、同一Node区間P95/P99msが23.073/503.292、18.495/287.916、124.775/709.196、21.630/458.301だった。公式単段のON2/3 P95は12.537/12.839ms、公式4段は92.845/18.523ms。公式混合並列の完全計測は8/9/10/6件（各10件中）。20msのcache比較では各245入力中、単段正答101/98/102/96、4段57/52/64/57で、残りの置換も分母に保存した。置換の存在だけを失敗や全入力完了の要件に置き換えず、最新入力の正答・安全性と遅延を併記する。多段・公式・初回/補充・Core・main/default等の条件は引き続き未達または未確認である。
+
+### 自前compilerの不変コードを後からread-only mappingで渡す（2026-11-14、実験）
+
+追加の `DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING=1` はneutral+compiled+immutable code cacheも指定した時だけ有効で、既定OFF。親は、元compilerの実終了・IO/ACL/profile回収とsource/policy確認後に作ったprivate code fileをdeny-write/deleteで保持し、そのread-only viewの実bytesをhash照合する。sectionの最大保護は `PAGE_READONLY`、名前・write/execute権限は付けない。キャッシュはcodeだけであり入力・結果・Store/Instanceを含まない。
+
+空のNative stockはコードを持たず、異なるprivate readiness markerを返す。既存のsize・許可・入力世代・取消検査後にだけ、選択した1つのコードmappingを、**元のプロセスhandle**へ `FILE_MAP_READ` だけでduplicateする。PIDで開き直さず、プロセスhandleの借用はIO threadのjoinまでRunningが保持する。通常のresource/retained callbackはそのhandleを使用しない。public API・guest wire・Node capabilityは変更しない。
+
+Native側はこのprivate Parent capabilityをread-onlyでmapし、frameの構文・strategy・fuel/memory policyを従来どおり確認してから、fresh Store/Module/Instanceを作る。mapping経路では毎回の全bytes配送と再hashを行わず、親の実hash照合と**連続した不変性の所有**がその代わりを担う。packageのhash・自己申告・任意precompiled bytesに信頼を与える変更ではない。従来bytes経路は各回のhash検査を維持する。入力前コード選択、複数Node同居、入力後Worker再利用、早いprofile削除は行わない。
+
+追加viewの最悪resident分も既存512MiB code budgetへ保守的に課金する。active payloadのmapping・file・source・予算pinは元process/IO/Job/ACL/profile回収まで保つ。キャッシュ退避でもactive pinは解放しない。mapping/fileの追加pinを先に落としてからCodeFilesがdirectoryを実削除するfield順序を明記し、最終source破棄後に実directoryも消えることを検査した。mappingハンドルは子の実終了で閉じ、Native viewはModule破棄後にunmapする。
+
+実Windows unitで、hash/長さ/handleの不正と通常file handleの拒否、元handleを誤ってcloseしないこと、write openの拒否、親のfull mapping handleと子へ渡すread-only duplicateの両方でwrite viewが拒否されることを確認した。実AppContainer lifecycleは入力時/旧診断で16.20/9.25秒で成功し、異種codeの後選択、fresh state、標準compiler fallback、fuel/memory制限、不一致factory/policy、配送拒否、取消/回復、pinと実file回収を維持した。
+
+製品Hostの通常/公式catalog×入力時/旧診断の4条件も成功した。mixed実codeの経路証拠、入力置換、空Data/4096ASCII/1024かな・emoji/NoOutput、既存16KiB結果予算拒否と回復、計画置換、保護後の旧応答拒否、権限失効/回復、close/EOFの元process実回収を確認した。fmt、locked/offline release all-target Clippy、CLI/Host/Worker build、19JS検査が成功。Coreは112成功/9失敗/34ignoredで、9失敗は既存のWinHTTP option195/OS12009不一致。
+
+同一binaryのmapping OFF→ON→ON→OFF、neutral/cache常時ON、2枠、各25ウォーム入力は全100件の正答・実回収を通ったが、全体尾部は改善しなかった。
+
+| mapping | prepared / 25 | Node ready→resolved minus same guest P95/P99 ms | prepared Native main P95 ms | prepared input→engine gap P95 µs |
+| --- | --- | --- | --- | --- |
+| OFF 1 | 24 | 36.295 / 245.550 | 11.947 | 8107 |
+| ON 2 | 22 | 264.669 / 369.567 | 2.517 | 28 |
+| ON 3 | 18 | 925.062 / 1448.598 | 2.665 | 22 |
+| OFF 4 | 25 | 29.892 / 30.561 | 7.494 | 4863 |
+
+初回Host-minus-sameGuestは36.503/89.783/33.707/39.155ms。ウォーム全試行のHost側P95/P99は39.342/249.129、313.495/371.096、927.105/1450.595、31.531/32.327ms。coldとcleanupを除外せず、prepared部だけを達成値にしない。Job CPU5125/5156.25/4968.75/4796.875ms、peak commit116670464/114536448/114622464/115986432bytes、process数は各91。Native内の配送・検証費用は減ったが、補充と物理cleanupを含む全体改善の証明は残る。
+
+実験Host SHA `645812faeb2ea4949b022d5b9fb3be6680ae8859ac88c663564a85f4378dd403`、Worker `8379d2f933c14088ca7801ba36658c1d3967abd7631447fed848e95643cd0962`、DLLは上記固定SHA。report SHAは順に `f017451ede475a25da4b17e114e17fdcc05145d2397b290727e9521abcb431f4`、`1e638d678a94180c126da351e554e71c980d66cd40faeed39a6611908ba4d1e1`、`130a70fc08c32488130f0be9db178a005f9c05da0b43fc37165b98d0cca1fae7`、`e1421e7e0d5048e1ceffb229e5703c293ad67324348c95890669cfa82ddc136f`。
+
+追加の従来経路回帰ではcompiled準備の5秒待ちが2回、raw準備の5秒待ちが1回失敗し、元Worker開始前/入力前の取消と実回収で終了した。入力時診断の実検査は6.58秒で成功。これらを全ローカル合格にせず、失敗ログを残して、上限を変えない同じ回帰検査をCIへ明示追加した。利用上限による自動承認レビュー失敗で一度実行できなかったが、案内時刻を過ぎて同じ承認経路で実行した。承認確認の迂回はしていない。
+
+直前CIのneutral区分は36分12秒だったため、新mappingの実検査・比較は45分上限の第4区分へ分離した。既存3区分の全step・条件・上限を残し、同じ必須集約が4区分すべての成功を必要とする。mapping区分は両診断/両catalogの製品検査、元のcompiled/raw/診断回帰、単段100・mixed10構成各10・逐次/20/100ms各245入力・公式5構成各10を同一runner ABBAで比較する。全32report/accountingとsource/SHA manifestを別artifact directoryへ保存する。collectorの合成正常32件+manifestと欠落・binary/control不一致・短いrecord/pacedの拒否を確認した。これを実性能証拠には使わない。新方式のCI・広い構成の尾部、辞書/network適用、Core P95とnormal main/defaultの採用は未完了である。
+
+### Read-only mappingの実CIと残る回収競合（2026-11-14）
+
+e18c0f7の [CI43583600922](https://github.com/pitapa79/DIY_IME/actions/runs/43583600922) は4区分と必須集約がすべて成功した。mappingの両診断/両catalog安全検査と、元の5秒準備制限を維持したcompiled/raw/診断回帰も成功した。以前のローカル準備失敗の原因を解明したことにはならない。artifact14110900390（74,066,769bytes、SHA `19d7c76aae2533cbc04b3838462aa392f1dd95302727d79481c6118ff3bcb675`）を実取得し、source `11e11ebbbddc1b1fd714ee72102ec6cad0dc0071`、全32report/accountingとmanifestの各SHAを照合した。各reportのmode・実code差・100/10/35試行・1/10/2/5構成・paced分母・Job accounting・配布binaryとの一致も確認した。この時点で同runの別neutral区分の56詳細ファイルは未取得である。
+
+CI Host SHA `b2b0e0c7f8e1076afb2f3d29c8a1b888afb20faee542df9f5bf7b95abe06a66a`、Worker `d04498f17ad2c846282652681c3f9b3c749f37aff9672bbdc04ce9a2a787face`、DLLは上記固定SHA。neutral/cache常時ON、mapping OFF→ON→ON→OFF、単段各100ウォーム入力は全件preparedで、同一Node ready→resolved minus same guest-call P95/P99msが11.971/13.324、9.789/12.152、9.919/11.920、11.381/12.052。単段の部分条件は満たした。Host全体は13.223/17.247、11.097/13.451、11.791/13.554、12.671/13.317msで、別区間へ置き換えない。初回Host-minus-sameGuestは13.863/13.380/13.284/13.489ms。
+
+異種16段は各160 NodeがpreparedでP95/P99msが43.170/102.024、21.549/46.129、22.973/206.612、22.532/374.795。ONの公式単段P95は14.788/12.600ms、公式4段は22.493/24.857ms。第三者4並列の完全計測は9/7/7/9件、公式混合4並列は9/9/5/9件（各10件中）で、unknownと欠測をpreparedやゼロとして補わない。4段20msは各245入力中、正答36/47/49/37、置換208/198/196/208。OFF1にはbusy admission拒否1件もあり、driverのfailed集計はこの拒否を含む。これを実行済みguestの故障1件とは解釈しない。置換は原要件で許容されるが、分母・最新正答・実回収・資源費を保持する。単段/mixed Job CPU秒は7.438/38.875、7.500/38.281、7.375/36.922、6.766/37.969。多段・公式・初回・Core・main/default等はまだ達成していない。
+
+前回de9の異種16段cache比較を同一Nodeの区間で分解すると、cleanup P99µsは495599/281266/703813/449569、全体P99は503292/287916/709196/458301。最大例は全体1272335µs中cleanup1267352µs、Native main1858µsだった。親回収が大きな外れ値を占めるが、profile削除だけが原因とは断定できない。既存job132339596992の20ms以上だけを出す診断1134件では、1058件でJob+ACLがprofile削除より長く、ACL mutex待ちP95/P99は522366/912708µsだった。これは**job全体の選択された遅い診断**であり、全呼出しや特定構成の分位点ではない。旧stderrにはNode識別がないため、近い時間だけでtraceと対応付けない。
+
+次の既定OFF候補 `DIY_EXPERIMENT_BATCHED_CODE_ACL=1` は継承ACL実験もONの時だけ、同じCodeFilesへの競合中に既に溜まったSID更新をまとめる。固定sleep・別の常駐threadを追加しない。待機queue64件と処理中batch64件を上限とし、callerは自分の要求が同期完了するまで元profile/leaseを所有する。保持するのは最大68bytesのSIDコピー・操作・完了状態だけで、入力・結果・Worker ownerをqueueへ移さない。SetEntriesInAclへ渡す権限、名前指定の継承伝播、対象files数の検査は従来どおり。SID重複を拒否し、batch失敗/panicはhealthを不可逆に失敗へ落として新規grantを拒否する。失敗後もrevokeは試みる。結果公開前の元process/IO/Job/ACL/profile回収を省略しない。
+
+候補のfmt、release all-target Clippy、CLI/Host/Workerとharness buildが成功。競合4要求の一括完了と個別操作保持、失敗後のgrant拒否/revoke続行、panicでの完了/health維持、実Windowsで3SIDのroot/子fileへの同じread/execute権限・個別取消・重複拒否・実profile/file回収の4単体検査が成功した。最初の単体は合成file名が既存cleanup whitelist外だったため最後の回収assertで失敗した。失敗ログを残し、名前を許可済みのnode.wasm/node.cwasmへ修正した。製品cleanupを緩めず、最初の合成file2件と空directoryも正確に照合して削除した。実AppContainer lifecycleは両診断22.265/14.734秒、通常/公式catalog×両診断の製品検査4条件も成功した。この候補の実CI・既定採用はまだ未確認である。
+
+その後、同じCI43583600922のneutral artifact14110582493（86,070,083bytes、SHA `8644859806ed85d48485a464603594e6ef6b9a21d9f749c278ecd76315e4c5aa`）も取得した。sourceは同じ `11e11ebbbddc1b1fd714ee72102ec6cad0dc0071` で、共有24+cache24+公式8の全SHAと3manifestを照合し、各reportの条件・分母・Job値・bundle一致も確認した。この区分のHost SHA `2cb4a8dac9d4661dd5e617722b00d48da055701605ff5926b0431777184d36ef`、Worker `f1ed83e679c59766e638a85605710933623531de983c2589e2ec7a8ba5e81b05` はmapping区分のbinaryと異なるため、異なるrunnerの値を同一binary比較として混ぜない。新runは合計88 report/accountingと4manifestを実取得できた。
+
+### ACL一括更新の通常Host予備比較（2026-11-14）
+
+同一候補binary、neutral/cache/mapping常時ON、batch OFF→ON→ON→OFF、単段2枠・各25ウォーム入力の100件はすべて正答とrun/session実回収を通った。以下の全試行値はcoldも含む。
+
+| batch | prepared / 25 | Node ready→resolved minus same guest P95/P99 ms | Host全体 minus same guest P95/P99 ms |
+| --- | --- | --- | --- |
+| OFF 1 | 14 | 775.321 / 962.626 | 819.012 / 977.578 |
+| ON 2 | 25 | 24.897 / 50.921 | 26.615 / 54.421 |
+| ON 3 | 24 | 32.128 / 285.993 | 37.092 / 290.225 |
+| OFF 4 | 20 | 1356.502 / 1937.387 | 1398.233 / 2047.752 |
+
+初回Host-minus-sameGuestは1665.940/51.580/43.767/74.795ms。Job CPU8187.5/4859.375/5140.625/6515.625ms、peak commit115961856/116494336/117067776/115597312bytes、process91/90/91/90。2枠では同一cacheへの同時ACL要求も少なく、OFF側のcoldと大きな環境変動がある。この短い比較だけでbatch自体の尾部改善・一括適用回数・Goal達成を認定しない。
+
+追加の6枠・実異種code・10構成（直列1/2/4/8/16、同code4段、並列/合流/skip/未使用codeを含む）×各3ウォーム入力は全120グラフで正答・run/session実回収を通った。異種16段の同一Node区間P95/P99msは120.619/165.169、118.601/397.551、109.931/174.354、127.296/218.588（各48 Node prepared）。4並列は489.541/489.541、238.460/238.460、158.393/158.393、304.094/304.094msで、完全なgraph計測は3/3/2/3件（各3件中）。欠測とunknownは残す。異種4直列はP95が67.109/265.687/131.234/86.474msでONが悪化している。Job CPU31500/43640.625/43156.25/40093.75ms、peak commit160669696/161255424/147894272/149041152bytes、process697/699/696/699。並列に改善の兆候はあるが、直列・CPU・全体尾部の一貫した改善は未証明である。
+
+候補Host SHA `4ddd0d5da56b96c41b51acdecb0a4e888baabe446564e06b236fba611a9f7e21`、Worker `b815e17dda4c601aaa4dcd37b5576e4133334926de5c5755e800aa3427d04bd7`、DLLは上記固定SHA。単段report SHAは順に `497e0244f72329bf6856ff2259a308071b35a2a57497f226abe2bf13402b75b9`、`f9a92dce5eff02d69e4c97fee994e41ebf5d2ec277f3d3a4ed234dbca9b9ec9b`、`784ec9a379bb1bfb7afd7cd8a84155d3d5b8d1364908ac7d03ea966e0fd07099`、`accf0692433d8b406c3c70039e7560d114cf5bf0a29958956d94c0102ee05acf`。mixed reportは `7c5c04b1e97e1a48aa4b9cf10e10177f6b2d018e0b498b4782747f1f74c2eb71`、`464c55856378e3905f23bbc9a605d468507d377315e39e67156ab5aae1d86723`、`1066c4382d9307b47135b49655ab1e2439a18806a4dbea01722e716cce43cdb0`、`19938ddf4e3e08d14ebb26c127bd999ef01ee6f0854cad98fd38f8b55f68e7dc`。
+
+候補の全Core検査は116成功/9既知WinHTTP option195/OS12009失敗/34ignoredで、全ローカル合格とはしない。19JS検査・スクリプト構文・diff検査は成功した。既存4区分・全step・45分上限・必須集約をそのまま残し、第5区分で両診断/両catalogと元の回帰を実行し、単段100・mixed10構成各10・逐次/20/100ms・公式5構成各10を同じrunner内でbatch ABBA比較する。mapping/cache/neutralは常時ONに固定する。追加32report/accounting・source/SHA manifestのcollectorは合成正常copy/hashと7種類の拒否を通し、40 PowerShell blockの構文と元4区分の厳密な保存を確認した。これは次の実CIの成功・採用やGoalの完了を証明するものではない。
+
+公開前の自己点検で、batchのhealthに加えて従来のCodeFiles healthもlease前に明示確認するguardを追加した。実ACL単体には、実leaseの付与/取消後に従来healthを失敗へ落とし、新しいSID権限を一切付けずworker-assetで拒否する検査を加えた。最終版を再buildし、fmt/Clippy、4単体、実lifecycle両診断15.485/15.250秒、製品plain/official×両診断43.000/36.281/31.359/27.313秒が成功。全Coreも116成功/同じ9失敗/34ignoredだった。最終Host SHA `e1a3c45a70eb67de329b17eb8c332bc243bb3f1be54e83de7a78a21abb23d3a8`、Worker `f1a05267802db8ac1067ff9c535dc68b9f8ffe070777d428714f67d4415c6fed`。上記100単段/120mixedの性能値はこのguard前の異なるprototype binaryによる予備値であり、最終版の性能証明へ流用しない。最終候補の性能と広い回帰は次の実CIで確認する。
+
+### ACL一括更新を実CI後に棄却（2026-11-14）
+
+95c426eの [CI43588754641](https://github.com/pitapa79/DIY_IME/actions/runs/43588754641) は5区分と必須集約がすべて成功した。source `0f3e64b7f42749beda85a1efb6a86bc76f71f5d2` の実artifactを取得し、archive・各report/accounting・manifestのSHAを照合した。ACL区分14112281446（SHA `476329235596507af18df905438311a73c9f20424a90d6f5289b5245be8e3fad`）32件、mapping区分14112241757（`6aa65de7197014a4406479ca9a5b85a35a3594bc837623d33a2c70257f09f3b7`）32件、neutral区分14112387460（`690763d101fc8423b00d9ad8f03244032eb0e490f9e975c8fd8a64e55ee90d6d`）56件、計120件と5manifestを実照合した。各区分の実binary、mode、実code差、試行/構成/入力分母、Job accountingも確認し、異なるrunnerのbinaryや値を混ぜていない。
+
+ACL runnerの同一binaryはHost SHA `797f1eddeea52d408fcc8809ea1ce976b1e022e79676d242d50fdea39249bcb7`、Worker `a51a01fca93bfc1a74cd1d203ad60d8c50793730ce7460080f30e26984972103`、DLLは固定SHA。neutral/cache/mapping常時ON、batch OFF→ON→ON→OFFの単段100ウォーム入力はprepared100/100/100/99件で、**全試行の同一Node ready→resolved minus same guest-call**は次のとおり。
+
+| batch | 単段 P95/P99 ms | 異種16段のNode P95/P99 ms | mixed Job CPU 秒 |
+| --- | --- | --- | --- |
+| OFF 1 | 9.584 / 10.063 | 20.777 / 24.672 | 39.031 |
+| ON 2 | 9.292 / 10.058 | 23.323 / 33.996 | 38.781 |
+| ON 3 | 9.670 / 10.569 | 21.635 / 87.841 | 37.359 |
+| OFF 4 | 9.820 / 11.086 | 21.868 / 31.487 | 37.906 |
+
+16段は各10グラフ/160 Nodeすべてprepared。第三者4並列のNode P95/P99msは34.613/37.000、34.842/35.518、74.479/75.366、35.372/37.273、完全graph計測は9/8/8/8件（各10件中）。公式混合4並列は61.299/74.662、205.953/206.159、194.823/210.220、51.957/55.812msで、完全計測10/9/10/10件。unknownや欠測をゼロにせず、ON3のcold2 Nodeも残した。単段Job CPU秒は7.266/7.219/7.031/6.813、mixed peak commit126255104/126894080/125980672/125972480bytesで、CPU/RAMの一貫した大幅改善もない。
+
+20msの単段正答は74/72/76/68件、4段は37/39/38/39件（各245入力）。4段100ms正答242/222/221/205件。置換も記録し、全入力完了の新要件を追加しない。OFF4の4段20msはbusy拒否1件を含み、driverのfailed1はこの拒否である。pacedのphysical-endは総応答であり、別計測のguest分位点を引いてNode指標にしない。
+
+小さな合成ACL groupの中央値削減は、通常Hostの広い比較へ安定して移らなかった。単段はOFFも目標の部分条件を満たし、16段・公式混合はONで尾部が悪化する。よって**一括更新を採用せず、私的flag・coordinator・専用report control・方式専用比較区分を撤去する**。新方式を除いた実行コードとCIはe18c0f7と一致し、元4区分の全step/条件/45分上限/必須集約と全残存機能の安全検査は保持する。方式の記録や実測を消さず、Goalや数値条件を縮めない。撤去後のfmt、release all-target Clippy、CLI/Host/Worker/harness buildは成功し、Coreは112成功/既知WinHTTP195-OS12009の9失敗/34ignored。最新撤去HEADのCIは別途必要である。
+
+### 次の律速調査：起動imageとDLLの権限を切り分ける（実験のみ）
+
+95c426eの検証済みWorkerを、保護されたowner-only DACLの新規コピーから、製品のexecute/Job/token/元process・IO終了確認で起動した。最初は不正引数でDLLを読む前に終了させ、追加ACLなし、directoryのみ、全asset、追加ACLなし反復の4条件すべてでAppContainerを確認したWorker入口まで到達した。各試行はfresh profileで、ACL取消・profile・正確なコピーの実削除も確認した。これはNode実行や起動性能の証明ではない。
+
+次に、Wasmコード・入力・Store/Instanceを渡さず、空runtimeのreadiness後にEOFとする5条件を測った。DLLとexeはそれぞれowner-onlyの保護DACLとdeny-write/delete pinで保持した。追加ACLなし、directoryのみ、追加ACLなし反復は `runtime read-only file unavailable` で拒否。**DLLだけ許可、全asset許可は、ともに同じ空runtime readinessへ到達した**。全5件で元process/IO/Jobを実回収してからACL/profileと2コピーを削除した。現在の動的DLLに必要なread権限を単純に省略できる結果ではない。製品の権限やbootstrapは変更していない。
+
+固定済み公式C API archive（SHA `8b461d9dc12b076d0414b1023433bbb2dc08d3b1c0f0a156853ede35f0147802`）を検査すると、full静的libraryは82672010bytes、minは2753274bytesだった。[公式C API資料](https://docs.wasmtime.dev/c-api/)に静的リンク方法があるが、minのconf.hはcompiler/Winch/GC/threads等を無効としており、汎用Node用の代用品にはしない。GNU Rustへmin libraryを直接リンクする小プローブはrust_eh_personalityの重複と__chkstk未解決で失敗し、実行していない。stdを二重にリンクしない小プローブと、[LLVMのx64 stack probeのABI説明](https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/builtins/x86_64/chkstk.S)に基づく既存probe symbolのaliasではリンクできたが、生成物の実行は出力なしで0xC00000FD終了した。終了地点は未特定で、Wasmも入力も実行していない。例外処理の強制置換やstack検査の無効化で通したことにせず、static相互運用は未検証として採用しない。製品のtoolchain・runtime・公開APIも変更していない。

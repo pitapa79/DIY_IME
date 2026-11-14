@@ -7,15 +7,16 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PhaseProfiler } from './trace-phase-profile.mjs';
 import { measureHostInput } from './host-input-scenarios.mjs';
+import { graphOverhead, wasmCodeSha256 } from './wasm-host-overhead.mjs';
 
 const [host, packageTool, worker, dll, wasm, count = '10', slots = '4', scenario = 'all', alternateWasm] = process.argv.slice(2);
 const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
-  Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 16 &&
-  ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
-  (scenario !== 'mixed' || alternateWasm),
-  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
+  Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 18 &&
+  ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed', 'unused-mixed'].includes(scenario) &&
+  (!['mixed', 'unused-mixed'].includes(scenario) || alternateWasm),
+  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed|unused-mixed] [ALT_WASM]');
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const tempParent = realpathSync(tmpdir());
@@ -23,11 +24,16 @@ const root = mkdtempSync(join(tempParent, 'diyime-wasm-scaling-'));
 const dataRoot = join(root, 'data'), configPath = join(root, 'host.json');
 const dictionaryBytes = Buffer.from('reading\tsurface\tweight\nこうすい\t降水\t90\n');
 const usesOfficial = scenario === 'official' || scenario === 'dictionary';
+const freshGraph = scenario === 'mixed' && process.env.DIY_WASM_SCALING_FRESH_GRAPH === '1';
 const first = readFileSync(wasm);
 const second = alternateWasm ? readFileSync(alternateWasm) : Buffer.concat([first, Buffer.from([0, 2, 1, 120])]);
 assert(!first.equals(second), 'alternate fixture must have a distinct module digest');
 const modules = [first, second, first];
+const moduleCodeSha256 = modules.map(wasmCodeSha256);
+if (alternateWasm) assert.notEqual(moduleCodeSha256[0], moduleCodeSha256[1],
+  'alternate fixture must differ in executable code, not only custom sections');
 const kinds = ['fixture.wasm.chain', 'fixture.wasm.chain-alt', 'fixture.wasm.join'];
+const measuredKinds = usesOfficial ? [...kinds, 'demo.identity'] : kinds;
 const port = { id: 'in', dataType: { id: 'text-packet', version: 1 }, language: 'ja-Latn', root: 'text' };
 function command(args) {
   const result = spawnSync(packageTool, args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
@@ -94,7 +100,7 @@ function connect(executable = host, configuration = configPath) {
     if (request) { pending.delete(reply.id); request.resolve(reply); }
   });
   return {
-    async call(operation) {
+    async call(operation, { allowBusyAdmission = false } = {}) {
       const id = String(++next), bytes = Buffer.from(JSON.stringify({ id, operation }));
       const header = Buffer.alloc(12);
       header.writeUInt32LE(bytes.length);
@@ -105,6 +111,9 @@ function connect(executable = host, configuration = configPath) {
           timer = setTimeout(() => reject(Error(`Host deadline: ${operation.method}`)), 120000);
           child.stdin.write(Buffer.concat([header, bytes]), error => { if (error) reject(error); });
         });
+        if (allowBusyAdmission && operation.method === 'run' && reply.ok === false && reply.error?.code === 'busy') {
+          return { admissionRejected: 'busy' };
+        }
         assert.equal(reply.ok, true, JSON.stringify(reply.error));
         return reply.data;
       } finally { clearTimeout(timer); pending.delete(id); }
@@ -126,10 +135,26 @@ function verify(snapshot, targets, text) {
   for (const target of targets) {
     const output = snapshot.result.ports.find(p => p.endpoint.node === target.node && p.endpoint.port === target.port);
     if (text === null) assert.equal(output?.value.status, 'no-output');
-    else assert.deepEqual(output?.value.packet.root, typeof text === 'string' ? { type: 'text', text } : text);
+    else {
+      assert(output?.value?.packet, `missing benchmark output: ${JSON.stringify(snapshot)}`);
+      assert.deepEqual(output.value.packet.root, typeof text === 'string' ? { type: 'text', text } : text);
+    }
   }
 }
 async function measure(client, spec) {
+  const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
+  const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
+  const neutralOfficial = scenario === 'official'
+    && process.env.DIY_EXPERIMENT_NEUTRAL_JIT_POOL === '1'
+    && process.env.DIY_EXPERIMENT_COMPILED_JIT === '1';
+  const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
+    && physicalSlots >= 2 && (neutralOfficial
+      || ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario));
+  const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
+  const executedNodeCount = spec.shape === 'skip' ? Math.min(nodeCount, 1) : nodeCount;
+  const eligibleNodes = nodeCount + (spec.unused ?? 0);
+  // Activation has no run targets yet, so unused eligible nodes can reserve spares.
+  const spareLimit = Math.min(allNodes ? eligibleNodes : requestedSpares, physicalSlots - 1);
   const { graph, targets } = graphFor(spec);
   const prepareStart = performance.now();
   let review = await client.call({ method: 'prepare', graph });
@@ -145,42 +170,116 @@ async function measure(client, spec) {
   if (review.missing.length) {
     await client.call({ method: 'approve', reviewId: review.reviewId, ids: review.missing.map(x => x.id), save: false });
   }
+  const activationStarted = performance.now();
   const active = await client.call({ method: 'activate', reviewId: review.reviewId });
   assert.equal(active.phase, 'ready');
-  const prepareMs = performance.now() - prepareStart;
+  const activatedAt = performance.now();
+  const activationMs = activatedAt - activationStarted;
+  const prepareMs = activatedAt - prepareStart;
+  const firstInputDelayMs = process.env.DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE === '1' ? 0 : 200;
+  let initialPreparation;
+  if (preparedExperiment && firstInputDelayMs > 0) {
+    // Model a delay between plan activation and the first input.
+    await new Promise(resolve => setTimeout(resolve, firstInputDelayMs));
+    const status = await client.call({ method: 'status' });
+    assert.equal(status.physical.physicalJobs, spareLimit);
+    assert(status.workerProcesses <= spareLimit, 'started workers exceed reserved spares');
+    initialPreparation = { eligibleNodes, reservedJobs: status.physical.physicalJobs,
+      startedWorkers: status.workerProcesses };
+  }
   const expectedPlanVersion = active.state.activePlanVersion;
   async function submit(text, revision) {
     if (revision > 1) await client.call({ method: 'invalidateInput', expectedPlanVersion, revision });
-    const { receipt } = await client.call({ method: 'run', request: { startKey: String(revision),
-      expectedPlanVersion, targets, input: { revision, text, mode: 'compose' } } });
-    return receipt.key;
+    const admitted = await client.call({ method: 'run', request: { startKey: String(revision),
+      expectedPlanVersion, targets, input: { revision, text, mode: 'compose' } } }, { allowBusyAdmission: scenario === 'paced' });
+    return admitted.admissionRejected ? admitted : admitted.receipt.key;
   }
   const read = async key => (await client.call({ method: 'getRun', key })).snapshot;
+  async function verifyIdle(allowSpare) {
+    const status = await client.call({ method: 'status' });
+    if (allowSpare) {
+      assert(status.workerProcesses <= spareLimit, 'prepared processes exceed the spare limit');
+      assert(status.physical.physicalJobs <= spareLimit, 'physical reservations exceed the spare limit');
+    } else {
+      assert.equal(status.workerProcesses, 0);
+      assert.equal(status.physical.physicalJobs, 0);
+    }
+  }
   if (scenario === 'paced') {
     let revision = 0;
+    const independentInput = process.env.DIY_WASM_SCALING_INDEPENDENT_INPUT === '1';
+    const routeCounts = new Map();
+    const countRoutes = async (interval, pending) => {
+      const events = [];
+      let dropped = false;
+      let after = '0';
+      for (;;) {
+        const { trace } = await client.call({ method: 'traceRead', after, limit: 256 });
+        dropped ||= trace.dropped !== 0;
+        if (trace.events.length === 0) break;
+        events.push(...trace.events);
+        after = trace.events.at(-1).sequence;
+      }
+      await client.call({ method: 'traceStop' });
+      const accepted = events.filter(event => event.event === 'run-accepted');
+      const admitted = pending.filter(record => !record.admissionRejected);
+      assert(accepted.length <= admitted.length);
+      if (!dropped) assert.equal(accepted.length, admitted.length);
+      if (!routeCounts.has(interval)) routeCounts.set(interval, { prepared: 0, cold: 0, unknown: 0, incompleteRounds: 0,
+        preparedStages: 0, coldStages: 0, unknownStages: 0, allStagesPrepared: 0, attempts: 0, admitted: 0, admissionRejected: 0 });
+      const counts = routeCounts.get(interval);
+      counts.attempts += pending.length;
+      counts.admitted += admitted.length;
+      counts.admissionRejected += pending.length - admitted.length;
+      if (dropped) counts.incompleteRounds++;
+      counts.unknown += admitted.length - accepted.length;
+      for (const run of accepted) {
+        const runEvents = events.filter(event => event.run === run.run && event.plan === run.plan && event.input === run.input);
+        const nodes = runEvents.filter(event => event.event === 'node-started' && kinds.includes(event.nodeKind));
+        const routes = nodes.map(({ node }) => {
+          const nodeEvents = runEvents.filter(event => event.node === node);
+          if (nodeEvents.some(event => event.event === 'worker-process-started')) return 'cold';
+          if (!dropped && nodeEvents.some(event => event.worker?.phase === 'guest-call')) return 'prepared';
+          return 'unknown';
+        });
+        counts[routes[0] ?? 'unknown']++;
+        for (const route of routes) counts[`${route}Stages`]++;
+        if (routes.length === spec.count && routes.every(route => route === 'prepared')) counts.allStagesPrepared++;
+      }
+    };
     const steps = Array.from({ length: 7 }, (_, i) => {
       const text = `paced-fixture-${i}`;
       return { id: String(i), text, expected: text };
     });
     const pacing = await measureHostInput({ steps, submit: text => submit(text, ++revision),
       read, ended, verify: (snapshot, text) => verify(snapshot, targets, text),
-      summarize: distribution, pollMs: 5, rounds: samples });
-    const status = await client.call({ method: 'status' });
-    assert.equal(status.workerProcesses, 0);
-    assert.equal(status.physical.physicalJobs, 0);
+      summarize: distribution, pollMs: 5, rounds: samples,
+      independentInput,
+      ...(preparedExperiment ? { beginRound: () => client.call({ method: 'traceStartDetailed' }), finishRound: countRoutes } : {}) });
+    if (preparedExperiment) {
+      for (const result of pacing) result.workerRoutes = routeCounts.get(result.intervalMs);
+    }
+    await verifyIdle(preparedExperiment);
     await client.call({ method: 'closeSession' });
-    return { ...spec, prepareMs, pacing };
+    if (preparedExperiment) await verifyIdle(false);
+    return { ...spec, prepareMs, activationMs, initialPreparation, independentInput, pacing };
   }
   const records = [];
   const paired = scenario === 'single-detailed';
-  for (let revision = 1; revision <= samples + 2; revision++) {
+  const graphTrace = ['mixed', 'parallel', 'join', 'unused-mixed', 'official'].includes(scenario) || (preparedExperiment && scenario === 'all');
+  const traceEachSample = paired || graphTrace;
+  const lastRevision = freshGraph ? 1 : samples + 2;
+  for (let revision = 1; revision <= lastRevision; revision++) {
+    if ((preparedExperiment || scenario === 'mixed') && revision > 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     if (revision === 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'begin', epochMs: Date.now() }));
     }
     if (revision === samples + 2 && process.env.DIY_WASM_SCALING_SAMPLE_MARKERS === '1') {
       console.error(JSON.stringify({ marker: 'end', epochMs: Date.now() }));
     }
-    if (paired || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
+    if (traceEachSample || revision === samples + 2) await client.call({ method: 'traceStartDetailed' });
     const text = spec.shape === 'dictionary' ? 'kousui' : `scaling-fixture-${revision}`;
     const start = performance.now();
     const key = await submit(text, revision);
@@ -197,10 +296,9 @@ async function measure(client, spec) {
     if (spec.shape === 'dictionary') expected = dictionaryGrant
       ? { type: 'choice', options: [{ value: { type: 'text', text: '降水' }, score: 90 }] } : 'こうすい';
     verify(snapshot, targets, expected);
-    const status = await client.call({ method: 'status' });
-    assert.equal(status.workerProcesses, 0);
-    assert.equal(status.physical.physicalJobs, 0);
+    await verifyIdle(preparedExperiment);
     const record = { admissionMs: admitted - start, resultMs: finished - start, confirmedIdleMs: performance.now() - start };
+    if (revision === 1) record.activationToInputMs = start - activatedAt;
     if (paired && revision < samples + 2) {
       const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
       assert.equal(trace.dropped, 0);
@@ -219,9 +317,54 @@ async function measure(client, spec) {
       const hostUs = Number(BigInt(published.atUs) - BigInt(accepted.atUs));
       assert(guestUs >= 0 && hostUs >= guestUs);
       Object.assign(record, { hostUs, guestUs, hostMinusGuestCallUs: hostUs - guestUs, trace });
+      if (preparedExperiment) {
+        // A prepared launch precedes this invocation and has no per-run Host launch span.
+        record.preparedWorker = !trace.events.some(event => sameRun(event) && event.event === 'worker-process-started');
+        const cleanupStarted = only(event => sameRun(event) && event.event === 'worker-cleanup-started');
+        const cleanupFinished = only(event => sameRun(event) && event.event === 'worker-cleanup-finished');
+        const physicalEnded = only(event => sameRun(event) && event.event === 'physical-ended');
+        assert(BigInt(cleanupStarted.sequence) < BigInt(cleanupFinished.sequence), 'invalid Worker cleanup interval');
+        assert(BigInt(cleanupFinished.sequence) < BigInt(physicalEnded.sequence), 'physical end preceded Worker cleanup');
+        assert(BigInt(physicalEnded.sequence) < BigInt(published.sequence), 'result preceded physical end');
+        record.workerCleanupUs = Number(BigInt(cleanupFinished.atUs) - BigInt(cleanupStarted.atUs));
+      }
+      await client.call({ method: 'traceStop' });
+    } else if (traceEachSample && revision < samples + 2) {
+      const { trace } = await client.call({ method: 'traceRead', after: '0', limit: 256 });
+      let page = trace;
+      while (page.events.length === 256) {
+        const after = page.events.at(-1).sequence;
+        ({ trace: page } = await client.call({ method: 'traceRead', after, limit: 256 }));
+        assert(page.events.every(event => BigInt(event.sequence) > BigInt(after)), 'trace cursor did not advance');
+        trace.events.push(...page.events);
+        trace.dropped = Math.max(trace.dropped, page.dropped);
+      }
+      const complete = trace.dropped === 0;
+      const nodes = trace.events.filter(event => event.event === 'node-started' && measuredKinds.includes(event.nodeKind));
+      if (complete) assert.equal(nodes.length, executedNodeCount, 'graph did not execute the expected Wasm nodes');
+      let cold = 0, prepared = 0;
+      for (const { node } of nodes) {
+        const events = trace.events.filter(event => event.node === node);
+        if (events.some(event => event.event === 'worker-process-started')) cold++;
+        else if (complete && events.some(event => event.worker?.phase === 'guest-call')) prepared++;
+      }
+      record.workerRoutes = { cold, prepared, unknown: executedNodeCount - cold - prepared,
+        ...(executedNodeCount < nodeCount ? { skipped: nodeCount - executedNodeCount } : {}) };
+      // A missing unrelated event does not invalidate the timing anchors. Each
+      // fixture node has one invocation and every expected node must be present.
+      if (new Set(nodes.map(node => node.node)).size === executedNodeCount
+          && nodes.length === executedNodeCount) {
+        record.graphOverhead = graphOverhead(trace, nodes, spec.shape);
+      }
+      record.trace = trace;
       await client.call({ method: 'traceStop' });
     }
     records.push(record);
+  }
+  if (freshGraph) {
+    await client.call({ method: 'closeSession' });
+    if (preparedExperiment) await verifyIdle(false);
+    return { ...spec, prepareMs, activationMs, initialPreparation, first: records[0] };
   }
   const profiler = new PhaseProfiler('host-detailed');
   const tracePages = [];
@@ -235,9 +378,39 @@ async function measure(client, spec) {
   }
   await client.call({ method: 'traceStop' });
   await client.call({ method: 'closeSession' });
+  if (preparedExperiment) await verifyIdle(false);
   const diagnostic = records.pop();
-  return { ...spec, prepareMs, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
+  const measuredGraphs = records.slice(1).filter(record => record.graphOverhead);
+  const graphSamples = measuredGraphs.map(record => record.graphOverhead);
+  return { ...spec, prepareMs, activationMs, initialPreparation, first: records[0], summaryMs: distribution(records.slice(1).map(r => r.resultMs)),
     ...(paired ? { hostMinusGuestCallUs: distribution(records.slice(1).map(r => r.hostMinusGuestCallUs)) } : {}),
+    ...(paired && preparedExperiment ? {
+      preparedWorkers: records.slice(1).filter(r => r.preparedWorker).length,
+      workerCleanupUs: distribution(records.slice(1).map(r => r.workerCleanupUs)),
+      hostMinusGuestCallAndCleanupUs: distribution(records.slice(1)
+        .map(r => r.hostMinusGuestCallUs - r.workerCleanupUs)),
+      byWorkerRoute: Object.fromEntries(['prepared', 'cold'].map(route => {
+        const samples = records.slice(1).filter(r => r.preparedWorker === (route === 'prepared'));
+        return [route, {
+          count: samples.length,
+          ...(samples.length ? { hostMinusGuestCallUs: distribution(samples.map(r => r.hostMinusGuestCallUs)) } : {}),
+        }];
+      })),
+    } : {}),
+    ...(graphTrace ? {
+      graphOverhead: {
+        attempts: records.length - 1,
+        measured: graphSamples.length,
+        unmeasured: records.length - 1 - graphSamples.length,
+        withDroppedTraceEvents: measuredGraphs.filter(record => record.trace.dropped > 0).length,
+        ...(graphSamples.length ? {
+          lowerUs: distribution(graphSamples.map(sample => sample.lowerUs)),
+          upperUs: distribution(graphSamples.map(sample => sample.upperUs)),
+          nodeMinusGuestCallUs: distribution(graphSamples.flatMap(sample => sample.nodes)),
+          readyToResolvedMinusGuestCallUs: distribution(graphSamples.flatMap(sample => sample.readyToResolved)),
+        } : {}),
+      },
+    } : {}),
     records, diagnostic, phases: profiler.summary, tracePages, ...(dictionaryGrant ? { resourceGrantRequired: true } : {}) };
 }
 let client;
@@ -248,7 +421,8 @@ try {
     maxRetainedRuns: 32, maxDedupeEntries: 32, maxTombstones: 32 });
   const packageManager = { dataRoot, workspace: join(root, 'workers'), worker: resolve(worker), runtimeDll: resolve(dll),
     policy: { processMemoryBytes: 536870912, wasmMemoryBytes: 134217728, fuelPerCall: 50000000, walltimeMs: 30000, terminationGraceMs: 5 } };
-  const officialRoot = resolve(dirname(host), '..', 'official');
+  const officialRoot = process.env.DIY_WASM_SCALING_OFFICIAL_ROOT
+    ? resolve(process.env.DIY_WASM_SCALING_OFFICIAL_ROOT) : resolve(dirname(host), '..', 'official');
   if (usesOfficial) {
     const managerPath = join(root, 'manager.json');
     writeFileSync(managerPath, JSON.stringify({ ...packageManager, officialRoot }));
@@ -282,12 +456,21 @@ try {
     { count: 1, shape: 'serial', unused: 15 },
     { count: 4, shape: 'skip' },
   ];
-  const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+  const selected = scenario === 'unused-mixed' ? [{ count: 1, shape: 'serial', mixed: true, unused: 15 }]
+    : scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
     : scenario === 'single' || scenario === 'single-detailed' ? [{ count: 1, shape: 'serial' }]
+    : freshGraph ? Array.from({ length: samples }, () => ({ count: 4, shape: 'serial', mixed: true }))
     : scenario === 'mixed' ? [
         { count: 2, shape: 'serial' }, { count: 2, shape: 'serial', mixed: true },
         { count: 4, shape: 'serial', mixed: true }, { count: 4, shape: 'serial' },
         { count: 4, shape: 'parallel', mixed: true }, { count: 2, shape: 'join', mixed: true },
+        ...(process.env.DIY_WASM_SCALING_WIDE_GRAPHS === '1' ? [
+          { count: 8, shape: 'serial', mixed: true }, { count: 16, shape: 'serial', mixed: true },
+          { count: 1, shape: 'serial', unused: 15 },
+          ...(process.env.DIY_WASM_SCALING_DISTINCT_UNUSED === '1' ? [
+            { count: 1, shape: 'serial', mixed: true, unused: 15 },
+          ] : []),
+        ] : []),
       ]
     : scenario === 'paced' ? [1, 4].map(count => ({ count, shape: 'serial' })) : scenario === 'official'
     ? [...[1, 4].flatMap(count => [{ count, shape: 'serial' }, { count, shape: 'serial', official: true }]),
@@ -296,14 +479,37 @@ try {
   for (const spec of selected) {
     const result = await measure(client, spec);
     scenarios.push(result);
-    console.error(JSON.stringify({ ...spec, summaryMs: result.summaryMs }));
+    console.error(JSON.stringify({ ...spec, ...(freshGraph ? { firstMs: result.first.resultMs, workerRoutes: result.first.workerRoutes } : { summaryMs: result.summaryMs }) }));
   }
-  console.log(JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
-    physicalSlots, samples, moduleSha256: modules.map(sha), hostSha256: sha(readFileSync(host)),
+  let freshGraphSummary;
+  if (freshGraph) {
+    const allPrepared = scenarios.filter(s => s.first.workerRoutes.prepared === s.count);
+    freshGraphSummary = {
+      attempts: scenarios.length,
+      allPrepared: allPrepared.length,
+      preparationMs: distribution(scenarios.map(s => s.prepareMs)),
+      activationMs: distribution(scenarios.map(s => s.activationMs)),
+      allInputsMs: distribution(scenarios.map(s => s.first.resultMs)),
+      ...(allPrepared.length ? { allPreparedMs: distribution(allPrepared.map(s => s.first.resultMs)) } : {}),
+    };
+    console.error(JSON.stringify({ freshGraphSummary }));
+  }
+  const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
+    requestedRuntimeOnlySpare: process.env.DIY_EXPERIMENT_RUNTIME_ONLY_SPARE === '1',
+    requestedNeutralJitPool: process.env.DIY_EXPERIMENT_NEUTRAL_JIT_POOL === '1',
+    requestedNeutralCodeCache: process.env.DIY_EXPERIMENT_NEUTRAL_CODE_CACHE === '1',
+    requestedNeutralCodeMapping: process.env.DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING === '1',
+    requestedPreparedDiagnostics: process.env.DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS === '1'
+      ? 'legacy-pipe-at-preparation' : 'input-selected-inline',
+    ...(freshGraphSummary ? { freshGraphSummary } : {}),
+    physicalSlots, samples, moduleSha256: modules.map(sha), moduleCodeSha256, hostSha256: sha(readFileSync(host)),
     alternateFixtureSupplied: Boolean(alternateWasm),
     ...(usesOfficial ? { officialModuleSha256: sha(readFileSync(join(officialRoot, 'official.wasm'))) } : {}),
     ...(scenario === 'dictionary' ? { dictionarySha256: sha(dictionaryBytes) } : {}),
-    workerSha256: sha(readFileSync(worker)), runtimeSha256: sha(readFileSync(dll)), scenarios }));
+    workerSha256: sha(readFileSync(worker)), runtimeSha256: sha(readFileSync(dll)), scenarios });
+  const reportPath = process.env.DIY_WASM_SCALING_REPORT_PATH;
+  if (reportPath) writeFileSync(reportPath, report, { flag: 'wx' });
+  else console.log(report);
 } finally {
   if (client) await client.close();
   assert.equal(dirname(realpathSync(root)), tempParent);

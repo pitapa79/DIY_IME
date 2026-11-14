@@ -1,7 +1,12 @@
 //! Pinned Wasmtime50.0.1 full x64 C API. Host worker and developer probe entrypoints.
 use super::worker_trace::Recorder;
 use crate::execution_control::WorkerTracePhase;
+mod runtime_image;
+pub(super) use runtime_image::VerifiedRuntimeFile;
+pub(super) const MAX_STREAMED_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
+pub(super) const RUNTIME_MAPPED_READY: &[u8] = b"DIY-RUNTIME-MAPPED-READY-v1\0";
+pub(super) const RUNTIME_READY: &[u8] = b"DIY-RUNTIME-READY-v1\0";
 #[derive(Clone)]
 struct Limits {
     fuel: Option<u64>,
@@ -22,6 +27,7 @@ pub fn run_probe() -> Result<(), String> {
             tables: Some(1),
             memories: Some(1),
         },
+        None,
         None,
         None,
         ModuleMode::Jit {
@@ -63,6 +69,87 @@ fn require_appcontainer() -> Result<(), String> {
     }
     Ok(())
 }
+#[test]
+fn private_runtime_bootstrap_rejects_invalid_and_aliased_handles_before_loading() {
+    for handles in [
+        "0:0",
+        "1:1",
+        "18446744073709551615:0",
+        "text:0",
+        "1:text",
+        "1:2:3",
+    ] {
+        let args = ["runtime", "module", "1", "none", "none"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain([format!("--verified-runtime-file={handles}").into()])
+            .collect();
+        let error = worker_with_args(args).unwrap_err();
+        assert!(error.contains("invalid"), "unexpected rejection: {error}");
+    }
+}
+#[test]
+fn deferred_bootstrap_rejects_nonprepared_modes_and_a_diagnostic_handle() {
+    for flag in [
+        "--compile-jit-v1",
+        "--compile-official",
+        "--resource-ranges-v1",
+    ] {
+        let args = [
+            flag,
+            "runtime",
+            "module",
+            "1",
+            "none",
+            "none",
+            "--deferred-diagnostics-v1",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+        assert!(
+            worker_with_args(args)
+                .unwrap_err()
+                .contains("require single-use JIT")
+        );
+    }
+    let args = [
+        "--prepare-jit-v1",
+        "runtime",
+        "module",
+        "1",
+        "none",
+        "none",
+        "--deferred-diagnostics-v1",
+        "--diagnostics=123",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect();
+    assert!(
+        worker_with_args(args)
+            .unwrap_err()
+            .contains("cannot inherit")
+    );
+}
+
+#[test]
+fn runtime_only_bootstrap_rejects_a_preselected_module_before_loading() {
+    for flag in ["--prepare-runtime-jit-v1", "--prepare-runtime-jit-map-v1"] {
+        for (module, length) in [("node.wasm", "0"), ("-", "1")] {
+            let args = [flag, "runtime", module, length, "10000", "65536"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect();
+            assert!(
+                worker_with_args(args)
+                    .unwrap_err()
+                    .contains("cannot select a module")
+            );
+        }
+    }
+}
+
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args
         .first()
@@ -70,11 +157,23 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     {
         return retained_module::run(&args[1..]);
     }
-    let (args, mode) = {
+    let (mut args, mode) = {
         let mut args = args;
         let flag = args.first().and_then(|value| value.to_str()).unwrap_or("");
         let mode = if flag == "--compile-official" {
             ModuleMode::Compile
+        } else if flag == "--compile-jit-v1" {
+            ModuleMode::CompileJit
+        } else if flag == "--prepare-runtime-jit-v1" || flag == "--prepare-runtime-jit-map-v1" {
+            ModuleMode::RuntimeSpare {
+                mapped: flag == "--prepare-runtime-jit-map-v1",
+            }
+        } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-v1=") {
+            ModuleMode::PreparedCompiled(digest.to_owned())
+        } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-pipe-v1=") {
+            ModuleMode::PreparedCompiledPipe(digest.to_owned())
+        } else if flag == "--prepare-jit-pipe-v1" {
+            ModuleMode::JitPipe
         } else if flag == "--resource-ranges-v1" {
             ModuleMode::ResourceRanges
         } else if flag == "--build-resources-v1" {
@@ -96,6 +195,23 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         }
         (args, mode)
     };
+    let deferred_diagnostics = args
+        .get(5)
+        .is_some_and(|arg| arg == "--deferred-diagnostics-v1");
+    if deferred_diagnostics {
+        args.remove(5);
+        if !matches!(
+            mode,
+            ModuleMode::Jit {
+                acknowledge_preparation: true
+            } | ModuleMode::JitPipe
+                | ModuleMode::PreparedCompiled(_)
+                | ModuleMode::PreparedCompiledPipe(_)
+                | ModuleMode::RuntimeSpare { .. }
+        ) {
+            return Err("deferred diagnostics require single-use JIT delivery".into());
+        }
+    }
     if args.len() != 5 && args.len() != 6 {
         return Err("expected runtime module module-length fuel memory".into());
     }
@@ -104,6 +220,9 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .ok_or("invalid module length")?
         .parse::<usize>()
         .map_err(|_| "invalid module length")?;
+    if matches!(mode, ModuleMode::RuntimeSpare { .. }) && (length != 0 || args[1] != "-") {
+        return Err("runtime-only preparation cannot select a module".into());
+    }
     let parse = |v: &std::ffi::OsStr| -> Result<Option<u64>, String> {
         if v == "none" {
             Ok(None)
@@ -124,18 +243,48 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .map_err(|_| "runtime memory exceeds i64")?;
     // Only the trusted Parent supplies this inherited, allowlisted private pipe.
     // Failure to obtain diagnostics cannot change the guest result.
-    let diagnostics = args
-        .get(5)
-        .and_then(|arg| arg.to_str())
-        .and_then(|arg| arg.strip_prefix("--diagnostics="))
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|handle| *handle != 0 && *handle != usize::MAX)
-        .map(|handle| {
-            use std::os::windows::io::FromRawHandle;
-            Recorder::new(unsafe {
-                std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void)
+    let extension = args.get(5).and_then(|arg| arg.to_str());
+    let mut verified_runtime = None;
+    let diagnostic_handle = if let Some(value) =
+        extension.and_then(|arg| arg.strip_prefix("--verified-runtime-file="))
+    {
+        let (file, diagnostic) = value.split_once(':').ok_or("invalid runtime file proof")?;
+        let file = file
+            .parse::<usize>()
+            .map_err(|_| "invalid runtime file handle")?;
+        let diagnostic = diagnostic
+            .parse::<usize>()
+            .map_err(|_| "invalid diagnostic handle")?;
+        if file == 0 || file == usize::MAX || diagnostic == usize::MAX || file == diagnostic {
+            return Err("invalid or aliased runtime file handles".into());
+        }
+        use std::os::windows::io::FromRawHandle;
+        // SAFETY: private Native bootstrap from the trusted Parent. This file
+        // is explicitly allowlisted, read-only and already pinned/fully hashed;
+        // no guest/package protocol can choose it. Keep it until run returns.
+        verified_runtime =
+            Some(unsafe { std::fs::File::from_raw_handle(file as *mut std::ffi::c_void) });
+        Some(diagnostic)
+    } else {
+        extension
+            .and_then(|arg| arg.strip_prefix("--diagnostics="))
+            .and_then(|value| value.parse::<usize>().ok())
+    };
+    if deferred_diagnostics && diagnostic_handle.is_some_and(|handle| handle != 0) {
+        return Err("deferred diagnostics cannot inherit a diagnostic handle".into());
+    }
+    let diagnostics = if deferred_diagnostics {
+        Some(Recorder::deferred())
+    } else {
+        diagnostic_handle
+            .filter(|handle| *handle != 0 && *handle != usize::MAX)
+            .map(|handle| {
+                use std::os::windows::io::FromRawHandle;
+                Recorder::new(unsafe {
+                    std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void)
+                })
             })
-        });
+    };
     run(
         vec![args[0].clone(), args[1].clone(), "-".into()],
         Limits {
@@ -147,6 +296,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         },
         Some(length),
         diagnostics.as_ref(),
+        verified_runtime.as_ref(),
         mode,
     )
 }
@@ -259,9 +409,16 @@ unsafe extern "system" {
 fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
 }
-fn verify_runtime(path: &Path) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("runtime read: {e}"))?;
-    verify_runtime_bytes(&bytes)
+fn verify_runtime(path: &Path) -> Result<Option<runtime_image::ReadOnlyImage>, String> {
+    if cfg!(feature = "copied-runtime-verification-baseline") {
+        let bytes = std::fs::read(path).map_err(|e| format!("runtime read: {e}"))?;
+        verify_runtime_bytes(&bytes)?;
+        Ok(None)
+    } else {
+        let image = runtime_image::ReadOnlyImage::open(path)?;
+        verify_runtime_bytes(image.bytes())?;
+        Ok(Some(image))
+    }
 }
 fn verify_runtime_bytes(bytes: &[u8]) -> Result<(), String> {
     let size = u32::try_from(bytes.len()).map_err(|_| "runtime file too large")?;
@@ -303,7 +460,9 @@ macro_rules! api {
   ($($field:ident:[$ty:ty] => $name:literal),+ $(,)?)=>{
    struct Api {_library:Library,$($field:$ty),+}
    impl Api {fn load(path:&Path)->Result<Self,String>{
-    verify_runtime(path)?;
+    // Retain the read-only mapping and its deny-write/delete file handle
+    // through LoadLibrary and symbol resolution, not just through hashing.
+    let _verified_image = verify_runtime(path)?;
     // SAFETY: this is the verified pinned runtime in a Host-owned code snapshot.
     unsafe { Self::load_verified(path) }
    }
@@ -729,18 +888,28 @@ fn create_engine_configured(
 }
 
 #[cfg(test)]
+pub(super) mod compiled_jit_probe;
+#[cfg(test)]
 mod compiled_module_probe;
 enum ModuleMode {
+    RuntimeSpare { mapped: bool },
     Jit { acknowledge_preparation: bool },
+    JitPipe,
     ResourceRanges,
     ResourceBuild,
     Compile,
+    CompileJit,
+    PreparedCompiled(String),
+    PreparedCompiledPipe(String),
     Reuse(String),
 }
 
+pub(in crate::isolated_worker) mod code_mapping;
+pub(super) mod compiled_jit;
 mod compiled_module;
 mod resource_import;
 mod retained_module;
+mod runtime_spare;
 pub(super) use compiled_module::OFFICIAL_WASM_HASH;
 #[cfg(test)]
 pub(in crate::isolated_worker) use retained_module::state_fixture;
@@ -750,6 +919,7 @@ fn run(
     limits: Limits,
     expected_module: Option<usize>,
     diagnostics: Option<&Recorder>,
+    verified_runtime: Option<&std::fs::File>,
     mode: ModuleMode,
 ) -> Result<(), String> {
     if args.len() != 3 {
@@ -763,20 +933,51 @@ fn run(
         return Err("runtime path must be absolute".into());
     }
     let dll_phase = diagnostics.map(|d| d.span(WorkerTracePhase::DllLoad));
-    let api = Api::load(runtime)?;
+    let api = if let Some(verified) = verified_runtime {
+        let _same_file = runtime_image::lock_matching_file(runtime, verified)?;
+        // SAFETY: the trusted Parent hashed and continuously pinned this exact
+        // immutable file. A different path target or mutable file was refused.
+        // The original inherited file remains owned throughout this run.
+        unsafe { Api::load_verified(runtime)? }
+    } else {
+        Api::load(runtime)?
+    };
     drop(dll_phase);
+    if let ModuleMode::RuntimeSpare { mapped } = mode {
+        if expected_module != Some(0) || args[1] != "-" || args[2] != "-" {
+            return Err("runtime-only preparation requires private delivery".into());
+        }
+        return runtime_spare::run(&api, &limits, diagnostics, mapped);
+    }
     let module_phase = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
     let limit = expected_module.unwrap_or(64 * 1024 * 1024);
-    let mut module = Vec::new();
-    std::fs::File::open(&args[1])
-        .map_err(|e| format!("module open: {e}"))?
-        .take((limit as u64).saturating_add(1))
-        .read_to_end(&mut module)
-        .map_err(|_| "module read failed")?;
+    let streamed = matches!(
+        mode,
+        ModuleMode::JitPipe | ModuleMode::PreparedCompiledPipe(_)
+    );
+    let mut module = if streamed {
+        let length = expected_module
+            .filter(|&n| (1..=MAX_STREAMED_MODULE_BYTES).contains(&n))
+            .ok_or("invalid streamed module length")?;
+        let mut bytes = vec![0; length];
+        std::io::stdin()
+            .lock()
+            .read_exact(&mut bytes)
+            .map_err(|_| "module pipe closed before full payload")?;
+        bytes
+    } else {
+        let mut bytes = Vec::new();
+        std::fs::File::open(&args[1])
+            .map_err(|e| format!("module open: {e}"))?
+            .take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|_| "module read failed")?;
+        bytes
+    };
     if module.len() > limit || expected_module.is_some_and(|n| n != module.len()) {
         return Err("module size mismatch".into());
     }
-    if Path::new(&args[1]).extension().is_some_and(|e| e == "wat") {
+    if !streamed && Path::new(&args[1]).extension().is_some_and(|e| e == "wat") {
         let mut bytes = Bytes {
             size: 0,
             data: ptr::null_mut(),
@@ -843,14 +1044,40 @@ fn run(
             .write_all(&artifact)
             .map_err(|_| "compiler pipe failed".into());
     }
+    if matches!(mode, ModuleMode::CompileJit) {
+        use std::io::Write;
+        let artifact = compiled_jit::compile(&api, &limits, &module)?;
+        return std::io::stdout()
+            .lock()
+            .write_all(&artifact)
+            .map_err(|_| "JIT compiler pipe failed".into());
+    }
     // Prepare only the Module and Store. Instantiation can run guest start code
     // and must wait for the Host-owned input.
-    let prepared_jit = if let ModuleMode::Jit {
-        acknowledge_preparation,
-    } = mode
-    {
-        let prepared = Runtime::prepare_jit(&api, &module, &limits, diagnostics)?;
-        if acknowledge_preparation {
+    let prepared_jit = if matches!(
+        mode,
+        ModuleMode::Jit { .. }
+            | ModuleMode::JitPipe
+            | ModuleMode::PreparedCompiled(_)
+            | ModuleMode::PreparedCompiledPipe(_)
+    ) {
+        let prepared = if let ModuleMode::PreparedCompiled(digest)
+        | ModuleMode::PreparedCompiledPipe(digest) = &mode
+        {
+            // SAFETY: only the trusted Parent chooses this private Native mode
+            // and supplies its own compiler-produced immutable file and digest.
+            unsafe { compiled_jit::prepare(&api, &limits, diagnostics, &module, digest)? }
+        } else {
+            Runtime::prepare_jit(&api, &module, &limits, diagnostics)?
+        };
+        if matches!(
+            mode,
+            ModuleMode::Jit {
+                acknowledge_preparation: true
+            } | ModuleMode::JitPipe
+                | ModuleMode::PreparedCompiled(_)
+                | ModuleMode::PreparedCompiledPipe(_)
+        ) {
             use std::io::Write;
             let mut output = std::io::stdout().lock();
             output
@@ -861,6 +1088,26 @@ fn run(
         Some(prepared)
     } else {
         None
+    };
+    // This byte belongs only to the trusted Native bootstrap, not guest JSON.
+    // No startup clock/metadata was collected by a deferred recorder. Enable
+    // only for this invocation; never reconstruct unobserved preparation spans.
+    let inline_diagnostics = if let Some(recorder) = diagnostics.filter(|d| d.is_deferred()) {
+        let mut control = [0];
+        std::io::stdin()
+            .lock()
+            .read_exact(&mut control)
+            .map_err(|_| "Worker diagnostic control truncated")?;
+        match control[0] {
+            0 => false,
+            1 => {
+                recorder.enable_inline();
+                true
+            }
+            _ => return Err("invalid Worker diagnostic control".into()),
+        }
+    } else {
+        false
     };
     let input_phase = diagnostics.map(|d| d.span(WorkerTracePhase::InputRead));
     let input = if args[2] == "-" {
@@ -878,7 +1125,10 @@ fn run(
     };
     drop(input_phase);
     let mut guest = match mode {
-        ModuleMode::Jit { .. } => {
+        ModuleMode::Jit { .. }
+        | ModuleMode::JitPipe
+        | ModuleMode::PreparedCompiled(_)
+        | ModuleMode::PreparedCompiledPipe(_) => {
             if input.is_empty() {
                 return Err("empty request before guest instantiation".into());
             }
@@ -889,9 +1139,12 @@ fn run(
         ModuleMode::Reuse(digest) => {
             compiled_module::load(&api, &limits, diagnostics, &module, &digest)?
         }
-        ModuleMode::Compile => unreachable!("compile returns before guest input"),
+        ModuleMode::Compile | ModuleMode::CompileJit => {
+            unreachable!("compile returns before guest input")
+        }
         ModuleMode::ResourceRanges => unreachable!("resource transport returns before raw input"),
         ModuleMode::ResourceBuild => unreachable!("resource build returns before raw input"),
+        ModuleMode::RuntimeSpare { .. } => unreachable!("runtime spare returns before module read"),
     };
     if expected_module.is_some() {
         // Production carries the exact bounded guest wire to Parent validation.
@@ -901,8 +1154,26 @@ fn run(
         let reply = guest.invoke(&input)?;
         let _write = diagnostics.map(|d| d.span(WorkerTracePhase::ReplyWrite));
         let mut output = std::io::stdout().lock();
+        if inline_diagnostics {
+            output
+                .write_all(
+                    &u32::try_from(reply.len())
+                        .map_err(|_| "reply frame size overflow")?
+                        .to_le_bytes(),
+                )
+                .map_err(|_| "reply frame failed")?;
+        }
         output.write_all(&reply).map_err(|_| "reply pipe failed")?;
         output.flush().map_err(|_| "reply pipe failed")?;
+        if inline_diagnostics {
+            drop(_write);
+            drop(guest); // actual Runtime destruction is included in received metadata
+            if let Some(bytes) = diagnostics.and_then(Recorder::finish_inline) {
+                // Diagnostics loss must not turn a complete exact guest reply
+                // into execution failure. Parent still requires OS exit/cleanup.
+                let _ = output.write_all(&bytes).and_then(|()| output.flush());
+            }
+        }
         return Ok(());
     }
     let requests = if input.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
@@ -1009,6 +1280,15 @@ fn real_jit_compiler_fallback() {
 #[test]
 #[ignore = "requires a real Windows AppContainer and pinned Wasmtime DLL"]
 fn real_jit_preparation_acknowledges_before_input() {
+    check_jit_preparation_acknowledges_before_input(false);
+}
+#[test]
+#[ignore = "requires a real Windows AppContainer and pinned Wasmtime DLL"]
+fn real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe() {
+    check_jit_preparation_acknowledges_before_input(true);
+}
+#[cfg(test)]
+fn check_jit_preparation_acknowledges_before_input(deferred: bool) {
     use super::pipe::{WorkerScope, execute_observed};
     use super::{Cache, EndReason, Job, Outcome, Profile, RunControl};
     use crate::execution_control::{ExecutionHost, ResourcePolicy, ResourceUsage};
@@ -1035,7 +1315,7 @@ fn real_jit_preparation_acknowledges_before_input() {
         (func (export "diyime_release_reply")))"#;
     let module = cache.write("fixture.wat", wat).unwrap();
     naming_profile.delete().unwrap();
-    let args = [
+    let mut args = vec![
         OsString::from("--prepare-jit-v1"),
         runtime.into_os_string(),
         module.into_os_string(),
@@ -1043,13 +1323,19 @@ fn real_jit_preparation_acknowledges_before_input() {
         "10000".into(),
         "1048576".into(),
     ];
+    if deferred {
+        args.push("--deferred-diagnostics-v1".into());
+    }
     let repeats = if std::env::var_os("DIY_MEASURE_PREPARED_JIT").is_some() {
         101
     } else {
         1
     };
     let mut samples = Vec::new();
-    for deliver in std::iter::once(false).chain(std::iter::repeat_n(true, repeats)) {
+    let cases = std::iter::once((false, false))
+        .chain(std::iter::repeat_n((true, false), repeats))
+        .chain(deferred.then_some((true, true)));
+    for (deliver, detailed) in cases {
         let slot = host
             .try_reserve(ResourceUsage {
                 physical_jobs: 1,
@@ -1074,12 +1360,16 @@ fn real_jit_preparation_acknowledges_before_input() {
             ..RunControl::default()
         };
         let scope = WorkerScope::prepared(&profile, &job, &cache).with_jit_delivery(
+            None,
             move || {
                 ready.send(()).map_err(|error| error.to_string())?;
                 receive
                     .recv_timeout(Duration::from_secs(5))
                     .map(|bytes| super::pipe::JitDelivery {
                         bytes,
+                        run_cancel: None,
+                        detailed,
+                        late_code: None,
                         check: Some(Box::new(move || {
                             deliver
                                 .then_some(())
@@ -1089,6 +1379,8 @@ fn real_jit_preparation_acknowledges_before_input() {
                     .map_err(|error| error.to_string())
             },
             control.cancel.clone(),
+            deferred,
+            super::pipe::JitModuleDelivery::Early,
         );
         let Outcome::Exited(receipt) =
             execute_observed(scope, &executable, &args, vec![], &control).unwrap()
@@ -1105,6 +1397,33 @@ fn real_jit_preparation_acknowledges_before_input() {
                 receipt.output().map(String::from_utf8_lossy)
             );
             assert_eq!(receipt.output().unwrap(), b"{}");
+            if detailed {
+                let bytes = receipt.diagnostics().unwrap().as_ref().unwrap();
+                let intervals = super::worker_trace::decode(bytes).unwrap();
+                for expected in [
+                    WorkerTracePhase::Main,
+                    WorkerTracePhase::InputRead,
+                    WorkerTracePhase::Instantiate,
+                    WorkerTracePhase::GuestCall,
+                    WorkerTracePhase::Cleanup,
+                ] {
+                    assert!(
+                        intervals
+                            .iter()
+                            .any(|phase| phase.phase == expected && phase.end.is_some())
+                    );
+                }
+                for absent in [
+                    WorkerTracePhase::DllLoad,
+                    WorkerTracePhase::ModuleRead,
+                    WorkerTracePhase::EngineSetup,
+                    WorkerTracePhase::Compile,
+                ] {
+                    assert!(!intervals.iter().any(|phase| phase.phase == absent));
+                }
+            } else {
+                assert!(receipt.diagnostics().is_none());
+            }
         } else {
             assert_ne!(receipt.exit_code(), Some(0));
             assert!(!receipt.input_delivered());
@@ -1123,11 +1442,60 @@ fn real_jit_preparation_acknowledges_before_input() {
         drop(slot);
         assert_eq!(host.usage().physical_jobs, 0);
     }
+    // These prefixes cannot reach READY or guest instantiation.
+    let malformed: &[(usize, &[u8])] = &[
+        (9, b"\0asm\x01\0\0\0"),
+        (8, b"bad wasm"),
+        (MAX_STREAMED_MODULE_BYTES + 1, b""),
+    ];
+    for &(declared, prefix) in malformed {
+        let slot = host
+            .try_reserve(ResourceUsage {
+                physical_jobs: 1,
+                ..ResourceUsage::default()
+            })
+            .unwrap();
+        let mut profile = Profile::new().unwrap();
+        cache.allow_read_execute(&profile).unwrap();
+        let job = Job::new().unwrap();
+        let args = [
+            OsString::from("--prepare-jit-pipe-v1"),
+            args[1].clone(),
+            "-".into(),
+            declared.to_string().into(),
+            "10000".into(),
+            "1048576".into(),
+        ];
+        let scope = WorkerScope::observed(&profile, &job, &cache, Default::default());
+        let control = RunControl {
+            walltime: Some(Duration::from_secs(10)),
+            ..RunControl::default()
+        };
+        let Outcome::Exited(receipt) =
+            execute_observed(scope, &executable, &args, prefix.to_vec(), &control).unwrap()
+        else {
+            panic!("Worker receiving an invalid module did not exit");
+        };
+        assert_eq!(receipt.reason(), EndReason::Exited);
+        assert!(receipt.exit_code().is_some_and(|code| code != 0));
+        let output = receipt.output().unwrap();
+        assert!(output.starts_with(b"wasm-worker: "), "{output:?}");
+        assert!(
+            !output
+                .windows(JIT_READY.len())
+                .any(|frame| frame == JIT_READY)
+        );
+        drop(job);
+        cache.revoke_read_execute(&profile).unwrap();
+        profile.delete().unwrap();
+        drop(slot);
+        assert_eq!(host.usage().physical_jobs, 0);
+    }
     for file in ["worker.exe", "wasmtime.dll", "fixture.wat"] {
         super::adapter::remove_asset(&cache.path().join(file)).unwrap();
     }
     std::fs::remove_dir(cache.path()).unwrap();
-    if repeats > 1 {
+    if repeats > 1 && !deferred {
         for (index, phase) in ["dispatch-to-exit-confirmed", "dispatch-to-recovered"]
             .into_iter()
             .enumerate()

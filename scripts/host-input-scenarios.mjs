@@ -10,17 +10,40 @@ const defaultSteps = [
   {id: 'dictionary-hit', text: 'kousui', expected: '降水'},
 ];
 
-export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps}) {
+export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound, independentInput = false}) {
   const scenarios = [];
   for (const intervalMs of [null, 100, 20]) {
     const records = [];
     for (let round = 0; round < rounds; round++) {
+      if (beginRound) await beginRound();
       const origin = performance.now();
       const pending = [];
       let index = 0;
       const due = () => intervalMs === null
         ? (pending.some(record => record.endedMs === null) ? Infinity : performance.now())
         : origin + index * intervalMs;
+      let observing;
+      async function observe(record) {
+        const snapshot = await read(record.key);
+        const observed = performance.now() - record.issued;
+        if (!snapshot.current) {
+          if (snapshot.current !== false || snapshot.result != null) throw new Error('stale-host-result');
+          record.outcome ??= 'superseded';
+        } else if (snapshot.result && record.outcome === null) {
+          try {
+            verify(snapshot, record.step.expected);
+            record.responseMs = observed;
+            record.outcome = 'correct';
+          } catch {
+            const {reason} = snapshot.result;
+            record.outcome = ['expired', 'cancelled'].includes(reason) ? reason : 'failed';
+          }
+        }
+        if (ended(snapshot)) {
+          record.endedMs = observed;
+          record.outcome ??= 'failed';
+        }
+      }
       while (index < steps.length || pending.some(record => record.endedMs === null)) {
         if (performance.now() - origin > 240_000) throw new Error('host-input-drain-timeout');
         const scheduled = due();
@@ -28,32 +51,41 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
           const step = steps[index++];
           const issued = performance.now();
           const key = await submit(step.text);
-          pending.push({step, key, issued, schedulingMs: issued - scheduled,
-            responseMs: null, endedMs: null, outcome: null});
+          const admitted = performance.now();
+          const admissionRejected = key?.admissionRejected;
+          if (admissionRejected !== undefined && admissionRejected !== 'busy') throw new Error('invalid-admission-rejection');
+          const previous = pending.at(-1);
+          pending.push({step, key: admissionRejected ? null : key, issued, schedulingMs: issued - scheduled,
+            inputIntervalMs: previous ? issued - previous.issued : null,
+            admissionMs: admitted - issued, responseMs: null,
+            // No run/process was created for a rejected input. This resolves
+            // submission only and is excluded from physical-end statistics.
+            endedMs: admissionRejected ? admitted - issued : null,
+            outcome: admissionRejected ? 'admission-rejected' : null,
+            ...(admissionRejected ? {admissionRejected} : {})});
+          continue;
+        }
+        if (independentInput && intervalMs !== null) {
+          // The Host permits one result read alongside an input operation.
+          // Keep the next input deadline independent of that outstanding read.
+          if (!observing) {
+            const newest = pending.findLast(record => record.endedMs === null);
+            if (newest) observing = observe(newest).then(() => ({}), error => ({error}));
+          }
+          const remaining = index < steps.length ? due() - performance.now() : Infinity;
+          if (remaining <= 0) continue;
+          const tick = delay(Math.min(pollMs, remaining));
+          const settled = observing ? await Promise.race([observing, tick]) : await tick;
+          if (settled) {
+            observing = undefined;
+            if (settled.error) throw settled.error;
+          }
           continue;
         }
         for (const record of pending) {
           if (index < steps.length && performance.now() >= due()) break;
           if (record.endedMs !== null) continue;
-          const snapshot = await read(record.key);
-          const observed = performance.now() - record.issued;
-          if (!snapshot.current) {
-            if (snapshot.current !== false || snapshot.result != null) throw new Error('stale-host-result');
-            record.outcome ??= 'superseded';
-          } else if (snapshot.result && record.outcome === null) {
-            try {
-              verify(snapshot, record.step.expected);
-              record.responseMs = observed;
-              record.outcome = 'correct';
-            } catch {
-              const {reason} = snapshot.result;
-              record.outcome = ['expired', 'cancelled'].includes(reason) ? reason : 'failed';
-            }
-          }
-          if (ended(snapshot)) {
-            record.endedMs = observed;
-            record.outcome ??= 'failed';
-          }
+          await observe(record);
         }
         if (index < steps.length || pending.some(record => record.endedMs === null)) {
           const remaining = index < steps.length ? due() - performance.now() : Infinity;
@@ -61,27 +93,33 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         }
       }
       for (const record of pending.slice(0, -1)) {
+        if (record.admissionRejected) continue;
         const snapshot = await read(record.key);
         if (snapshot.current !== false || snapshot.result != null || !ended(snapshot)) {
           throw new Error('stale-host-result');
         }
       }
       records.push(...pending);
+      if (finishRound) await finishRound(intervalMs, pending);
     }
     const stats = values => values.length ? summarize(values) : null;
     const summarizeRecords = group => {
       const correct = group.filter(record => record.outcome === 'correct');
       return {
         attempts: group.length,
+        admitted: group.filter(record => !record.admissionRejected).length,
+        admissionRejected: group.filter(record => record.admissionRejected).length,
         correct: correct.length,
         superseded: group.filter(record => record.outcome === 'superseded').length,
         timedOut: group.filter(record => record.outcome === 'expired').length,
         cancelled: group.filter(record => record.outcome === 'cancelled').length,
-        failed: group.filter(record => record.outcome === 'failed').length,
+        failed: group.filter(record => ['failed', 'admission-rejected'].includes(record.outcome)).length,
         over50Ms: correct.filter(record => record.responseMs > 50).length,
         schedulingDelay: stats(group.map(record => record.schedulingMs)),
+        inputInterval: stats(group.flatMap(record => record.inputIntervalMs === null ? [] : [record.inputIntervalMs])),
+        admissionDelay: stats(group.map(record => record.admissionMs)),
         firstCorrectResponse: stats(correct.map(record => record.responseMs)),
-        physicalEnd: stats(group.map(record => record.endedMs)),
+        physicalEnd: stats(group.filter(record => !record.admissionRejected).map(record => record.endedMs)),
       };
     };
     scenarios.push({intervalMs, ...summarizeRecords(records),

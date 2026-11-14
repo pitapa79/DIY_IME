@@ -142,9 +142,7 @@ impl ExecutionHost {
         lease: &ResourceLease,
         usage: ResourceUsage,
     ) -> Result<(), CoreError> {
-        if !Arc::ptr_eq(&self.inner, &lease.inner.host)
-            || lease.usage() != usage
-            || Arc::strong_count(&lease.inner) != 1
+        if !self.owns_lease(lease) || lease.usage() != usage || Arc::strong_count(&lease.inner) != 1
         {
             return Err(CoreError::new(
                 "invalid-reservation",
@@ -152,6 +150,9 @@ impl ExecutionHost {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn owns_lease(&self, lease: &ResourceLease) -> bool {
+        Arc::ptr_eq(&self.inner, &lease.inner.host)
     }
     pub fn resource_domain(&self) -> &str {
         &self.inner.domain
@@ -292,8 +293,18 @@ impl ResourceLease {
 #[derive(Debug, Clone, Default)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
+    scope: Option<Arc<Self>>,
 }
 impl CancellationToken {
+    /// Internal Host composition: local cleanup must not cancel the plan,
+    /// while withdrawal of that plan must stop every waiting child owner.
+    #[doc(hidden)]
+    pub fn scoped_child(&self) -> Self {
+        Self {
+            cancelled: Arc::default(),
+            scope: Some(Arc::new(self.clone())),
+        }
+    }
     /// Host composition can require one shared cancellation owner.
     pub fn same_source(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.cancelled, &other.cancelled)
@@ -302,13 +313,41 @@ impl CancellationToken {
         self.cancelled.store(true, Ordering::Release);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        let mut token = self;
+        loop {
+            if token.cancelled.load(Ordering::Acquire) {
+                return true;
+            }
+            match token.scope.as_deref() {
+                Some(scope) => token = scope,
+                None => return false,
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod clock_reservation_tests {
     use super::*;
+    #[test]
+    fn child_cleanup_preserves_its_scope_and_withdrawal_reaches_all_descendants() {
+        let plan = CancellationToken::default();
+        let consumed = plan.scoped_child();
+        let spare = plan.scoped_child();
+        let delivery = spare.scoped_child();
+        assert!(consumed.same_source(&consumed.clone()));
+        assert!(!consumed.same_source(&plan));
+        assert!(!consumed.same_source(&spare));
+        consumed.cancel();
+        assert!(consumed.is_cancelled());
+        assert!(!plan.is_cancelled());
+        assert!(!spare.is_cancelled());
+        assert!(!delivery.is_cancelled());
+        plan.cancel();
+        assert!(spare.is_cancelled());
+        assert!(delivery.is_cancelled());
+        assert!(plan.scoped_child().is_cancelled());
+    }
     fn host(name: &str) -> ExecutionHost {
         let mut policy = super::super::ResourcePolicy::from_value(
             serde_json::from_str::<serde_json::Value>(include_str!(
