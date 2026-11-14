@@ -393,6 +393,45 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
+          $taskEvidenceRoot = 'target/neutral-stock-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $taskStem = "windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = if ($scenario -eq 'mixed') { 10 } elseif ($scenario -eq 'paced') { 2 } else { 1 }
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralJitPool -ne ($neutral -eq '1')) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 24) { throw 'Neutral evidence must contain all 24 report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-evidence-manifest.json" -Encoding utf8
       - name: Immediate input after activation readiness comparison
         if: matrix.segment == 'prepared'
         run: |
@@ -439,6 +478,7 @@ jobs:
             target/windows-prepared-jit-compiled-native.json
             target/windows-prepared-jit-activation-*.json
             target/windows-prepared-jit-diagnostics-*.json
+            target/neutral-stock-evidence/*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

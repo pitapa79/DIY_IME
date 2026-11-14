@@ -483,3 +483,11 @@ Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Wo
 比較時Host SHA `30845a5954d9b43884a04e44a3e5cb0954c22be8e5e3994f2f3d9c07ae36fcb3`、Worker `1addd356322b47a056866161cd9bd04ec4bc18e4f99c0f667cf828a13232ea9f`、DLLは上記固定SHA。mixed report SHA（順序通り）は `6f6bec0a076177fcad2bccee18de379b050d74cf137c301728b5babfaa38e2e4`、`d1f7b7a73e2bf6f0d618c7dcbd7d2e0fc8d2af3fe0aa99ae7796325bb4df0f94`、`6651722d2beda27b1792e616d96272286f089b95293d247ec08f54c33730f931`、`f78d062c69f58c785c8f1c399c3f7f7e9d5b9e6a90ce3219bc9b037282d6f326`。異種未使用Node reportは `2c7a91022524d99e3aa9612c1efcee09d16e4c3cf6d78208ec2e47c0009096b6`、`8ef58e203efced07d9a89d23eadbb462a4d0a0e9564cbd53d1a9fe8b41c3e437`、`5d6e77ac988b8eba89af1c905f9a4d801b2aa845c17affd89fa80895d394e197`、`efec765334fba1346f249c43960f63f4170f9fa8b4ebabac83370b2974a34873`。
 
 追加検査・比較は45分上限の第3 Windows segmentへ分離した。既存32run block・条件・検査・必須集約を維持し、3segmentすべての成功を必要とする。新比較は同一runner内ABBAで単段100件、異種/未使用10構成各10件、逐次/20/100ms各245入力を計測し、CPU/RAM・欠測・失敗・supersededを保存する。公式compiled artifact・辞書・networkはまだこのpoolの対象外であり、任意Nodeの全適用性、通常Host既定採用、Core P95<1ms、main統合と全条件の最終確認が残る。Goal #95は未達である。
+
+### a236cc7 CIの保存漏れと是正（2026-11-14）
+
+[CI43534262153](https://github.com/pitapa79/DIY_IME/actions/runs/43534262153) はWindows3segmentと必須集約がすべて成功し、neutralの所有/製品Host検査とABBA比較も実行成功した。しかし、新しいneutral report名をartifact保存一覧へ追加し忘れており、24件の詳細/Job reportが保存されなかった。neutral artifact14090130729（57,310,786bytes、SHA `e63a6a4e7b24d5ccf4a91c9eaa3d9f570d076a3f125464015634f9a55995ea1e` をGitHub metadataと照合）は4件の既存smoke/manifest JSONだけを含み、必要な24件はすべて欠けていた。抽出時の必須件数検査がこれを拒否した。CI合格を計測証拠の取得成功に読み替えない。
+
+残るconsoleの単段**総応答**P95/P99msは従来→共有→共有→従来で11.391/12.303、15.110/15.914、14.156/15.700、10.409/10.963。これは同一試行guest除外のNode基盤遅延ではなく、別計測のguest percentileを引かない。詳細欠落のため、この回から基盤目標達成や全matrixの採否を認定しない。
+
+是正は、ABBA後に全24report/Jobファイル、100/10/35の指定試行、1/10/2の構成数、単段/混合の入力record数、各paced区間245入力、実際のHost/Worker/DLL hash、対照mode、異なるcode、Job accountingの存在を検査し、専用evidence directoryへcopyする処理。全ファイルのSHAとsourceを持つmanifestも作り、このdirectoryを明示的なartifact対象へ追加した。既存の保存対象・検査・45分上限・3segment集約は保持する。collectorの合成試験は正常24件+manifestのcopy/hash一致を確認し、欠落・binary不一致・mode不一致・短いrecord・短いpacedをそれぞれ拒否した。これは保存処理の試験であり、合成値を性能証拠に使わない。修正後の実CIとdownloaded artifactで完全性を再確認する必要がある。
