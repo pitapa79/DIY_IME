@@ -492,6 +492,7 @@ struct PlanEvidence {
     context: Arc<()>,
     activities: Vec<super::super::adapter::WasmNode>,
     official: Option<StaticOfficialPipeline>,
+    retention_evaluation_graph: Option<Graph>,
 }
 impl PlanEvidence {
     fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
@@ -511,7 +512,7 @@ struct PendingPlan {
 struct ActivePlan {
     session: PermissionSession,
     evidence: PlanEvidence,
-    retained: Option<super::super::adapter::RetainedOwner>,
+    retained: Option<super::super::adapter::RetainedOwners>,
     _prepared_jit: Vec<Arc<super::super::adapter::PreparedJitSlot>>,
 }
 struct Runner {
@@ -616,7 +617,9 @@ impl Runner {
    "reviewId":self.pending.as_ref().map(|p|&p.review_id),"physical":usage,"workerProcesses":worker_processes,
    "retainedWorker":{"physicalJobs":retained_physical,"ready":retained.is_some_and(|owner|owner.ready()),
    "processId":retained.and_then(|owner|owner.process_id()),"generation":retained.map_or(0,|owner|owner.generation()),
-   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies())}}),
+   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies()),
+   "experimental":retained.is_some_and(|owner|owner.experimental()),"groupSizes":retained.map(|owner|owner.group_sizes()),
+   "processIds":retained.map(|owner|owner.process_ids())}}),
         )
     }
     fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
@@ -760,6 +763,9 @@ impl Runner {
                 context: generation,
                 activities: verified.values().map(|p| p.node()).collect(),
                 official,
+                retention_evaluation_graph:
+                    super::super::adapter::RetainedOwners::evaluation_group_size()?
+                        .map(|_| graph.clone()),
             },
         });
         Ok(value)
@@ -924,6 +930,12 @@ impl Runner {
                         ),
                         _ => (0, 0),
                     };
+                if pending.evidence.retention_evaluation_graph.is_some() && jit_nodes != 0 {
+                    return Err(error(
+                        "retained-evaluation",
+                        "retained and disposable spare inventories cannot overlap",
+                    ));
+                }
                 let pooled_jit = std::env::var_os("DIY_EXPERIMENT_POOLED_JIT").as_deref()
                     == Some(std::ffi::OsStr::new("1"));
                 let jit_candidates = if pending.evidence.official.is_none() && jit_nodes > 0 {
@@ -954,6 +966,20 @@ impl Runner {
                     .as_ref()
                     .map(|proof| pending.session.retained_stages(proof))
                     .transpose()?;
+                let evaluation_groups = pending
+                    .evidence
+                    .retention_evaluation_graph
+                    .as_ref()
+                    .map(|graph| {
+                        pending.session.retention_evaluation_groups(
+                            graph,
+                            super::super::adapter::RetainedOwners::evaluation_group_size()?
+                                .ok_or_else(|| {
+                                    error("retained-evaluation", "evaluation mode changed")
+                                })?,
+                        )
+                    })
+                    .transpose()?;
                 let wait_for_jit = std::env::var_os("DIY_EXPERIMENT_JIT_ACTIVATION_READY")
                     .as_deref()
                     == Some(std::ffi::OsStr::new("1"));
@@ -969,7 +995,7 @@ impl Runner {
                     pending.evidence.official.as_ref(),
                 )?;
                 drop(preparation_slot);
-                let retained = retained_stages
+                let fixed_retained = retained_stages
                     .map(|nodes| {
                         super::super::adapter::RetainedOwner::install(
                             self.host.clone(),
@@ -979,6 +1005,21 @@ impl Runner {
                     })
                     .transpose()?
                     .flatten();
+                let retained = if let Some(groups) = evaluation_groups {
+                    if fixed_retained.is_some() {
+                        return Err(error(
+                            "retained-evaluation",
+                            "fixed and experimental routes cannot overlap",
+                        ));
+                    }
+                    Some(super::super::adapter::RetainedOwners::install_evaluation(
+                        self.host.clone(),
+                        session.controller().clone(),
+                        groups,
+                    )?)
+                } else {
+                    fixed_retained.map(super::super::adapter::RetainedOwners::fixed)
+                };
                 let refill_controller = (std::env::var_os("DIY_EXPERIMENT_REFILL_AFTER_GRAPH")
                     .as_deref()
                     == Some(std::ffi::OsStr::new("1")))

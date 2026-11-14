@@ -6,7 +6,10 @@ pub mod integration_probe;
 mod network;
 mod profile_pool;
 mod retained;
+mod retention_evaluation;
 pub(in crate::isolated_worker) use retained::Owner as RetainedOwner;
+pub(in crate::isolated_worker) use retention_evaluation::Owners as RetainedOwners;
+pub(in crate::isolated_worker) use retention_evaluation::Stages as RetainedEvaluationStages;
 mod prepared;
 mod ranges;
 #[cfg(test)]
