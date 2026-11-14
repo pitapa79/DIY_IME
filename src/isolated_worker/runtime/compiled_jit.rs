@@ -189,6 +189,34 @@ impl<'a> PublicRuntime<'a> {
         })
     }
 
+    fn take_engine(&mut self, strategy: Strategy) -> Result<P, String> {
+        let selected = match strategy {
+            Strategy::Standard => &mut self.standard,
+            Strategy::Winch => &mut self.winch,
+        };
+        if selected.is_null() {
+            return Err("prepared compiler engine unavailable".into());
+        }
+        Ok(std::mem::replace(selected, ptr::null_mut()))
+    }
+    /// # Safety
+    /// The private Parent selected its own settled compiler output and keeps
+    /// the hashed, locked immutable mapping pinned through this Module and the
+    /// original process's actual exit/IO/Job/ACL/profile cleanup. A package's
+    /// mapping/bytes/hash is never this provenance proof.
+    pub(super) unsafe fn prepare_immutable(
+        mut self,
+        diagnostics: Option<&'a Recorder>,
+        view: &super::code_mapping::CodeView,
+    ) -> Result<Runtime<'a>, String> {
+        let limits = self.limits.clone();
+        unsafe {
+            prepare_bound(self.api, &limits, diagnostics, view.bytes(), |s| {
+                self.take_engine(s)
+            })
+        }
+    }
+
     /// # Safety
     /// Same compiler-origin requirements as `prepare`. Neither digest nor the
     /// private transport establishes authority to deserialize external bytes.
@@ -206,17 +234,7 @@ impl<'a> PublicRuntime<'a> {
                 diagnostics,
                 bytes,
                 expected,
-                |strategy| {
-                    let selected = match strategy {
-                        Strategy::Standard => &mut self.standard,
-                        Strategy::Winch => &mut self.winch,
-                    };
-                    if selected.is_null() {
-                        return Err("prepared compiler engine unavailable".into());
-                    }
-                    // Runtime takes ownership even if Store/load subsequently fails.
-                    Ok(std::mem::replace(selected, ptr::null_mut()))
-                },
+                |strategy| self.take_engine(strategy),
             )
         }
     }
@@ -233,6 +251,16 @@ unsafe fn prepare_using<'a>(
     if hash(bytes)? != expected {
         return Err("compiled JIT bytes changed".into());
     }
+    unsafe { prepare_bound(api, limits, diagnostics, bytes, engine) }
+}
+
+unsafe fn prepare_bound<'a>(
+    api: &'a Api,
+    limits: &Limits,
+    diagnostics: Option<&'a Recorder>,
+    bytes: &[u8],
+    engine: impl FnOnce(Strategy) -> Result<P, String>,
+) -> Result<Runtime<'a>, String> {
     let frame = parse(bytes)?;
     if frame.fuel != limits.fuel
         || frame.memory != limits.memory

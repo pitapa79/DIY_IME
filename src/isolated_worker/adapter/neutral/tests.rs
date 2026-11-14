@@ -221,6 +221,7 @@ fn real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_c
         };
         let captured = Arc::downgrade(&payload.captured);
         let files = Arc::downgrade(&payload.captured.files);
+        let compiled_path = payload.captured.files.cache.path().to_owned();
         drop(victim);
         assert!(
             image.upgrade().is_some(),
@@ -230,6 +231,10 @@ fn real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_c
         assert!(image.upgrade().is_none(), "source/cache strong cycle");
         assert!(captured.upgrade().is_none(), "cached byte owner leaked");
         assert!(files.upgrade().is_none(), "compiled files remained locked");
+        assert!(
+            !compiled_path.exists(),
+            "code mapping prevented physical cache cleanup"
+        );
     }
 }
 
@@ -252,6 +257,7 @@ fn cached_code_yields_to_essential_storage_without_releasing_active_pins() {
         Arc::new(CapturedCode {
             files: files.clone(),
             bytes: Arc::from(b"data".as_slice()),
+            mapping: None,
             digest: "synthetic-never-deserialized".into(),
             _charge: budget.reserve(8).unwrap(),
         })

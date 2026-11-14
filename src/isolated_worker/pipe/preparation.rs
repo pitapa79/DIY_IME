@@ -131,27 +131,29 @@ pub fn execute_preparation<'a>(
     let ranges = Arc::new(Mutex::new(request.sources.ranges));
     let io_ranges = ranges.clone();
     let io_capture = capture.clone();
-    let exchange = Box::new(move |output, input| {
-        let mut ranges = io_ranges
-            .lock()
-            .map_err(|_| "preparation owner unavailable")?;
-        let mut capture = io_capture
-            .lock()
-            .map_err(|_| "preparation capture unavailable")?;
-        let result = crate::isolated_worker::resource_transport::serve_build(
-            output,
-            input,
-            &request.input,
-            &mut ranges,
-            &mut capture,
-        );
-        if result.is_err() {
-            ranges.withdraw();
-        }
-        result
-            .map(super::ExchangeOutput::plain)
-            .map_err(|_| "Worker preparation exchange failed".into())
-    });
+    let exchange = Box::new(
+        move |output, input, _target: std::os::windows::io::BorrowedHandle<'_>| {
+            let mut ranges = io_ranges
+                .lock()
+                .map_err(|_| "preparation owner unavailable")?;
+            let mut capture = io_capture
+                .lock()
+                .map_err(|_| "preparation capture unavailable")?;
+            let result = crate::isolated_worker::resource_transport::serve_build(
+                output,
+                input,
+                &request.input,
+                &mut ranges,
+                &mut capture,
+            );
+            if result.is_err() {
+                ranges.withdraw();
+            }
+            result
+                .map(super::ExchangeOutput::plain)
+                .map_err(|_| "Worker preparation exchange failed".into())
+        },
+    );
     let outcome = execute_observed(
         WorkerScope {
             verified_runtime: None,

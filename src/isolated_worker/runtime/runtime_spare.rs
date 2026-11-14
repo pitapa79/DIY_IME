@@ -6,11 +6,16 @@ pub(super) fn run(
     api: &Api,
     limits: &Limits,
     diagnostics: Option<&Recorder>,
+    mapped: bool,
 ) -> Result<(), String> {
     let public = compiled_jit::PublicRuntime::new(api, limits)?;
     let mut output = std::io::stdout().lock();
     output
-        .write_all(RUNTIME_READY)
+        .write_all(if mapped {
+            super::RUNTIME_MAPPED_READY
+        } else {
+            RUNTIME_READY
+        })
         .and_then(|()| output.flush())
         .map_err(|_| "runtime readiness pipe failed")?;
     let mut input = std::io::stdin().lock();
@@ -31,29 +36,51 @@ pub(super) fn run(
         false
     };
     let read = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
-    let mut header = [0; 68];
+    let mut header = [0; 4];
     input
         .read_exact(&mut header)
         .map_err(|_| "runtime module header truncated")?;
-    let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+    let length = u32::from_le_bytes(header) as usize;
     if !(1..=8 * 1024 * 1024).contains(&length) {
         return Err("runtime module length exceeds bound".into());
     }
-    let digest = std::str::from_utf8(&header[4..]).map_err(|_| "invalid runtime module digest")?;
-    if !digest
-        .bytes()
-        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err("invalid runtime module digest".into());
+    enum Code {
+        Bytes(Vec<u8>, String),
+        Mapped(super::code_mapping::CodeView),
     }
-    let mut module = Vec::new();
-    module
-        .try_reserve_exact(length)
-        .map_err(|_| "runtime module allocation failed")?;
-    module.resize(length, 0);
-    input
-        .read_exact(&mut module)
-        .map_err(|_| "runtime module truncated")?;
+    let code = if mapped {
+        let mut handle = [0; 8];
+        input
+            .read_exact(&mut handle)
+            .map_err(|_| "runtime code capability truncated")?;
+        // SAFETY: the private trusted Parent duplicates a read-only mapping of
+        // its exact settled compiler output only after normal delivery checks.
+        // Parent pins the immutable backing/file/budget through real exit/IO.
+        Code::Mapped(unsafe {
+            super::code_mapping::CodeView::from_parent_handle(u64::from_le_bytes(handle), length)?
+        })
+    } else {
+        let mut digest = [0; 64];
+        input
+            .read_exact(&mut digest)
+            .map_err(|_| "runtime digest truncated")?;
+        let digest = std::str::from_utf8(&digest).map_err(|_| "invalid runtime module digest")?;
+        if !digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid runtime module digest".into());
+        }
+        let mut module = Vec::new();
+        module
+            .try_reserve_exact(length)
+            .map_err(|_| "runtime module allocation failed")?;
+        module.resize(length, 0);
+        input
+            .read_exact(&mut module)
+            .map_err(|_| "runtime module truncated")?;
+        Code::Bytes(module, digest.to_owned())
+    };
     drop(read);
     let read = diagnostics.map(|d| d.span(WorkerTracePhase::InputRead));
     let mut request = Vec::new();
@@ -68,7 +95,10 @@ pub(super) fn run(
     // SAFETY: trusted Parent sends only its own captured compile-only output,
     // after that original compiler's process/IO/ACL/profile cleanup. This private
     // header is integrity/binding, never permission to load package artifacts.
-    let mut guest = unsafe { public.prepare(diagnostics, &module, digest)? };
+    let mut guest = match &code {
+        Code::Bytes(module, digest) => unsafe { public.prepare(diagnostics, module, digest)? },
+        Code::Mapped(view) => unsafe { public.prepare_immutable(diagnostics, view)? },
+    };
     guest.instantiate()?;
     let reply = guest.invoke(&request)?;
     let write = diagnostics.map(|d| d.span(WorkerTracePhase::ReplyWrite));

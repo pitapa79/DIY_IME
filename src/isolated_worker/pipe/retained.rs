@@ -238,13 +238,15 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     }
     let cancel = control.cancel.clone();
     let exchange = request.exchange;
-    let wrapped = Box::new(move |output, input| {
-        let result = exchange(output, input);
-        if result.is_err() {
-            cancel.cancel();
-        }
-        result.map(super::ExchangeOutput::plain)
-    });
+    let wrapped = Box::new(
+        move |output, input, _target: std::os::windows::io::BorrowedHandle<'_>| {
+            let result = exchange(output, input);
+            if result.is_err() {
+                cancel.cancel();
+            }
+            result.map(super::ExchangeOutput::plain)
+        },
+    );
     let deadline = request.reservation.inner.deadline;
     let (activity, process_id) = observation.map_or((None, None), |value| {
         (Some(value.activity), Some(value.process_id))

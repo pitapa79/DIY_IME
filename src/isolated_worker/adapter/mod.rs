@@ -910,8 +910,25 @@ impl WasmArtifact {
         let mut module_delivery = super::pipe::JitModuleDelivery::Early;
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
             WorkerImage::RuntimeOnly => {
-                module_delivery = super::pipe::JitModuleDelivery::Neutral;
-                (None, "-", 0, Some("--prepare-runtime-jit-v1".into()))
+                let mapped = neutral::mapping_enabled();
+                module_delivery = if mapped {
+                    super::pipe::JitModuleDelivery::NeutralMapped
+                } else {
+                    super::pipe::JitModuleDelivery::Neutral
+                };
+                (
+                    None,
+                    "-",
+                    0,
+                    Some(
+                        if mapped {
+                            "--prepare-runtime-jit-map-v1"
+                        } else {
+                            "--prepare-runtime-jit-v1"
+                        }
+                        .into(),
+                    ),
+                )
             }
             WorkerImage::Jit if stream_module => (
                 None,

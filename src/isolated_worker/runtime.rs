@@ -5,6 +5,7 @@ mod runtime_image;
 pub(super) use runtime_image::VerifiedRuntimeFile;
 pub(super) const MAX_STREAMED_MODULE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JIT_READY: &[u8] = b"DIY-JIT-READY-v1\0";
+pub(super) const RUNTIME_MAPPED_READY: &[u8] = b"DIY-RUNTIME-MAPPED-READY-v1\0";
 pub(super) const RUNTIME_READY: &[u8] = b"DIY-RUNTIME-READY-v1\0";
 #[derive(Clone)]
 struct Limits {
@@ -134,23 +135,18 @@ fn deferred_bootstrap_rejects_nonprepared_modes_and_a_diagnostic_handle() {
 
 #[test]
 fn runtime_only_bootstrap_rejects_a_preselected_module_before_loading() {
-    for (module, length) in [("node.wasm", "0"), ("-", "1")] {
-        let args = [
-            "--prepare-runtime-jit-v1",
-            "runtime",
-            module,
-            length,
-            "10000",
-            "65536",
-        ]
-        .into_iter()
-        .map(std::ffi::OsString::from)
-        .collect();
-        assert!(
-            worker_with_args(args)
-                .unwrap_err()
-                .contains("cannot select a module")
-        );
+    for flag in ["--prepare-runtime-jit-v1", "--prepare-runtime-jit-map-v1"] {
+        for (module, length) in [("node.wasm", "0"), ("-", "1")] {
+            let args = [flag, "runtime", module, length, "10000", "65536"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect();
+            assert!(
+                worker_with_args(args)
+                    .unwrap_err()
+                    .contains("cannot select a module")
+            );
+        }
     }
 }
 
@@ -168,8 +164,10 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             ModuleMode::Compile
         } else if flag == "--compile-jit-v1" {
             ModuleMode::CompileJit
-        } else if flag == "--prepare-runtime-jit-v1" {
-            ModuleMode::RuntimeSpare
+        } else if flag == "--prepare-runtime-jit-v1" || flag == "--prepare-runtime-jit-map-v1" {
+            ModuleMode::RuntimeSpare {
+                mapped: flag == "--prepare-runtime-jit-map-v1",
+            }
         } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-v1=") {
             ModuleMode::PreparedCompiled(digest.to_owned())
         } else if let Some(digest) = flag.strip_prefix("--prepare-compiled-jit-pipe-v1=") {
@@ -209,7 +207,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             } | ModuleMode::JitPipe
                 | ModuleMode::PreparedCompiled(_)
                 | ModuleMode::PreparedCompiledPipe(_)
-                | ModuleMode::RuntimeSpare
+                | ModuleMode::RuntimeSpare { .. }
         ) {
             return Err("deferred diagnostics require single-use JIT delivery".into());
         }
@@ -222,7 +220,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .ok_or("invalid module length")?
         .parse::<usize>()
         .map_err(|_| "invalid module length")?;
-    if matches!(mode, ModuleMode::RuntimeSpare) && (length != 0 || args[1] != "-") {
+    if matches!(mode, ModuleMode::RuntimeSpare { .. }) && (length != 0 || args[1] != "-") {
         return Err("runtime-only preparation cannot select a module".into());
     }
     let parse = |v: &std::ffi::OsStr| -> Result<Option<u64>, String> {
@@ -894,7 +892,7 @@ pub(super) mod compiled_jit_probe;
 #[cfg(test)]
 mod compiled_module_probe;
 enum ModuleMode {
-    RuntimeSpare,
+    RuntimeSpare { mapped: bool },
     Jit { acknowledge_preparation: bool },
     JitPipe,
     ResourceRanges,
@@ -906,6 +904,7 @@ enum ModuleMode {
     Reuse(String),
 }
 
+pub(in crate::isolated_worker) mod code_mapping;
 pub(super) mod compiled_jit;
 mod compiled_module;
 mod resource_import;
@@ -944,11 +943,11 @@ fn run(
         Api::load(runtime)?
     };
     drop(dll_phase);
-    if matches!(mode, ModuleMode::RuntimeSpare) {
+    if let ModuleMode::RuntimeSpare { mapped } = mode {
         if expected_module != Some(0) || args[1] != "-" || args[2] != "-" {
             return Err("runtime-only preparation requires private delivery".into());
         }
-        return runtime_spare::run(&api, &limits, diagnostics);
+        return runtime_spare::run(&api, &limits, diagnostics, mapped);
     }
     let module_phase = diagnostics.map(|d| d.span(WorkerTracePhase::ModuleRead));
     let limit = expected_module.unwrap_or(64 * 1024 * 1024);
@@ -1145,7 +1144,7 @@ fn run(
         }
         ModuleMode::ResourceRanges => unreachable!("resource transport returns before raw input"),
         ModuleMode::ResourceBuild => unreachable!("resource build returns before raw input"),
-        ModuleMode::RuntimeSpare => unreachable!("runtime spare returns before module read"),
+        ModuleMode::RuntimeSpare { .. } => unreachable!("runtime spare returns before module read"),
     };
     if expected_module.is_some() {
         // Production carries the exact bounded guest wire to Parent validation.

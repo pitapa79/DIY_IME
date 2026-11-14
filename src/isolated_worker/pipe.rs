@@ -405,8 +405,14 @@ fn read_inline_reply(mut output: impl Read) -> Result<ExchangeOutput, String> {
     let diagnostics = Some(super::worker_trace::read(output));
     Ok(ExchangeOutput { bytes, diagnostics })
 }
-type HostExchange =
-    Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<ExchangeOutput, String> + Send>;
+type HostExchange = Box<
+    dyn for<'target> FnOnce(
+            std::fs::File,
+            std::fs::File,
+            std::os::windows::io::BorrowedHandle<'target>,
+        ) -> Result<ExchangeOutput, String>
+        + Send,
+>;
 #[cfg(test)]
 type PlainExchange =
     Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
@@ -415,6 +421,7 @@ pub(super) enum JitModuleDelivery {
     Early,
     LateBound(String),
     Neutral,
+    NeutralMapped,
 }
 pub(super) struct JitDelivery {
     pub bytes: Vec<u8>,
@@ -441,14 +448,16 @@ impl<'a> WorkerScope<'a> {
     ) -> Self {
         let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
         self.jit_run_cancel = Some(run_cancellation.clone());
-        self.exchange = Some(Box::new(move |mut output, mut input| {
+        self.exchange = Some(Box::new(move |mut output, mut input, target| {
             let late = !matches!(module_delivery, JitModuleDelivery::Early);
             if let Some(module) = module.as_ref().filter(|_| !late) {
                 input
                     .write_all(module)
                     .map_err(|_| "JIT module pipe closed")?;
             }
-            let marker = if late {
+            let marker = if matches!(module_delivery, JitModuleDelivery::NeutralMapped) {
+                super::runtime::RUNTIME_MAPPED_READY
+            } else if late {
                 super::runtime::RUNTIME_READY
             } else {
                 super::runtime::JIT_READY
@@ -513,6 +522,21 @@ impl<'a> WorkerScope<'a> {
                         .ok_or("neutral runtime requires captured late code")?;
                     code.check()?;
                     Some((code.bytes(), code.digest()))
+                }
+                JitModuleDelivery::NeutralMapped => {
+                    let code = late_code
+                        .as_ref()
+                        .ok_or("mapped runtime requires captured late code")?;
+                    code.check()?;
+                    let mapping = code.mapping().ok_or("immutable code mapping absent")?;
+                    // The original process receives its ONLY code capability
+                    // after the same size/grant/generation/cancel checks above.
+                    let remote = mapping.duplicate_into(target)?;
+                    input
+                        .write_all(&(mapping.length() as u32).to_le_bytes())
+                        .and_then(|()| input.write_all(&remote.to_le_bytes()))
+                        .map_err(|_| "late mapped code pipe failed")?;
+                    None
                 }
             };
             if let Some((module, digest)) = late_bytes {
@@ -592,7 +616,7 @@ impl<'a> WorkerScope<'a> {
     }
     #[cfg(test)]
     pub(super) fn with_test_exchange(mut self, exchange: PlainExchange) -> Self {
-        self.exchange = Some(Box::new(move |output, input| {
+        self.exchange = Some(Box::new(move |output, input, _target| {
             exchange(output, input).map(ExchangeOutput::plain)
         }));
         self
@@ -666,18 +690,21 @@ pub fn execute_resources<'a>(
     );
     let session = Arc::new(std::sync::Mutex::new(request.resources));
     let io_session = session.clone();
-    let exchange = Box::new(move |output, input| {
-        let mut session = io_session
-            .lock()
-            .map_err(|_| "resource owner unavailable")?;
-        let result = super::resource_transport::serve(output, input, &request.input, &mut session);
-        if result.is_err() {
-            session.withdraw();
-        }
-        result
-            .map(ExchangeOutput::plain)
-            .map_err(|_| "Worker resource exchange failed".into())
-    });
+    let exchange = Box::new(
+        move |output, input, _target: std::os::windows::io::BorrowedHandle<'_>| {
+            let mut session = io_session
+                .lock()
+                .map_err(|_| "resource owner unavailable")?;
+            let result =
+                super::resource_transport::serve(output, input, &request.input, &mut session);
+            if result.is_err() {
+                session.withdraw();
+            }
+            result
+                .map(ExchangeOutput::plain)
+                .map_err(|_| "Worker resource exchange failed".into())
+        },
+    );
     execute_observed(
         WorkerScope {
             profile,
@@ -980,8 +1007,15 @@ pub(super) fn execute_with_diagnostics<'a>(
     let exceeded = overflow.clone();
     let pipes = if let Some(exchange) = exchange {
         let exceeded = overflow.clone();
+        let process_handle = running.process.0 as usize;
         running.output = Some(thread::spawn(move || {
-            let result = exchange(file, writer);
+            // SAFETY: Running::finish and Running::drop ALWAYS join this IO
+            // owner before its original process handle is closed. No PID
+            // reopening/reuse or handle ownership transfer is involved.
+            let target = unsafe {
+                std::os::windows::io::BorrowedHandle::borrow_raw(process_handle as HANDLE)
+            };
+            let result = exchange(file, writer, target);
             if matches!(&result, Err(error) if error == OUTPUT_LIMIT_ERROR) {
                 exceeded.store(true, Ordering::Release);
             }

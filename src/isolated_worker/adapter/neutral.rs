@@ -17,6 +17,9 @@ pub(in crate::isolated_worker) struct LateJitCode {
 // No Image/WasmArtifact/slot reference: storing this owner in an Image's cache
 // cannot create a strong cycle that retains code/files/budget indefinitely.
 pub(super) struct CapturedCode {
+    // Drop the extra mapping/file pin BEFORE CodeFiles attempts physical cache
+    // deletion. Reversing these fields would strand Windows files and budget.
+    mapping: Option<super::super::runtime::code_mapping::CodeMapping>,
     files: Arc<CodeFiles>,
     bytes: Arc<[u8]>,
     digest: String,
@@ -26,6 +29,11 @@ pub(super) type CodeCacheSlot = std::sync::Mutex<Option<Arc<CapturedCode>>>;
 pub(super) fn cache_enabled() -> bool {
     enabled()
         && std::env::var_os("DIY_EXPERIMENT_NEUTRAL_CODE_CACHE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+}
+pub(super) fn mapping_enabled() -> bool {
+    cache_enabled()
+        && std::env::var_os("DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING").as_deref()
             == Some(std::ffi::OsStr::new("1"))
 }
 impl CodeBudget {
@@ -53,6 +61,11 @@ impl CodeBudget {
     }
 }
 impl LateJitCode {
+    pub(in crate::isolated_worker) fn mapping(
+        &self,
+    ) -> Option<&super::super::runtime::code_mapping::CodeMapping> {
+        self.captured.mapping.as_ref()
+    }
     pub(in crate::isolated_worker) fn bytes(&self) -> &[u8] {
         &self.captured.bytes
     }
@@ -60,6 +73,14 @@ impl LateJitCode {
         &self.captured.digest
     }
     pub(in crate::isolated_worker) fn check(&self) -> Result<(), String> {
+        if self
+            .captured
+            .mapping
+            .as_ref()
+            .is_some_and(|m| !m.matches(self.captured.bytes.len(), &self.captured.digest))
+        {
+            return Err("mapped code binding changed".into());
+        }
         self.captured
             .files
             .check_healthy()
@@ -116,7 +137,12 @@ impl WasmArtifact {
         len: usize,
         digest: String,
     ) -> Result<Arc<CapturedCode>, CoreError> {
-        let charge = self.0.code_budget.reserve(2 * (len as u64 + 1))?;
+        let mapped = mapping_enabled();
+        // Include the additional read-only view's worst-case resident bytes.
+        let charge = self
+            .0
+            .code_budget
+            .reserve((if mapped { 3 } else { 2 }) * (len as u64 + 1))?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(len + 1)
@@ -128,9 +154,33 @@ impl WasmArtifact {
             return Err(fail("worker-identity", "late compiled code changed"));
         }
         files.check_healthy()?;
+        let mapping = if mapped {
+            if files.locks.len() != 1 {
+                return Err(fail(
+                    "worker-identity",
+                    "compiled code file binding changed",
+                ));
+            }
+            // SAFETY: only this source's settled CompileJit creates these files;
+            // private snapshot locks deny writes/deletes, with no prior writable
+            // mapping or guest access. The payload pins both files and view.
+            Some(
+                unsafe {
+                    super::super::runtime::code_mapping::CodeMapping::capture_locked(
+                        &files.locks[0],
+                        len,
+                        &digest,
+                    )
+                }
+                .map_err(|_| fail("worker-identity", "immutable code mapping unavailable"))?,
+            )
+        } else {
+            None
+        };
         Ok(Arc::new(CapturedCode {
             files,
             bytes: Arc::from(bytes),
+            mapping,
             digest,
             _charge: charge,
         }))
