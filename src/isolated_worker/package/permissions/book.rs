@@ -312,6 +312,93 @@ pub struct PendingPermissionSession {
     owns_session: bool,
 }
 impl PendingPermissionSession {
+    pub(in crate::isolated_worker) fn retention_evaluation_groups(
+        &self,
+        graph: &crate::graph::Graph,
+        group_size: usize,
+    ) -> Result<Vec<crate::isolated_worker::adapter::RetainedEvaluationStages>, CoreError> {
+        let plan = self.plan.as_ref().ok_or_else(denied)?;
+        if !matches!(group_size, 1 | 4)
+            || plan.nodes.is_empty()
+            || plan.nodes.len() > 20
+            || plan
+                .nodes
+                .iter()
+                .any(|n| !n.node.retention_evaluation_eligible())
+        {
+            return Err(CoreError::new(
+                "retained-evaluation",
+                "unreviewed evaluation plan",
+            ));
+        }
+        let mut ordered = Vec::new();
+        if group_size == 1 {
+            ordered.extend(plan.nodes.iter());
+        } else {
+            // Grouping currently evaluates strict linear chains. Never guess an
+            // order from array positions or co-load a branch under that promise.
+            let ids: std::collections::BTreeSet<_> =
+                plan.nodes.iter().map(|n| n.id.as_str()).collect();
+            let external_edges: Vec<_> = graph
+                .edges
+                .iter()
+                .filter(|e| ids.contains(e.from.node.as_str()) && ids.contains(e.to.node.as_str()))
+                .collect();
+            let heads: Vec<_> = plan
+                .nodes
+                .iter()
+                .filter(|n| !external_edges.iter().any(|e| e.to.node == n.id))
+                .collect();
+            if heads.len() != 1 {
+                return Err(CoreError::new(
+                    "retained-evaluation",
+                    "grouped evaluation requires one linear chain",
+                ));
+            }
+            let mut next = Some(heads[0]);
+            while let Some(node) = next.take() {
+                if ordered
+                    .iter()
+                    .any(|known: &&super::plan::NamedNode| known.id == node.id)
+                {
+                    return Err(denied());
+                }
+                ordered.push(node);
+                let outgoing: Vec<_> = external_edges
+                    .iter()
+                    .filter(|e| e.from.node == node.id)
+                    .collect();
+                if outgoing.len() > 1
+                    || external_edges
+                        .iter()
+                        .filter(|e| e.to.node == node.id)
+                        .count()
+                        > 1
+                {
+                    return Err(CoreError::new(
+                        "retained-evaluation",
+                        "grouped branch/join is not admitted",
+                    ));
+                }
+                if let Some(edge) = outgoing.first() {
+                    next = plan.nodes.iter().find(|n| n.id == edge.to.node);
+                }
+            }
+            if ordered.len() != plan.nodes.len() {
+                return Err(denied());
+            }
+        }
+        Ok(ordered
+            .chunks(group_size)
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|n| (n.id.clone(), n.node.clone(), n.config.clone()))
+                    .collect()
+            })
+            .collect())
+    }
+
     pub(in crate::isolated_worker) fn jit_candidates(
         &self,
         limit: usize,

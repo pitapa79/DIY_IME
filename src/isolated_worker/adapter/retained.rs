@@ -11,7 +11,7 @@ struct Route {
     owner: Weak<Shared>,
 }
 #[derive(Clone, Default)]
-pub(super) struct NodeLink(Arc<Mutex<Option<Route>>>);
+pub(super) struct NodeLink(Arc<Mutex<std::collections::BTreeMap<String, Route>>>);
 struct Command {
     stage: usize,
     node: WasmNode,
@@ -102,7 +102,7 @@ impl NodeLink {
             .0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
+            .get(arguments.0.context().node_id)
             .and_then(|route| route.owner.upgrade())
         else {
             return Err(Box::new(arguments));
@@ -186,6 +186,29 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
+        Self::install_stages(host, controller, stages, false)
+    }
+
+    pub(super) fn install_evaluation(
+        host: ExecutionHost,
+        controller: GuardedController,
+        stages: Vec<(String, WasmNode, Value)>,
+    ) -> Result<Option<Self>, CoreError> {
+        if stages
+            .iter()
+            .any(|(_, node, _)| !node.retention_evaluation_eligible())
+        {
+            return Err(fail("retained-evaluation", "unreviewed implementation"));
+        }
+        Self::install_stages(host, controller, stages, true)
+    }
+
+    fn install_stages(
+        host: ExecutionHost,
+        controller: GuardedController,
+        stages: Vec<(String, WasmNode, Value)>,
+        evaluation: bool,
+    ) -> Result<Option<Self>, CoreError> {
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
         let mut configs = Vec::new();
@@ -194,7 +217,7 @@ impl Owner {
             nodes.push(node);
             configs.push(config);
         }
-        if nodes.len() != 4 {
+        if (!evaluation && nodes.len() != 4) || !(1..=4).contains(&nodes.len()) {
             return Err(fail("retained-plan", "four prepared stages required"));
         }
         let policy = &nodes[0].artifact.0.policy;
@@ -226,7 +249,11 @@ impl Owner {
             replies: AtomicU64::new(0),
         });
         let worker_shared = shared.clone();
-        let links: Vec<_> = nodes.iter().map(|n| n.retained.clone()).collect();
+        let links: Vec<_> = ids
+            .iter()
+            .cloned()
+            .zip(nodes.iter().map(|n| n.retained.clone()))
+            .collect();
         let thread = std::thread::Builder::new()
             .name("diyime-retained-session".into())
             .spawn(move || {
@@ -249,15 +276,21 @@ impl Owner {
                 )
             })
             .map_err(|_| fail("worker-thread", "retained Session thread unavailable"))?;
-        for link in &links {
-            *link.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(Route {
-                owner: Arc::downgrade(&shared),
-            });
+        for (id, link) in links {
+            link.0.lock().unwrap_or_else(|p| p.into_inner()).insert(
+                id,
+                Route {
+                    owner: Arc::downgrade(&shared),
+                },
+            );
         }
         Ok(Some(Self {
             shared,
             thread: Some(thread),
         }))
+    }
+    pub(super) fn close(&self) {
+        self.shared.close();
     }
     pub(in crate::isolated_worker) fn physical_jobs(&self) -> u64 {
         self.shared.physical.load(Ordering::Acquire)
@@ -445,10 +478,11 @@ impl Native {
             .collect::<Result<Vec<_>, CoreError>>()?;
         let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
+        let stages = (0..nodes.len()).collect();
         let (client, request) = RetainedClient::channel(
             host.clone(),
             pin.clone(),
-            vec![0, 1, 2, 3],
+            stages,
             DriverPolicy {
                 idle_timeout: Duration::from_secs(60),
                 input_timeout: Duration::from_secs(120),
@@ -573,6 +607,7 @@ fn coordinate(
     shared: Arc<Shared>,
     receive: mpsc::Receiver<Command>,
 ) {
+    let stage_count = nodes.len();
     let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared).ok();
     let mut pending = None;
     while !shared.stop.is_cancelled() && controller.control_state().is_ok() {
@@ -750,7 +785,7 @@ fn coordinate(
                 completed += 1;
                 let _ = command.done.send(());
             }
-            if completed == 4 {
+            if completed == stage_count {
                 finished = input.take().unwrap().finish(|| Ok(())).is_ok();
                 break;
             }
@@ -759,7 +794,7 @@ fn coordinate(
             }
             let snapshot = controller.get_run(&key);
             if shared.completed(&key) || snapshot.as_ref().is_ok_and(successful) {
-                let suffix: Vec<_> = (completed..4).collect();
+                let suffix: Vec<_> = (completed..stage_count).collect();
                 finished = input
                     .take()
                     .unwrap()
@@ -785,7 +820,7 @@ fn coordinate(
                     } else {
                         pending = Some(command);
                         if shared.completed(&key) {
-                            let suffix: Vec<_> = (completed..4).collect();
+                            let suffix: Vec<_> = (completed..stage_count).collect();
                             finished = input
                                 .take()
                                 .unwrap()
