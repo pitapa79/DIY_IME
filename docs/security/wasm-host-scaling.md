@@ -603,3 +603,40 @@ Native側はこのprivate Parent capabilityをread-onlyでmapし、frameの構�
 追加の従来経路回帰ではcompiled準備の5秒待ちが2回、raw準備の5秒待ちが1回失敗し、元Worker開始前/入力前の取消と実回収で終了した。入力時診断の実検査は6.58秒で成功。これらを全ローカル合格にせず、失敗ログを残して、上限を変えない同じ回帰検査をCIへ明示追加した。利用上限による自動承認レビュー失敗で一度実行できなかったが、案内時刻を過ぎて同じ承認経路で実行した。承認確認の迂回はしていない。
 
 直前CIのneutral区分は36分12秒だったため、新mappingの実検査・比較は45分上限の第4区分へ分離した。既存3区分の全step・条件・上限を残し、同じ必須集約が4区分すべての成功を必要とする。mapping区分は両診断/両catalogの製品検査、元のcompiled/raw/診断回帰、単段100・mixed10構成各10・逐次/20/100ms各245入力・公式5構成各10を同一runner ABBAで比較する。全32report/accountingとsource/SHA manifestを別artifact directoryへ保存する。collectorの合成正常32件+manifestと欠落・binary/control不一致・短いrecord/pacedの拒否を確認した。これを実性能証拠には使わない。新方式のCI・広い構成の尾部、辞書/network適用、Core P95とnormal main/defaultの採用は未完了である。
+
+### Read-only mappingの実CIと残る回収競合（2026-11-14）
+
+e18c0f7の [CI43583600922](https://github.com/pitapa79/DIY_IME/actions/runs/43583600922) は4区分と必須集約がすべて成功した。mappingの両診断/両catalog安全検査と、元の5秒準備制限を維持したcompiled/raw/診断回帰も成功した。以前のローカル準備失敗の原因を解明したことにはならない。artifact14110900390（74,066,769bytes、SHA `19d7c76aae2533cbc04b3838462aa392f1dd95302727d79481c6118ff3bcb675`）を実取得し、source `11e11ebbbddc1b1fd714ee72102ec6cad0dc0071`、全32report/accountingとmanifestの各SHAを照合した。各reportのmode・実code差・100/10/35試行・1/10/2/5構成・paced分母・Job accounting・配布binaryとの一致も確認した。この時点で同runの別neutral区分の56詳細ファイルは未取得である。
+
+CI Host SHA `b2b0e0c7f8e1076afb2f3d29c8a1b888afb20faee542df9f5bf7b95abe06a66a`、Worker `d04498f17ad2c846282652681c3f9b3c749f37aff9672bbdc04ce9a2a787face`、DLLは上記固定SHA。neutral/cache常時ON、mapping OFF→ON→ON→OFF、単段各100ウォーム入力は全件preparedで、同一Node ready→resolved minus same guest-call P95/P99msが11.971/13.324、9.789/12.152、9.919/11.920、11.381/12.052。単段の部分条件は満たした。Host全体は13.223/17.247、11.097/13.451、11.791/13.554、12.671/13.317msで、別区間へ置き換えない。初回Host-minus-sameGuestは13.863/13.380/13.284/13.489ms。
+
+異種16段は各160 NodeがpreparedでP95/P99msが43.170/102.024、21.549/46.129、22.973/206.612、22.532/374.795。ONの公式単段P95は14.788/12.600ms、公式4段は22.493/24.857ms。第三者4並列の完全計測は9/7/7/9件、公式混合4並列は9/9/5/9件（各10件中）で、unknownと欠測をpreparedやゼロとして補わない。4段20msは各245入力中、正答36/47/49/37、置換208/198/196/208。OFF1にはbusy admission拒否1件もあり、driverのfailed集計はこの拒否を含む。これを実行済みguestの故障1件とは解釈しない。置換は原要件で許容されるが、分母・最新正答・実回収・資源費を保持する。単段/mixed Job CPU秒は7.438/38.875、7.500/38.281、7.375/36.922、6.766/37.969。多段・公式・初回・Core・main/default等はまだ達成していない。
+
+前回de9の異種16段cache比較を同一Nodeの区間で分解すると、cleanup P99µsは495599/281266/703813/449569、全体P99は503292/287916/709196/458301。最大例は全体1272335µs中cleanup1267352µs、Native main1858µsだった。親回収が大きな外れ値を占めるが、profile削除だけが原因とは断定できない。既存job132339596992の20ms以上だけを出す診断1134件では、1058件でJob+ACLがprofile削除より長く、ACL mutex待ちP95/P99は522366/912708µsだった。これは**job全体の選択された遅い診断**であり、全呼出しや特定構成の分位点ではない。旧stderrにはNode識別がないため、近い時間だけでtraceと対応付けない。
+
+次の既定OFF候補 `DIY_EXPERIMENT_BATCHED_CODE_ACL=1` は継承ACL実験もONの時だけ、同じCodeFilesへの競合中に既に溜まったSID更新をまとめる。固定sleep・別の常駐threadを追加しない。待機queue64件と処理中batch64件を上限とし、callerは自分の要求が同期完了するまで元profile/leaseを所有する。保持するのは最大68bytesのSIDコピー・操作・完了状態だけで、入力・結果・Worker ownerをqueueへ移さない。SetEntriesInAclへ渡す権限、名前指定の継承伝播、対象files数の検査は従来どおり。SID重複を拒否し、batch失敗/panicはhealthを不可逆に失敗へ落として新規grantを拒否する。失敗後もrevokeは試みる。結果公開前の元process/IO/Job/ACL/profile回収を省略しない。
+
+候補のfmt、release all-target Clippy、CLI/Host/Workerとharness buildが成功。競合4要求の一括完了と個別操作保持、失敗後のgrant拒否/revoke続行、panicでの完了/health維持、実Windowsで3SIDのroot/子fileへの同じread/execute権限・個別取消・重複拒否・実profile/file回収の4単体検査が成功した。最初の単体は合成file名が既存cleanup whitelist外だったため最後の回収assertで失敗した。失敗ログを残し、名前を許可済みのnode.wasm/node.cwasmへ修正した。製品cleanupを緩めず、最初の合成file2件と空directoryも正確に照合して削除した。実AppContainer lifecycleは両診断22.265/14.734秒、通常/公式catalog×両診断の製品検査4条件も成功した。この候補の実CI・既定採用はまだ未確認である。
+
+その後、同じCI43583600922のneutral artifact14110582493（86,070,083bytes、SHA `8644859806ed85d48485a464603594e6ef6b9a21d9f749c278ecd76315e4c5aa`）も取得した。sourceは同じ `11e11ebbbddc1b1fd714ee72102ec6cad0dc0071` で、共有24+cache24+公式8の全SHAと3manifestを照合し、各reportの条件・分母・Job値・bundle一致も確認した。この区分のHost SHA `2cb4a8dac9d4661dd5e617722b00d48da055701605ff5926b0431777184d36ef`、Worker `f1ed83e679c59766e638a85605710933623531de983c2589e2ec7a8ba5e81b05` はmapping区分のbinaryと異なるため、異なるrunnerの値を同一binary比較として混ぜない。新runは合計88 report/accountingと4manifestを実取得できた。
+
+### ACL一括更新の通常Host予備比較（2026-11-14）
+
+同一候補binary、neutral/cache/mapping常時ON、batch OFF→ON→ON→OFF、単段2枠・各25ウォーム入力の100件はすべて正答とrun/session実回収を通った。以下の全試行値はcoldも含む。
+
+| batch | prepared / 25 | Node ready→resolved minus same guest P95/P99 ms | Host全体 minus same guest P95/P99 ms |
+| --- | --- | --- | --- |
+| OFF 1 | 14 | 775.321 / 962.626 | 819.012 / 977.578 |
+| ON 2 | 25 | 24.897 / 50.921 | 26.615 / 54.421 |
+| ON 3 | 24 | 32.128 / 285.993 | 37.092 / 290.225 |
+| OFF 4 | 20 | 1356.502 / 1937.387 | 1398.233 / 2047.752 |
+
+初回Host-minus-sameGuestは1665.940/51.580/43.767/74.795ms。Job CPU8187.5/4859.375/5140.625/6515.625ms、peak commit115961856/116494336/117067776/115597312bytes、process91/90/91/90。2枠では同一cacheへの同時ACL要求も少なく、OFF側のcoldと大きな環境変動がある。この短い比較だけでbatch自体の尾部改善・一括適用回数・Goal達成を認定しない。
+
+追加の6枠・実異種code・10構成（直列1/2/4/8/16、同code4段、並列/合流/skip/未使用codeを含む）×各3ウォーム入力は全120グラフで正答・run/session実回収を通った。異種16段の同一Node区間P95/P99msは120.619/165.169、118.601/397.551、109.931/174.354、127.296/218.588（各48 Node prepared）。4並列は489.541/489.541、238.460/238.460、158.393/158.393、304.094/304.094msで、完全なgraph計測は3/3/2/3件（各3件中）。欠測とunknownは残す。異種4直列はP95が67.109/265.687/131.234/86.474msでONが悪化している。Job CPU31500/43640.625/43156.25/40093.75ms、peak commit160669696/161255424/147894272/149041152bytes、process697/699/696/699。並列に改善の兆候はあるが、直列・CPU・全体尾部の一貫した改善は未証明である。
+
+候補Host SHA `4ddd0d5da56b96c41b51acdecb0a4e888baabe446564e06b236fba611a9f7e21`、Worker `b815e17dda4c601aaa4dcd37b5576e4133334926de5c5755e800aa3427d04bd7`、DLLは上記固定SHA。単段report SHAは順に `497e0244f72329bf6856ff2259a308071b35a2a57497f226abe2bf13402b75b9`、`f9a92dce5eff02d69e4c97fee994e41ebf5d2ec277f3d3a4ed234dbca9b9ec9b`、`784ec9a379bb1bfb7afd7cd8a84155d3d5b8d1364908ac7d03ea966e0fd07099`、`accf0692433d8b406c3c70039e7560d114cf5bf0a29958956d94c0102ee05acf`。mixed reportは `7c5c04b1e97e1a48aa4b9cf10e10177f6b2d018e0b498b4782747f1f74c2eb71`、`464c55856378e3905f23bbc9a605d468507d377315e39e67156ab5aae1d86723`、`1066c4382d9307b47135b49655ab1e2439a18806a4dbea01722e716cce43cdb0`、`19938ddf4e3e08d14ebb26c127bd999ef01ee6f0854cad98fd38f8b55f68e7dc`。
+
+候補の全Core検査は116成功/9既知WinHTTP option195/OS12009失敗/34ignoredで、全ローカル合格とはしない。19JS検査・スクリプト構文・diff検査は成功した。既存4区分・全step・45分上限・必須集約をそのまま残し、第5区分で両診断/両catalogと元の回帰を実行し、単段100・mixed10構成各10・逐次/20/100ms・公式5構成各10を同じrunner内でbatch ABBA比較する。mapping/cache/neutralは常時ONに固定する。追加32report/accounting・source/SHA manifestのcollectorは合成正常copy/hashと7種類の拒否を通し、40 PowerShell blockの構文と元4区分の厳密な保存を確認した。これは次の実CIの成功・採用やGoalの完了を証明するものではない。
+
+公開前の自己点検で、batchのhealthに加えて従来のCodeFiles healthもlease前に明示確認するguardを追加した。実ACL単体には、実leaseの付与/取消後に従来healthを失敗へ落とし、新しいSID権限を一切付けずworker-assetで拒否する検査を加えた。最終版を再buildし、fmt/Clippy、4単体、実lifecycle両診断15.485/15.250秒、製品plain/official×両診断43.000/36.281/31.359/27.313秒が成功。全Coreも116成功/同じ9失敗/34ignoredだった。最終Host SHA `e1a3c45a70eb67de329b17eb8c332bc243bb3f1be54e83de7a78a21abb23d3a8`、Worker `f1a05267802db8ac1067ff9c535dc68b9f8ffe070777d428714f67d4415c6fed`。上記100単段/120mixedの性能値はこのguard前の異なるprototype binaryによる予備値であり、最終版の性能証明へ流用しない。最終候補の性能と広い回帰は次の実CIで確認する。

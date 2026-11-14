@@ -499,6 +499,7 @@ try {
     requestedNeutralJitPool: process.env.DIY_EXPERIMENT_NEUTRAL_JIT_POOL === '1',
     requestedNeutralCodeCache: process.env.DIY_EXPERIMENT_NEUTRAL_CODE_CACHE === '1',
     requestedNeutralCodeMapping: process.env.DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING === '1',
+    requestedBatchedCodeAcl: process.env.DIY_EXPERIMENT_BATCHED_CODE_ACL === '1',
     requestedPreparedDiagnostics: process.env.DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS === '1'
       ? 'legacy-pipe-at-preparation' : 'input-selected-inline',
     ...(freshGraphSummary ? { freshGraphSummary } : {}),

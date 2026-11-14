@@ -253,6 +253,56 @@ impl Cache {
         let mode = if allow { GRANT_ACCESS } else { REVOKE_ACCESS };
         change_access_with_inheritance(&self.root, profile.sid, mode, OBJECT_INHERIT_ACE)
     }
+    /// Apply only these private SIDs, retaining ordinary inherited-file rights.
+    fn change_inherited_code_access_batch(
+        &self,
+        expected_files: usize,
+        changes: &[(PSID, bool)],
+    ) -> Result<(), String> {
+        use std::os::windows::fs::MetadataExt;
+        if changes.is_empty() || changes.len() > 64 {
+            return Err("code ACL batch exceeds bound".into());
+        }
+        for (index, (sid, _)) in changes.iter().enumerate() {
+            if unsafe { IsValidSid(*sid) } == 0
+                || changes[..index]
+                    .iter()
+                    .any(|(other, _)| unsafe { EqualSid(*sid, *other) } != 0)
+            {
+                return Err("invalid or duplicate code ACL SID".into());
+            }
+        }
+        let mut count = 0;
+        for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
+            let metadata = entry
+                .and_then(|entry| entry.metadata())
+                .map_err(|e| e.to_string())?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err("unexpected immutable code cache object".into());
+            }
+            count += 1;
+        }
+        if count != expected_files {
+            return Err("unexpected immutable code cache file count".into());
+        }
+        let entries = changes
+            .iter()
+            .map(|(sid, allow)| EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+                grfAccessMode: if *allow { GRANT_ACCESS } else { REVOKE_ACCESS },
+                grfInheritance: OBJECT_INHERIT_ACE,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: ptr::null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: sid.cast(),
+                },
+            })
+            .collect::<Vec<_>>();
+        change_access_entries(&self.root, &entries)
+    }
     /// Remove only this invocation's unique SID after its actual process ending.
     pub fn revoke_read_execute(&self, profile: &Profile) -> Result<(), String> {
         for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
@@ -377,6 +427,21 @@ fn change_access_with_inheritance(
     mode: ACCESS_MODE,
     inheritance: u32,
 ) -> Result<(), String> {
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        grfAccessMode: mode,
+        grfInheritance: inheritance,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    };
+    change_access_entries(path, &[entry])
+}
+fn change_access_entries(path: &Path, entries: &[EXPLICIT_ACCESS_W]) -> Result<(), String> {
     let name = wide(path.as_os_str());
     let mut old = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
@@ -397,21 +462,8 @@ fn change_access_with_inheritance(
     if status != 0 {
         return Err(format!("read cache ACL failed {status}"));
     }
-    let trustee = TRUSTEE_W {
-        pMultipleTrustee: ptr::null_mut(),
-        MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-        TrusteeForm: TRUSTEE_IS_SID,
-        TrusteeType: TRUSTEE_IS_UNKNOWN,
-        ptstrName: sid.cast(),
-    };
-    let entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        grfAccessMode: mode,
-        grfInheritance: inheritance,
-        Trustee: trustee,
-    };
     let mut acl = ptr::null_mut();
-    let status = unsafe { SetEntriesInAclW(1, &entry, old, &mut acl) };
+    let status = unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), old, &mut acl) };
     let _acl = LocalMemory(acl.cast());
     if status != 0 {
         return Err(format!("build cache ACL failed {status}"));
