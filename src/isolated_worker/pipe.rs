@@ -411,11 +411,17 @@ type HostExchange =
 type PlainExchange =
     Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
+pub(super) enum JitModuleDelivery {
+    Early,
+    LateBound(String),
+    Neutral,
+}
 pub(super) struct JitDelivery {
     pub bytes: Vec<u8>,
     pub check: Option<JitDeliveryCheck>,
     pub run_cancel: Option<CancellationToken>,
     pub detailed: bool,
+    pub late_code: Option<Arc<super::adapter::LateJitCode>>,
 }
 impl<'a> WorkerScope<'a> {
     pub(super) fn with_verified_runtime(
@@ -431,17 +437,18 @@ impl<'a> WorkerScope<'a> {
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
         deferred_diagnostics: bool,
-        late_module_digest: Option<String>,
+        module_delivery: JitModuleDelivery,
     ) -> Self {
         let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
         self.jit_run_cancel = Some(run_cancellation.clone());
         self.exchange = Some(Box::new(move |mut output, mut input| {
-            if let Some(module) = module.as_ref().filter(|_| late_module_digest.is_none()) {
+            let late = !matches!(module_delivery, JitModuleDelivery::Early);
+            if let Some(module) = module.as_ref().filter(|_| !late) {
                 input
                     .write_all(module)
                     .map_err(|_| "JIT module pipe closed")?;
             }
-            let marker = if late_module_digest.is_some() {
+            let marker = if late {
                 super::runtime::RUNTIME_READY
             } else {
                 super::runtime::JIT_READY
@@ -461,6 +468,7 @@ impl<'a> WorkerScope<'a> {
                 check,
                 run_cancel,
                 detailed,
+                late_code,
             } = request()?;
             if let Some(token) = run_cancel {
                 let _ = run_cancellation.set(token);
@@ -483,8 +491,31 @@ impl<'a> WorkerScope<'a> {
                     .write_all(&[u8::from(detailed)])
                     .map_err(|_| "Worker control pipe failed")?;
             }
-            if let Some(digest) = late_module_digest {
-                let module = module.ok_or("late runtime module absent")?;
+            let late_bytes = match &module_delivery {
+                JitModuleDelivery::Early => {
+                    if late_code.is_some() {
+                        return Err("unexpected late code on Node-bound Worker".into());
+                    }
+                    None
+                }
+                JitModuleDelivery::LateBound(digest) => {
+                    if late_code.is_some() {
+                        return Err("unexpected replacement of bound code".into());
+                    }
+                    Some((
+                        module.as_deref().ok_or("late runtime module absent")?,
+                        digest.as_str(),
+                    ))
+                }
+                JitModuleDelivery::Neutral => {
+                    let code = late_code
+                        .as_ref()
+                        .ok_or("neutral runtime requires captured late code")?;
+                    code.check()?;
+                    Some((code.bytes(), code.digest()))
+                }
+            };
+            if let Some((module, digest)) = late_bytes {
                 if !(1..=8 * 1024 * 1024).contains(&module.len()) || digest.len() != 64 {
                     return Err("invalid late runtime module binding".into());
                 }
@@ -493,7 +524,7 @@ impl<'a> WorkerScope<'a> {
                 input
                     .write_all(&(module.len() as u32).to_le_bytes())
                     .and_then(|()| input.write_all(digest.as_bytes()))
-                    .and_then(|()| input.write_all(&module))
+                    .and_then(|()| input.write_all(module))
                     .map_err(|_| "late runtime module pipe failed")?;
             }
             input

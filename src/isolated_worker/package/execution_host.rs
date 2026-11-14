@@ -931,6 +931,23 @@ impl Runner {
                 } else {
                     Vec::new()
                 };
+                let neutral_jit = super::super::adapter::WasmNode::neutral_jit_pool_enabled();
+                // Preparation's existing physical reservation covers each
+                // compile-only child sequentially, before neutral stock can
+                // occupy the spare capacity. No input/Store/Instance is used.
+                if neutral_jit && preparation_slot.is_some() {
+                    for (_, members) in &jit_candidates {
+                        for node in members {
+                            node.warm_neutral_code(&cancel);
+                            if cancel.is_cancelled() {
+                                return Err(error(
+                                    "worker-cancelled",
+                                    "neutral preparation cancelled",
+                                ));
+                            }
+                        }
+                    }
+                }
                 let retained_stages = pending
                     .evidence
                     .official
@@ -981,8 +998,8 @@ impl Runner {
                     _prepared_jit: jit_candidates
                         .into_iter()
                         .enumerate()
-                        .filter_map(|(index, (ids, node))| {
-                            let limit = if pooled_jit {
+                        .filter_map(|(index, (ids, members))| {
+                            let limit = if pooled_jit || neutral_jit {
                                 // Divide a bounded inventory among implementations, not
                                 // graph positions. Every actual process still reserves
                                 // its physical slot before starting and is used once.
@@ -992,13 +1009,17 @@ impl Runner {
                             } else {
                                 jit_limit
                             };
-                            node.prepare_jit_slot(
+                            let slot = members[0].prepare_jit_slot(
                                 &self.host,
                                 ids,
                                 limit,
                                 refill_controller.clone(),
                                 cancel.clone(),
-                            )
+                            )?;
+                            for member in &members[1..] {
+                                member.attach_jit_slot(&slot);
+                            }
+                            Some(slot)
                         })
                         .collect(),
                 };

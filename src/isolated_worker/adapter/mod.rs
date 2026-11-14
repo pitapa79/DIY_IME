@@ -23,7 +23,9 @@ pub use prepared::{PreparationIdentity, PreparationLimits, PreparationSources, P
 pub use ranges::{
     ResourceRangeDescription, ResourceRangeLimits, ResourceRangeRequest, ResourceRangeSession,
 };
+mod neutral;
 mod wire;
+pub(super) use neutral::LateJitCode;
 pub(in crate::isolated_worker) fn retained_reply(
     bytes: &[u8],
 ) -> Result<Result<Value, crate::node::CoreError>, crate::node::CoreError> {
@@ -137,6 +139,7 @@ enum CompiledState {
 }
 enum WorkerImage {
     Jit,
+    RuntimeOnly,
     Compile,
     CompileJit,
     PreparedCompiled(Arc<CodeFiles>, usize, String),
@@ -700,6 +703,7 @@ impl WasmArtifact {
                         check: delivery,
                         run_cancel: None,
                         detailed: false,
+                        late_code: None,
                     })
                 }),
                 trace: None,
@@ -854,23 +858,27 @@ impl WasmArtifact {
         let mut runtime_lease = runtime_files.lease(&profile)?;
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
-        let verified_runtime =
-            if matches!(image, WorkerImage::Jit | WorkerImage::PreparedCompiled(..))
-                && std::env::var_os("DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE").as_deref()
-                    == Some(std::ffi::OsStr::new("1"))
-            {
-                Some(
-                    runtime_files
-                        .verified_runtime
-                        .get_or_init(|| super::runtime::VerifiedRuntimeFile::open(&dll))
-                        .as_ref()
-                        .map_err(|_| fail("worker-identity", "runtime file proof unavailable"))?,
-                )
-            } else {
-                None
-            };
-        if matches!(image, WorkerImage::Jit | WorkerImage::PreparedCompiled(..))
-            != matches!(request, WorkerRequest::Jit { .. })
+        let verified_runtime = if matches!(
+            image,
+            WorkerImage::Jit | WorkerImage::PreparedCompiled(..) | WorkerImage::RuntimeOnly
+        ) && std::env::var_os("DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE")
+            .as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            Some(
+                runtime_files
+                    .verified_runtime
+                    .get_or_init(|| super::runtime::VerifiedRuntimeFile::open(&dll))
+                    .as_ref()
+                    .map_err(|_| fail("worker-identity", "runtime file proof unavailable"))?,
+            )
+        } else {
+            None
+        };
+        if matches!(
+            image,
+            WorkerImage::Jit | WorkerImage::PreparedCompiled(..) | WorkerImage::RuntimeOnly
+        ) != matches!(request, WorkerRequest::Jit { .. })
         {
             return Err(fail(
                 "worker-request",
@@ -885,8 +893,12 @@ impl WasmArtifact {
         let mut streamed_bytes = stream_module.then(|| self.0.module.clone());
         let mut stream_charge = None;
         let mut streamed_files = None;
-        let mut late_module_digest = None;
+        let mut module_delivery = super::pipe::JitModuleDelivery::Early;
         let (module_files, module_name, module_len, flag): (_, _, _, Option<String>) = match image {
+            WorkerImage::RuntimeOnly => {
+                module_delivery = super::pipe::JitModuleDelivery::Neutral;
+                (None, "-", 0, Some("--prepare-runtime-jit-v1".into()))
+            }
             WorkerImage::Jit if stream_module => (
                 None,
                 "-",
@@ -934,7 +946,7 @@ impl WasmArtifact {
                     streamed_files = Some(files);
                     streamed_bytes = Some(Arc::from(bytes));
                     if runtime_spare {
-                        late_module_digest = Some(digest.clone());
+                        module_delivery = super::pipe::JitModuleDelivery::LateBound(digest.clone());
                     }
                     (
                         None,
@@ -1022,7 +1034,7 @@ impl WasmArtifact {
                     request,
                     control.cancel.clone(),
                     deferred_diagnostics,
-                    late_module_digest,
+                    module_delivery,
                 ),
                 Vec::new(),
             ),
@@ -1488,12 +1500,10 @@ impl WasmNode {
             host: host.clone(),
             refill_controller,
             scope_cancel,
+            neutral_factory: neutral::enabled().then(|| self.artifact.clone()),
         });
         slot.refill(&self.artifact);
-        self.prepared_jit
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(Arc::downgrade(&slot));
+        self.attach_jit_slot(&slot);
         Some(slot)
     }
 
@@ -1600,8 +1610,18 @@ impl WasmNode {
                         {
                             let bytes = serde_json::to_vec(&request)
                                 .map_err(|_| fail("worker-request", "request serialization failed"))?;
-                            match prepared.try_dispatch(
-                                JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()), detailed: false },
+                            let late_code = if prepared.neutral_factory.is_some() {
+                                node.artifact.late_jit_code(&cancel).map(Some)
+                            } else { Ok(None) };
+                            match late_code {
+                                Err(_) => {
+                                    // This spare has seen no input. Settle it before
+                                    // using the ordinary path; never retry a guest.
+                                    drop(prepared);
+                                    node.artifact.call_traced(&request, cancel.clone(), Some(&invocation), worker_instance, Some(delivery))
+                                }
+                                Ok(late_code) => match prepared.try_dispatch(
+                                JitDelivery { bytes, check: Some(delivery), run_cancel: Some(cancel.clone()), detailed: false, late_code },
                                 Some((&invocation, &completion)),
                             ) {
                                 PreparedDispatch::Settled(result) => {
@@ -1611,6 +1631,7 @@ impl WasmNode {
                                 PreparedDispatch::Undelivered(delivery) => {
                                     node.artifact.call_traced(&request, cancel.clone(), Some(&invocation), worker_instance, delivery.check)
                                 }
+                                },
                             }
                         } else {
                             node.artifact.call_traced(&request, cancel.clone(), Some(&invocation), worker_instance, Some(delivery))
@@ -1698,6 +1719,7 @@ pub(in crate::isolated_worker) struct PreparedJitSlot {
     host: ExecutionHost,
     refill_controller: Option<GuardedController>,
     scope_cancel: CancellationToken,
+    neutral_factory: Option<WasmArtifact>,
 }
 
 impl PreparedJitSlot {
@@ -1758,9 +1780,13 @@ impl PreparedJitSlot {
         let mut owners = self.owners.lock().unwrap_or_else(|p| p.into_inner());
         owners.retain(PreparedJitOwner::is_running);
         while owners.len() < self.capacity {
-            let Ok(owner) =
-                PreparedJitOwner::start_scoped(&self.host, artifact.clone(), &self.scope_cancel)
-            else {
+            let factory = self.neutral_factory.as_ref().unwrap_or(artifact);
+            let Ok(owner) = PreparedJitOwner::start_scoped_using(
+                &self.host,
+                factory.clone(),
+                &self.scope_cancel,
+                self.neutral_factory.is_some(),
+            ) else {
                 break;
             };
             owners.push(owner);
@@ -1777,6 +1803,7 @@ struct PreparedJitOwner {
     trace: Arc<std::sync::OnceLock<OwnedInvocation>>,
     reservation: std::sync::Weak<std::sync::Mutex<ResourceLease>>,
     host: ExecutionHost,
+    neutral_factory: Option<WasmArtifact>,
 }
 
 enum PreparedDispatch {
@@ -1809,10 +1836,20 @@ impl PreparedJitOwner {
         Self::start_scoped(host, artifact, &CancellationToken::default())
     }
 
+    #[cfg(test)]
     fn start_scoped(
         host: &ExecutionHost,
         artifact: WasmArtifact,
         scope: &CancellationToken,
+    ) -> Result<Self, CoreError> {
+        Self::start_scoped_using(host, artifact, scope, false)
+    }
+
+    fn start_scoped_using(
+        host: &ExecutionHost,
+        artifact: WasmArtifact,
+        scope: &CancellationToken,
+        neutral: bool,
     ) -> Result<Self, CoreError> {
         use std::sync::mpsc;
         if scope.is_cancelled() {
@@ -1830,6 +1867,7 @@ impl PreparedJitOwner {
         let stop = cancel.clone();
         let trace = Arc::new(std::sync::OnceLock::new());
         let worker_trace = trace.clone();
+        let neutral_factory = neutral.then(|| artifact.clone());
         let worker = std::thread::Builder::new()
             .name("diyime-prepared-jit".into())
             .spawn(move || {
@@ -1837,7 +1875,11 @@ impl PreparedJitOwner {
                 let delivery_cancel = stop.clone();
                 // The charged physical slot covers compiler then execution
                 // sequentially; the compiler settles before this image exists.
-                let image = artifact.prepared_jit_image(&stop);
+                let image = if neutral {
+                    WorkerImage::RuntimeOnly
+                } else {
+                    artifact.prepared_jit_image(&stop)
+                };
                 artifact.call_worker(
                     WorkerRequest::Jit {
                         request: Box::new(move || {
@@ -1882,6 +1924,7 @@ impl PreparedJitOwner {
             trace,
             reservation: Arc::downgrade(&reservation),
             host: host.clone(),
+            neutral_factory,
         })
     }
 
@@ -1890,6 +1933,12 @@ impl PreparedJitOwner {
         mut delivery: JitDelivery,
         execution: Option<(&OwnedInvocation, &CompletionPermit)>,
     ) -> PreparedDispatch {
+        let selected_code = delivery.late_code.clone();
+        match (&self.neutral_factory, &selected_code) {
+            (Some(factory), Some(code)) if code.matches(factory) && code.check().is_ok() => (),
+            (None, None) => (),
+            _ => return PreparedDispatch::Undelivered(delivery),
+        }
         if let Some((invocation, completion)) = execution {
             if completion.key() != invocation.key() {
                 return PreparedDispatch::Settled(Err(fail(
@@ -1915,13 +1964,23 @@ impl PreparedJitOwner {
         if let Err(error) = self.input.take().unwrap().send(delivery) {
             return PreparedDispatch::Undelivered(error.0);
         }
-        PreparedDispatch::Settled(
-            self.worker
-                .take()
-                .unwrap()
-                .join()
-                .unwrap_or_else(|_| Err(fail("worker-thread", "prepared JIT owner failed"))),
-        )
+        let result = self
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap_or_else(|_| Err(fail("worker-thread", "prepared JIT owner failed")));
+        // The late code, source and its budget remain pinned until call_worker
+        // returns after original process/IO/Job/ACL/profile cleanup.
+        if let Some(code) = selected_code
+            && code.check().is_err()
+        {
+            return PreparedDispatch::Settled(Err(fail(
+                "worker-asset",
+                "late code health lost before adoption",
+            )));
+        }
+        PreparedDispatch::Settled(result)
     }
 
     #[cfg(test)]
@@ -2033,6 +2092,7 @@ mod tests {
             check,
             run_cancel: None,
             detailed: false,
+            late_code: None,
         };
         for expected_settled in [2, 3] {
             let before = artifact.0.code_budget.used.load(Ordering::Acquire);
@@ -2321,6 +2381,7 @@ mod tests {
                     check: Some(Box::new(|| Ok(()))),
                     run_cancel: None,
                     detailed: false,
+                    late_code: None,
                 },
                 None,
             )
@@ -2364,6 +2425,7 @@ mod tests {
                 })),
                 run_cancel: None,
                 detailed: false,
+                late_code: None,
             },
             None,
         );
@@ -2402,6 +2464,7 @@ mod tests {
                 check: None,
                 run_cancel: None,
                 detailed: false,
+                late_code: None,
             },
             None,
         );
@@ -2430,6 +2493,7 @@ mod tests {
                 })),
                 run_cancel: Some(run_cancel.clone()),
                 detailed: false,
+                late_code: None,
             })
             .map_err(|_| "prepared Worker stopped before delivery")
             .unwrap();
@@ -2527,6 +2591,7 @@ mod tests {
                         check: Some(Box::new(|| Ok(()))),
                         run_cancel: None,
                         detailed: false,
+                        late_code: None,
                     },
                     None,
                 )

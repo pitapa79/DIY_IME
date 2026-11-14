@@ -1370,6 +1370,7 @@ fn check_jit_preparation_acknowledges_before_input(deferred: bool) {
                         bytes,
                         run_cancel: None,
                         detailed,
+                        late_code: None,
                         check: Some(Box::new(move || {
                             deliver
                                 .then_some(())
@@ -1380,7 +1381,7 @@ fn check_jit_preparation_acknowledges_before_input(deferred: bool) {
             },
             control.cancel.clone(),
             deferred,
-            None,
+            super::pipe::JitModuleDelivery::Early,
         );
         let Outcome::Exited(receipt) =
             execute_observed(scope, &executable, &args, vec![], &control).unwrap()

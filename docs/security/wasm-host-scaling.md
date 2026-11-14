@@ -450,3 +450,36 @@ Hostの入力サイズ・許可・世代・取消検査後にだけ、長さ・d
 Host SHA `f3ec5a006666f29c809b0de96f6253d5b3e2f92c8b89f6c95592f84771da5485`、Worker `b4de83ccd757ae224dc31b33e0c8b2d900c21dd9f5aa4ec5a3b5f7abaf27bf1d`、DLL `fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef`。report SHA（順序通り）は `21392eab665741d7c1368748515256c185923c336009ac37de481919c220b3ab`、`af5377abae9f8b02dc483748de955046b3c2798d04dff830396a2ecce4a55bb9`、`119deb6fcb27a56894956553994a9f22c87e9d8e9a6ee37aab2c438b8fb1ef0d`、`8ca641b9612beeefced030ab76bb1a9f1424574f76d759d3d7dd9127fc625623`。
 
 実AppContainerの既存ライフサイクル検査を標準compiler fallback・fuel枯渇・memory.grow拒否まで拡張した。新経路の入力時診断では全ケース成功した一方、このWin10で従来file経路の起動前準備タイムアウト2回、新経路+旧診断FDの準備タイムアウト3回（うち1回は継承ACL条件）も記録した。5秒の準備待ちやfixtureを緩めず、成功だけを残して安定性を認定しない。CIにも新経路の入力時/旧診断FD比較を追加し、全既存run行・条件・45分上限・集約ゲートを維持した。
+
+### 同じfactoryのNode間で空の単回Worker在庫を共有する実験（2026-11-14）
+
+73ee8c7の [CI43526381804](https://github.com/pitapa79/DIY_IME/actions/runs/43526381804) は両Windows segmentと必須集約が成功した。これを性能目標の達成と読み替えず、次の共有在庫を実装した。
+
+`DIY_EXPERIMENT_NEUTRAL_JIT_POOL=1` と `DIY_EXPERIMENT_COMPILED_JIT=1` を共に指定した場合だけ、同じ準備計画内で捕捉済みruntime files・code budgetの所有identityと完全なWorkerPolicyが一致するNodeをまとめる。module hashの一致やNodeの自己申告だけでは共有しない。各memberへ同じslotを接続し、stock自体はNode Module/Store/Instanceを持たない。準備時の既存物理予約で各sourceのcompile-only成果を逐次作り、そのcompilerの実終了・IO/ACL/profile回収後の成果だけを後選択できる。stockは実行枠を残して最大physical slots−1に制限する。
+
+配送時に実行対象Node自身の成果を捕捉し、既存512MiB code budgetでVec/Arcの一時storageを課金する。私的な型は他factory・異なるpolicyへの配送を拒否し、通常の許可・世代・取消検査後にだけ1つのcode/inputを送る。そのsource/code/budgetのpinを元Workerのprocess/IO/Job/ACL/profile回収完了まで保持し、配送前と回収後のcode healthも確認する。準備不能・予算不足・未配送なら未使用stockを実回収して通常経路へ戻す。guest実行後のretry、入力後のWorker再利用、複数Node codeの同居は行わない。既定OFFである。
+
+実AppContainerで、runtime-ready後に異なる挙動の実codeを選択し、毎回fresh stateになること、標準compiler fallback、fuel枯渇・memory.grow拒否、他factory・policy拒否、配送拒否、scope取消と回復、code pin/予算の解放を確認した。入力時診断21.61秒、旧診断FD14.33秒で成功した。製品Hostの別検査では異種codeによる同一入力・旧入力の抑止、設定/計画切替、保護後の応答fence、実行権限失効と回復、close/EOF回収を両診断方式で確認した。これらは性能の合格ではない。
+
+最終Host検査は空Data、4096文字ASCII、1024文字のかな/emoji、NoOutputと資源拒否後の回復も含む。4096かなでは3つの祖先Text出力が既存16KiB結果予算を超え、初回の検査前提が誤っていた。実際の `result-limit` を確認した後、予算を変えず、失敗・Data/Node結果なし・実回収と次入力での正答を要求した。正式fixtureや入力/結果上限は変更しない。fmt、locked/offline release all-target Clippy、CLI/Host/Worker build、19JS検査が成功した。Coreは110成功/9失敗/34ignoredで、9失敗は従来と同じ必須WinHTTP設定のplatform不一致。従来compiled検査の5秒準備待ちが1回失敗し、同じ上限の再実行は15.79秒で全ケース成功。raw検査の初回はcompiled制御を誤指定したためcall数が一致せず、正しいraw条件では7.32秒、deferred Nativeでは3.87秒で成功した。これらの履歴を新経路の失敗や全環境での安定性認定に置き換えない。
+
+同一binaryの従来→共有→共有→従来ABBA、物理6枠、異なる実codeを含む2/4/8/16直列・並列・合流・未使用Nodeの9構成×各5ウォーム入力を比較した。要求終了後100ms待機であり固定100ms入力周期ではない。全180ウォームグラフは正答とrun/sessionの物理回収を通ったが、同一試行のguest callを除いたNode ready→resolved P95は一貫して改善しなかった。
+
+| 構成 | 従来1 P95 ms | 共有2 P95 ms | 共有3 P95 ms | 従来4 P95 ms |
+| --- | --- | --- | --- | --- |
+| 異種2段 | 43.063 | 59.391 | 57.621 | 25.483 |
+| 異種4段 | 122.559 | 72.488 | 101.522 | 237.256 |
+| 異種8段 | 115.085 | 188.103 | 188.547 | 86.082 |
+| 異種16段 | 184.503 | 137.576 | 101.873 | 123.040 |
+| 4並列 | 223.468 | 671.694 | 210.848 | 109.277 |
+| 合流 | 126.644 | 76.689 | 102.938 | 108.893 |
+
+異種4段の共有2 P99は979.561ms、16段の共有2/3 P99は690.424/260.535ms。並列の完全な計測は5/4/4/3件（各5件中）で、欠測を高速結果にしない。無関係なHost phase欠落でも経路判定はunknownになり得るため、要求flagや正答だけで全preparedを認定しない。従来4の同種2段ではcoldを含む2158.573msのP95も記録し、除外していない。5件の構成別比較は方式選別用でありGoalの尾部証明には不足する。
+
+全子processのJob CPUは38.672/36.313/38.375/40.375秒、peak commit176967680/150106112/149483520/178479104bytes、process数838/839/839/839。共有によるmemory削減は観測できたが、遅延合格やCPU全般の改善を主張しない。これらの費用は導入・準備・回収も含む。
+
+さらに、未使用15個が別の実codeも含む単段を各25件でABBA比較した。全100件で正答・同一試行の区間・実回収を確認し、基盤P95/P99msは94.063/107.868→35.093/66.037→178.571/210.403→76.697/151.712だった。Job CPU6437.5/5812.5/7437.5/6906.25ms、peak145362944/124813312/124477440/138063872bytes。ここでも遅延改善は一貫せず、共有を速度改善として採用しない。
+
+比較時Host SHA `30845a5954d9b43884a04e44a3e5cb0954c22be8e5e3994f2f3d9c07ae36fcb3`、Worker `1addd356322b47a056866161cd9bd04ec4bc18e4f99c0f667cf828a13232ea9f`、DLLは上記固定SHA。mixed report SHA（順序通り）は `6f6bec0a076177fcad2bccee18de379b050d74cf137c301728b5babfaa38e2e4`、`d1f7b7a73e2bf6f0d618c7dcbd7d2e0fc8d2af3fe0aa99ae7796325bb4df0f94`、`6651722d2beda27b1792e616d96272286f089b95293d247ec08f54c33730f931`、`f78d062c69f58c785c8f1c399c3f7f7e9d5b9e6a90ce3219bc9b037282d6f326`。異種未使用Node reportは `2c7a91022524d99e3aa9612c1efcee09d16e4c3cf6d78208ec2e47c0009096b6`、`8ef58e203efced07d9a89d23eadbb462a4d0a0e9564cbd53d1a9fe8b41c3e437`、`5d6e77ac988b8eba89af1c905f9a4d801b2aa845c17affd89fa80895d394e197`、`efec765334fba1346f249c43960f63f4170f9fa8b4ebabac83370b2974a34873`。
+
+追加検査・比較は45分上限の第3 Windows segmentへ分離した。既存32run block・条件・検査・必須集約を維持し、3segmentすべての成功を必要とする。新比較は同一runner内ABBAで単段100件、異種/未使用10構成各10件、逐次/20/100ms各245入力を計測し、CPU/RAM・欠測・失敗・supersededを保存する。公式compiled artifact・辞書・networkはまだこのpoolの対象外であり、任意Nodeの全適用性、通常Host既定採用、Core P95<1ms、main統合と全条件の最終確認が残る。Goal #95は未達である。

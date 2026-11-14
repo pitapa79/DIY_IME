@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        segment: [prepared, runtime-cache]
+        segment: [prepared, runtime-cache, neutral]
     defaults:
       run:
         shell: pwsh
@@ -346,6 +346,51 @@ jobs:
               python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-diagnostics-$trial-legacy-$legacy-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 100 2 $scenario
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
               if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing diagnostic delivery report ($trial / $scenario)" }
+            }
+          }
+      - name: Neutral single-use factory and code ownership
+        if: matrix.segment == 'neutral'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::neutral::tests::real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_cleanup -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Neutral stock same-binary ABBA comparison
+        if: matrix.segment == 'neutral'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = $neutral
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
       - name: Immediate input after activation readiness comparison

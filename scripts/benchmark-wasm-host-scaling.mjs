@@ -14,9 +14,9 @@ const samples = Number(count), physicalSlots = Number(slots);
 assert(host && packageTool && worker && dll && wasm &&
   Number.isInteger(samples) && samples >= 1 && samples <= 1000 &&
   Number.isInteger(physicalSlots) && physicalSlots >= 1 && physicalSlots <= 18 &&
-  ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed'].includes(scenario) &&
-  (scenario !== 'mixed' || alternateWasm),
-  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed] [ALT_WASM]');
+  ['all', 'single', 'single-detailed', 'parallel', 'official', 'join', 'paced', 'dictionary', 'mixed', 'unused-mixed'].includes(scenario) &&
+  (!['mixed', 'unused-mixed'].includes(scenario) || alternateWasm),
+  'usage: benchmark-wasm-host-scaling.mjs HOST PACKAGE_TOOL WORKER DLL WASM [SAMPLES] [PHYSICAL_SLOTS] [all|single|single-detailed|parallel|official|join|paced|dictionary|mixed|unused-mixed] [ALT_WASM]');
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const tempParent = realpathSync(tmpdir());
@@ -144,7 +144,7 @@ async function measure(client, spec) {
   const requestedSpares = Number(process.env.DIY_EXPERIMENT_PREPARED_JIT);
   const allNodes = process.env.DIY_EXPERIMENT_PREPARED_JIT === 'all';
   const preparedExperiment = (allNodes || [1, 2].includes(requestedSpares))
-    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join'].includes(scenario);
+    && physicalSlots >= 2 && ['all', 'single', 'single-detailed', 'paced', 'mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario);
   const nodeCount = spec.count + (spec.shape === 'join' ? 1 : 0);
   const executedNodeCount = spec.shape === 'skip' ? Math.min(nodeCount, 1) : nodeCount;
   const eligibleNodes = nodeCount + (spec.unused ?? 0);
@@ -261,7 +261,7 @@ async function measure(client, spec) {
   }
   const records = [];
   const paired = scenario === 'single-detailed';
-  const graphTrace = ['mixed', 'parallel', 'join'].includes(scenario) || (preparedExperiment && scenario === 'all');
+  const graphTrace = ['mixed', 'parallel', 'join', 'unused-mixed'].includes(scenario) || (preparedExperiment && scenario === 'all');
   const traceEachSample = paired || graphTrace;
   const lastRevision = freshGraph ? 1 : samples + 2;
   for (let revision = 1; revision <= lastRevision; revision++) {
@@ -450,7 +450,8 @@ try {
     { count: 1, shape: 'serial', unused: 15 },
     { count: 4, shape: 'skip' },
   ];
-  const selected = scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
+  const selected = scenario === 'unused-mixed' ? [{ count: 1, shape: 'serial', mixed: true, unused: 15 }]
+    : scenario === 'dictionary' ? [1, 2].map(count => ({ count, shape: 'dictionary' }))
     : scenario === 'single' || scenario === 'single-detailed' ? [{ count: 1, shape: 'serial' }]
     : freshGraph ? Array.from({ length: samples }, () => ({ count: 4, shape: 'serial', mixed: true }))
     : scenario === 'mixed' ? [
@@ -460,6 +461,9 @@ try {
         ...(process.env.DIY_WASM_SCALING_WIDE_GRAPHS === '1' ? [
           { count: 8, shape: 'serial', mixed: true }, { count: 16, shape: 'serial', mixed: true },
           { count: 1, shape: 'serial', unused: 15 },
+          ...(process.env.DIY_WASM_SCALING_DISTINCT_UNUSED === '1' ? [
+            { count: 1, shape: 'serial', mixed: true, unused: 15 },
+          ] : []),
         ] : []),
       ]
     : scenario === 'paced' ? [1, 4].map(count => ({ count, shape: 'serial' })) : scenario === 'official'
@@ -486,6 +490,7 @@ try {
   }
   const report = JSON.stringify({ boundary: 'production External Host stdio; invalidation/admission through terminal result and zero physical callbacks',
     requestedRuntimeOnlySpare: process.env.DIY_EXPERIMENT_RUNTIME_ONLY_SPARE === '1',
+    requestedNeutralJitPool: process.env.DIY_EXPERIMENT_NEUTRAL_JIT_POOL === '1',
     requestedPreparedDiagnostics: process.env.DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS === '1'
       ? 'legacy-pipe-at-preparation' : 'input-selected-inline',
     ...(freshGraphSummary ? { freshGraphSummary } : {}),

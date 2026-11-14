@@ -316,8 +316,9 @@ impl PendingPermissionSession {
         &self,
         limit: usize,
         pooled: bool,
-    ) -> Vec<(Vec<String>, crate::isolated_worker::adapter::WasmNode)> {
-        let mut candidates: Vec<(Vec<String>, crate::isolated_worker::adapter::WasmNode)> =
+    ) -> Vec<(Vec<String>, Vec<crate::isolated_worker::adapter::WasmNode>)> {
+        let neutral = crate::isolated_worker::adapter::WasmNode::neutral_jit_pool_enabled();
+        let mut candidates: Vec<(Vec<String>, Vec<crate::isolated_worker::adapter::WasmNode>)> =
             Vec::new();
         for node in self
             .plan
@@ -327,14 +328,19 @@ impl PendingPermissionSession {
             .iter()
             .filter(|node| node.node.can_prepare_jit())
         {
-            if pooled
-                && let Some((ids, _)) = candidates
-                    .iter_mut()
-                    .find(|(_, known)| known.shares_jit_preparation(&node.node))
+            if (pooled || neutral)
+                && let Some((ids, members)) = candidates.iter_mut().find(|(_, known)| {
+                    if neutral {
+                        known[0].shares_runtime_factory(&node.node)
+                    } else {
+                        known[0].shares_jit_preparation(&node.node)
+                    }
+                })
             {
                 ids.push(node.id.clone());
+                members.push(node.node.clone());
             } else if candidates.len() < limit {
-                candidates.push((vec![node.id.clone()], node.node.clone()));
+                candidates.push((vec![node.id.clone()], vec![node.node.clone()]));
             }
         }
         candidates
