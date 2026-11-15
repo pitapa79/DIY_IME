@@ -12,6 +12,7 @@
 | データと互換性 | [Node契約](node-contracts-v0.1.md)、[正式検査](execution-conformance.md)、[tests/contracts](../tests/contracts/) |
 | セキュリティ | [信頼境界](security/trust-boundary.md)、[権限](security/wasm-permissions.md)、[出力境界](security/output-boundary.md)、[脆弱性報告](../SECURITY.md) |
 | 性能 | [性能目標](performance-goals.md)、[Wasm計測](security/wasm-application-benchmark.md) |
+| 実行クラス・Goal移行（#106の仕様案） | [S0/S1/S2保証・性能仕様 v1.0](security/wasm-execution-classes-v1.md)、[#95のGoal A/B移行案](security/issue95-goal-migration-v1.md)。Level 3の承認・mainマージ前は未発効 |
 | Windows IME化 | [ロードマップ](windows-ime-roadmap.md)、[文字列境界](windows-text-boundaries.md) |
 | 利用・実装 | [Windows配布アプリ](security/windows-application-distribution.md)、[実装ガイド](implementation-guide.md) |
 | 開発運用 | [並行開発](parallel-development.md)、[AGENTS](../AGENTS.md) |
