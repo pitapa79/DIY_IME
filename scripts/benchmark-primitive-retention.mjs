@@ -1,6 +1,6 @@
 // Normal External Host, verified packages, actual consent/Core and AppContainer.
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
 import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync} from 'node:fs';
@@ -14,7 +14,7 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed'].includes(shape) && ['warm','paced'].includes(cadence));
+assert(['identity','mixed'].includes(shape) && ['warm','paced','safety'].includes(cadence));
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 assert(['0','separate','grouped'].includes(mode));
 const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
@@ -38,7 +38,7 @@ writeFileSync(hostPath,JSON.stringify({packageManager,resourcePolicy,permissionR
 
 class Client {
   constructor(exe,path) {
-    this.next=0;this.pending=new Map();this.stderr=[];
+    this.next=0;this.pending=new Map();this.stderr=[];this.received=[];
     this.child=spawn(exe,[path],{windowsHide:true,stdio:'pipe'});
     this.child.stderr.on('data',data=>this.stderr.push(data));
     this.ended=new Promise(done=>this.child.once('close',code=>{
@@ -46,6 +46,7 @@ class Client {
     }));
     createInterface({input:this.child.stdout}).on('line',line=>{
       const reply=JSON.parse(line),pending=this.pending.get(reply.id);
+      if(cadence==='safety')this.received.push(reply);
       assert(pending,'unexpected protocol reply');this.pending.delete(reply.id);pending.resolve(reply);
     });
   }
@@ -71,13 +72,13 @@ const expected=text=>shape==='identity' ? text : count===1 ? text.replace('ka','
 function verify(s,wanted) {
   assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
   const value=s.result.ports.find(p=>p.endpoint.node===target.node && p.endpoint.port==='out')?.value;
-  assert.equal(value?.packet?.root.text,wanted);assert(ended(s));
+  assert.equal(value?.packet?.root.text,wanted);
 }
 let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
-const report={boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
+const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,
-  requestedControls:Object.fromEntries(Object.entries(process.env).filter(([key])=>key.startsWith('DIY_EXPERIMENT_'))),
+  requestedControls:Object.fromEntries(['REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
@@ -95,9 +96,9 @@ try {
   const preparation=performance.now(),pending=await host.call({method:'prepare',graph});
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
-  const version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
+  let version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
   if(mode!=='0') {
-    const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;return s.retainedWorker.ready?s:null;});
+    const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;assert.equal(s.phase,'ready','evaluation Session was retired during startup');assert.equal(s.sessionEpoch,activated.sessionEpoch,'evaluation Session changed during startup');assert.equal(s.retainedWorker.startupFailures ?? 0,0,'retained startup failed before all groups became ready');return s.retainedWorker.ready?s:null;});
     assert.equal(ready.retainedWorker.experimental,true);
     const sizes=mode==='separate'?ids.map(()=>1):Array.from({length:Math.ceil(count/4)},(_,i)=>Math.min(4,count-i*4));
     assert.deepEqual(ready.retainedWorker.groupSizes,sizes);assert.equal(ready.retainedWorker.processIds.length,sizes.length);
@@ -131,6 +132,80 @@ try {
       if(mode!=='0'){assert.equal(status.retainedWorker.decodedReplies,(sample+1)*count);assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);}
     }
     report.warmResultMs=summarize(records.slice(1).map(r=>r.resultMs));
+  }
+  if(cadence==='safety') {
+    assert.notEqual(mode,'0','retention safety requires an explicit retained route');
+    report.safety=[];
+    async function correct(text) {
+      const key=await submit(text);assert(!key.admissionRejected);
+      const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+      verify(snapshot,expected(text));return {key,snapshot};
+    }
+    async function drained() {
+      return until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && s.physical.physicalJobs===0 && s.physical.reservedResultBytes===0?s:null;});
+    }
+    let latestReview=pending;
+    async function activateFresh(nextGraph=graph) {
+      latestReview=await host.call({method:'prepare',graph:nextGraph});
+      if(latestReview.missing.length)await host.call({method:'approve',reviewId:latestReview.reviewId,ids:latestReview.missing.map(r=>r.id),save:false});
+      const activated=await host.call({method:'activate',reviewId:latestReview.reviewId});
+      version=activated.state.activePlanVersion;revision=0;
+      return until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    }
+    await correct('');await correct('🙂漢字');
+    report.safety.push({check:'empty-and-unicode',passed:true});
+    const old=await correct('ka');await activateFresh();
+    assert.equal((await host.send({method:'getRun',key:old.key})).ok,false);
+    await correct('ka');report.safety.push({check:'plan-session-replacement-and-old-key-fence',passed:true});
+
+    let observedCancelled=0;
+    for(let trial=0;trial<3;trial++) {
+      const key=await submit('0'.repeat(256));assert(!key.admissionRejected);
+      const observation=await until(async()=>{
+        const status=await host.call({method:'status'});if(status.retainedWorker.activeInput)return {active:true,status};
+        const snapshot=await read(key);return ended(snapshot)?{active:false,snapshot}:null;
+      });
+      if(observation.active)await host.call({method:'cancelRun',key});
+      const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+      if(snapshot.result.reason==='cancelled')observedCancelled++;
+      else verify(snapshot,expected('0'.repeat(256)));
+      await correct('ka');
+      report.safety.push({check:'active-cancel-and-recovery',trial,observedActive:observation.active,outcome:snapshot.result.reason});
+    }
+    assert(observedCancelled>0,'must observe actual active-input cancellation');
+
+    const marker='秘密検査🔒',held=await submit(marker.repeat(30));
+    const query=host.send({method:'getRun',key:held}),protection=host.send({method:'protection',enabled:true}),ack=String(host.next);
+    await Promise.all([query,protection]);
+    const index=host.received.findIndex(r=>r.id===ack);assert(index>=0);
+    assert(!host.received.slice(index+1).some(r=>JSON.stringify(r).includes(marker)));
+    const protectedStatus=await drained();assert.equal(protectedStatus.phase,'protected');
+    assert.equal((await host.send({method:'getRun',key:held})).ok,false);
+    await host.call({method:'protection',enabled:false});await activateFresh();await correct('ka');
+    report.safety.push({check:'protection-response-fence-original-process-drain-and-recovery',passed:true});
+
+    const revoked=await correct('ka');
+    const execute=latestReview.requests.find(r=>r.kind==='execute');assert(execute);
+    await host.call({method:'revoke',id:execute.id});
+    assert.equal((await host.send({method:'getRun',key:revoked.key})).ok,false);
+    const revokedStatus=await drained();assert.equal(revokedStatus.phase,'empty');
+    await activateFresh();await correct('ka');
+    report.safety.push({check:'revocation-drain-consent-and-recovery',passed:true});
+
+    const beforeFault=await correct('ka'),status=await host.call({method:'status'});
+    const pid=status.retainedWorker.processIds.at(-1);assert(pid>0);
+    const python=process.env.DIY_PRIMITIVE_PYTHON;assert(python,'explicit Python for original owned-worker fault required');
+    const fault=spawnSync(python,[resolve('scripts/terminate-owned-retention-worker.py'),String(pid),join(root,'workers'),report.binaries.worker],{encoding:'utf8',windowsHide:true,timeout:10000});
+    assert.equal(fault.status,0,fault.stderr);verify(await read(beforeFault.key),expected('ka'));
+    await correct('ka');
+    const recovered=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    assert(!recovered.retainedWorker.processIds.includes(pid));
+    report.safety.push({check:'owned-original-process-fault-no-retroactive-result-change-and-recovery',passed:true,pid});
+
+    const successor=await correct('ka');await host.call({method:'closeSession'});await drained();
+    assert.equal((await host.send({method:'getRun',key:successor.key})).ok,false);
+    await activateFresh();await correct('ka');
+    report.safety.push({check:'close-session-and-fresh-reopen',passed:true});
   }
   report.beforeClose=await host.call({method:'status'});
   report.closeAcknowledged=await host.call({method:'closeSession'});

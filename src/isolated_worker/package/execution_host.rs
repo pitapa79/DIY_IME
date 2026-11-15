@@ -610,17 +610,22 @@ impl Runner {
         let retained_physical = retained
             .map_or(0, |owner| owner.physical_jobs())
             .min(usage.physical_jobs);
-        Ok(
-            json!({"phase":if protected{"protected"}else if self.session.is_some(){"ready"}else if self.pending.is_some(){"review"}else{"empty"},"protected":protected,
+        let mut value = json!({"phase":if protected{"protected"}else if self.session.is_some(){"ready"}else if self.pending.is_some(){"review"}else{"empty"},"protected":protected,
    "sessionEpoch":self.session.as_ref().map(|s|s.session.session_epoch()).or_else(||self.pending.as_ref().map(|p|p.session.session_epoch())),
    "state":self.session.as_ref().map(|s|s.session.controller().control_state().and_then(|state|crate::execution_control::protocol::WireState::from_control(state,None))).transpose()?,
    "reviewId":self.pending.as_ref().map(|p|&p.review_id),"physical":usage,"workerProcesses":worker_processes,
    "retainedWorker":{"physicalJobs":retained_physical,"ready":retained.is_some_and(|owner|owner.ready()),
    "processId":retained.and_then(|owner|owner.process_id()),"generation":retained.map_or(0,|owner|owner.generation()),
-   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies()),
-   "experimental":retained.is_some_and(|owner|owner.experimental()),"groupSizes":retained.map(|owner|owner.group_sizes()),
-   "processIds":retained.map(|owner|owner.process_ids())}}),
-        )
+   "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies())}});
+        // Keep the default/fixed wire exact: the Editor deliberately rejects
+        // unknown fields. Private experiment diagnostics are CLI-only.
+        if let Some(owner) = retained.filter(|owner| owner.experimental()) {
+            value["retainedWorker"]["experimental"] = json!(true);
+            value["retainedWorker"]["groupSizes"] = json!(owner.group_sizes());
+            value["retainedWorker"]["processIds"] = json!(owner.process_ids());
+            value["retainedWorker"]["startupFailures"] = json!(owner.startup_failures());
+        }
+        Ok(value)
     }
     fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
         let generation = self

@@ -1,5 +1,45 @@
 //! Explicit Host-only experiment. No default eligibility or security-policy adoption.
 use super::*;
+use std::sync::{Condvar, Mutex};
+
+/// Startup scheduling only. Never transfers a process, SID, input or authority.
+#[derive(Default)]
+pub(super) struct StartupGate {
+    busy: Mutex<bool>,
+    wake: Condvar,
+}
+pub(super) struct StartupPermit(Arc<StartupGate>);
+impl StartupGate {
+    pub(super) fn acquire(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+    ) -> Result<StartupPermit, CoreError> {
+        let mut busy = self
+            .busy
+            .lock()
+            .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(fail("worker-cancelled", "startup cancelled"));
+            }
+            if !*busy {
+                *busy = true;
+                return Ok(StartupPermit(self.clone()));
+            }
+            busy = self
+                .wake
+                .wait_timeout(busy, Duration::from_millis(5))
+                .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?
+                .0;
+        }
+    }
+}
+impl Drop for StartupPermit {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        self.0.wake.notify_all();
+    }
+}
 
 pub(in crate::isolated_worker) type Stages = Vec<(String, WasmNode, Value)>;
 
@@ -51,16 +91,28 @@ impl Owners {
             sizes: Vec::new(),
             experimental: true,
         };
+        // Avoid launching twenty full-module compilers simultaneously on a
+        // small-memory machine. Warm execution remains independent per group.
+        let startup_gate = Arc::new(StartupGate::default());
+        // Twenty idle coordinators must not fill the Core's existing sixteen
+        // request permits with simultaneous liveness probes. Keep every check
+        // fresh, with one outstanding probe for this evaluation cohort.
+        let control_probe = Arc::new(Mutex::new(()));
         for stages in groups {
             result.sizes.push(stages.len());
-            let owner =
-                retained::Owner::install_evaluation(host.clone(), controller.clone(), stages)?
-                    .ok_or_else(|| {
-                        fail(
-                            "retained-evaluation",
-                            "unsupported retained evaluation policy",
-                        )
-                    })?;
+            let owner = retained::Owner::install_evaluation(
+                host.clone(),
+                controller.clone(),
+                stages,
+                startup_gate.clone(),
+                control_probe.clone(),
+            )?
+            .ok_or_else(|| {
+                fail(
+                    "retained-evaluation",
+                    "unsupported retained evaluation policy",
+                )
+            })?;
             result.owners.push(owner);
         }
         Ok(result)
@@ -107,6 +159,9 @@ impl Owners {
     pub(in crate::isolated_worker) fn process_ids(&self) -> Vec<u64> {
         self.owners.iter().filter_map(|o| o.process_id()).collect()
     }
+    pub(in crate::isolated_worker) fn startup_failures(&self) -> u64 {
+        self.owners.iter().map(|o| o.startup_failures()).sum()
+    }
 }
 
 impl Drop for Owners {
@@ -137,5 +192,58 @@ impl WasmNode {
             && self.network.is_none()
             && self.dictionary.is_none()
             && self.prepared_dictionary.get().is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{atomic::AtomicUsize, mpsc};
+
+    #[test]
+    fn startup_waiter_cancels_without_consuming_or_releasing_another_permit() {
+        let gate = Arc::new(StartupGate::default());
+        let held = gate.acquire(&CancellationToken::default()).unwrap();
+        let cancel = CancellationToken::default();
+        let token = cancel.clone();
+        let waiting = gate.clone();
+        let (send, receive) = mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            send.send(()).unwrap();
+            waiting.acquire(&token).err().unwrap().code
+        });
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancel.cancel();
+        assert_eq!(thread.join().unwrap(), "worker-cancelled");
+        assert!(*gate.busy.lock().unwrap());
+        drop(held);
+        assert!(!*gate.busy.lock().unwrap());
+        drop(gate.acquire(&CancellationToken::default()).unwrap());
+    }
+
+    #[test]
+    fn startup_concurrency_is_bounded_and_all_waiters_make_progress() {
+        let gate = Arc::new(StartupGate::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let (gate, active, completed) = (gate.clone(), active.clone(), completed.clone());
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..4 {
+                    let permit = gate.acquire(&CancellationToken::default()).unwrap();
+                    assert_eq!(active.fetch_add(1, Ordering::AcqRel), 0);
+                    std::thread::yield_now();
+                    assert_eq!(active.fetch_sub(1, Ordering::AcqRel), 1);
+                    completed.fetch_add(1, Ordering::AcqRel);
+                    drop(permit);
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(completed.load(Ordering::Acquire), 32);
+        assert!(!*gate.busy.lock().unwrap());
     }
 }

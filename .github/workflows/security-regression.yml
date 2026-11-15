@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        segment: [prepared, runtime-cache, neutral, code-mapping]
+        segment: [prepared, runtime-cache, neutral, code-mapping, primitive-comparison, primitive-safety]
     defaults:
       run:
         shell: pwsh
@@ -135,6 +135,21 @@ jobs:
           }
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
+      - name: Reviewed primitive retention comparison
+        if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety'
+        run: |
+          $suite = if ('${{ matrix.segment }}' -eq 'primitive-comparison') { 'comparison' } else { 'safety' }
+          python scripts/run-primitive-retention-evaluation.py target/windows-app "target/primitive-$suite-evidence" $suite
+          exit $LASTEXITCODE
+      - name: Preserve primitive evidence including failures
+        if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: primitive-evidence-${{ github.sha }}-${{ matrix.segment }}
+          path: target/primitive-*-evidence/
+          if-no-files-found: ignore
+          retention-days: 30
+          compression-level: 0
       - name: Prepared JIT latency diagnostic
         if: matrix.segment == 'prepared'
         env:

@@ -1,6 +1,6 @@
 # Reviewed primitive retention evaluation
 
-Refs #104 and #95. Evaluation authorized by the maintainer on 2026-11-15 JST, through measurement and a technical adopt/revise/reject recommendation. Default adoption, official Node adoption and a Level3 product security-policy merge remain separate decisions. No performance result is claimed yet.
+Refs #104 and #95. Evaluation authorized by the maintainer on 2026-11-15 JST, through measurement and a technical adopt/revise/reject recommendation. Default adoption, official Node adoption and a Level3 product security-policy merge remain separate decisions. Results below are experimental; no adoption or #95 performance-goal success is claimed.
 
 Main at start: `336442b4cb63c8411b67c90736e38af5f6599395`. Explicit experimental comparison base: PR103 `7e182ab8d069580cf2a0b89dc861390c6a346f31`. This retains the prepared disposable comparator without merging other Draft PRs.
 
@@ -48,3 +48,26 @@ Job accounting includes driver, installation, preparation and shutdown, not just
 For grouped20, all three warm graphs had complete same-Host-clock traces. Across60 Node calls, guest-inclusive ready-to-resolved median/P95/P99 was1365/3644/10722us; Host accepted-to-published median/maximum34098/59616us. These include Node computation and are not guest-subtracted numbers or20-stage adoption proof. All5 original PID identities and80 total stage replies (initial plus warm) were verified before cleanup.
 
 The first separate2 measurement completed all calls but failed its measurement-only close assertion after incorrectly requiring every ResourceUsage field to reach zero. The existing ledger intentionally retains dedupe entries and bounded result records after Session close. The corrected meter requires zero Worker processes, physical jobs, active runs, queued jobs/input bytes and reserved result buffers, while recording retained records/bytes explicitly. It does not change the ledger, fixture, production cleanup or expiry policy. The failed report and log remain separate; subsequent successful reports are not used to relabel it as passed. Node-ID route mapping was required because same-kind prepared Nodes share a link; routes now hold weak owners keyed by actual graph Node ID, preserving separate process assignment across repeated kinds.
+
+## Subsequent bounded scheduling and local ABBA evidence
+
+CI43614228879 at3dcf7ed4 failed all four original segments in the Editor regression: unconditional private fields changed the exact default retained-worker JSON shape. The fix preserves the original six fields for default/fixed policy, adding CLI-only diagnostics solely for actual experimental owners. The unchanged real Editor TypeScript parser accepted a live default Rust status and still rejected the old extra-field regression. That focused check does not substitute for full latest CI.
+
+Serializing experimental compiler startup alone did not solve separate20 readiness: `primitive-serial-start-v6` ended with an empty Session and no input submitted. Its failed Job accounting was preserved (CPU38796.875ms, peak commit338444288B, no surviving descendants). Inspection found20 idle coordinator probes could compete with the Core's existing16 pending service requests. Evaluation groups now share a mutex around each fresh control-state RPC; no cached authorization, gate increase or fail-open behavior is introduced. The default/fixed route has no such mutex. Startup permits are cancellation-aware and held through original failed-construction cleanup, released at actual readiness, with the existing10s on-demand readiness bound. Release all-target Clippy/build passed; the two startup scheduling unit tests passed before the final probe-only change.
+
+The subsequent separate20 probe completed one initial and three warm correct inputs, with all20 original PID identities and zero surviving descendants. This supports the scheduling fix operationally; it is not proof of the sole cause of previous failures.
+
+Four subsequent runs used identical Host SHA `83699dbed9cf5d5c8abebdf75f1da076e0083615714da3fe7bbfb6e06eaf719d`, Worker `c28383184291718c1c2a70ad330840d3065b3ae594bea712b7b57d94ac401edb`, Manager `da9286d999fd4e555babb29bf4e1ea8a7d57fd6e752beada7942a2a3be1153de`, and the pinned DLL. Order was grouped/separate/separate/grouped, each with100 warm inputs plus one initial. Every input was correct; intended lifetime process counts, stage reply counts, execution/buffer drain and outer Job descendant exit passed. Labels are `primitive-final-a` through `primitive-final-d`.
+
+| Order / route | Client P50 / P95 / P99 / max ms | Whole Job CPU ms | Whole Job peak commit bytes |
+| --- | --- | ---: | ---: |
+| A grouped20 | 25.571 /41.220 /165.696 /283.135 | 18078.125 | 177668096 |
+| B separate20 | 35.896 /78.050 /102.790 /233.420 | 60359.375 | 410628096 |
+| C separate20 | 39.412 /133.317 /247.092 /351.132 | 52234.375 | 414289920 |
+| D grouped20 | 42.454 /284.081 /542.729 /651.025 | 24125.000 | 175108096 |
+
+CPU and commit include installation, cold preparation and shutdown. They are not warm-call CPU or unique resident RAM. These are guest-inclusive full-graph client times on this small-memory Windows machine. The later grouped run has much worse tails; no stable speedup, causal memory-pressure attribution or guest-subtracted #95 pass follows. Do not compare these binaries with the earlier initial smoke as an optimization A/B.
+
+Technical recommendation at this point: **revise both routes; do not adopt either into product policy**. Separate20 functions after scheduling fixes but keeps20 processes and substantial lifetime/startup cost. Grouped20 reduces the observed Job commit footprint to roughly43% of separate20 here, but loses inter-Node OS isolation and has unstable tails. That tradeoff currently lacks evidence sufficient for adoption. Continue a bounded opt-in comparison and preserve the existing per-input disposable route as the baseline. #95 remains open, including real distinct modules, branch/join/unused graphs, full admission negatives and default-policy acceptance; current evidence does not complete it.
+
+The dedicated CI comparison and safety segments add actual normal-Host evidence and preserve partial reports, sampled process memory, Job accounting, source and binary hashes. All original four segments and their gates remain required. Comparison includes short1/4-stage smokes and balanced20-stage identity/mixed routes; safety includes20-stage cancellation/protection/revoke/fault/reopen plus paced mixed inputs. These scripts enforce correctness and cleanup, not a predeclared claim of performance success. Latest CI results must be reported independently from local evidence.

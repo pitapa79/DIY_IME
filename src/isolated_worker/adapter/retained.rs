@@ -50,6 +50,9 @@ struct Shared {
     start: std::sync::atomic::AtomicBool,
     ids: Vec<String>,
     replies: AtomicU64,
+    startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
+    control_probe: Option<Arc<Mutex<()>>>,
+    startup_failures: AtomicU64,
 }
 struct ActiveInput {
     key: RunKey,
@@ -186,13 +189,15 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
-        Self::install_stages(host, controller, stages, false)
+        Self::install_stages(host, controller, stages, false, None, None)
     }
 
     pub(super) fn install_evaluation(
         host: ExecutionHost,
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
+        startup_gate: Arc<retention_evaluation::StartupGate>,
+        control_probe: Arc<Mutex<()>>,
     ) -> Result<Option<Self>, CoreError> {
         if stages
             .iter()
@@ -200,7 +205,14 @@ impl Owner {
         {
             return Err(fail("retained-evaluation", "unreviewed implementation"));
         }
-        Self::install_stages(host, controller, stages, true)
+        Self::install_stages(
+            host,
+            controller,
+            stages,
+            true,
+            Some(startup_gate),
+            Some(control_probe),
+        )
     }
 
     fn install_stages(
@@ -208,6 +220,8 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
         evaluation: bool,
+        startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
+        control_probe: Option<Arc<Mutex<()>>>,
     ) -> Result<Option<Self>, CoreError> {
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
@@ -247,6 +261,9 @@ impl Owner {
             start: std::sync::atomic::AtomicBool::new(false),
             ids: ids.clone(),
             replies: AtomicU64::new(0),
+            startup_gate,
+            control_probe,
+            startup_failures: AtomicU64::new(0),
         });
         let worker_shared = shared.clone();
         let links: Vec<_> = ids
@@ -291,6 +308,9 @@ impl Owner {
     }
     pub(super) fn close(&self) {
         self.shared.close();
+    }
+    pub(super) fn startup_failures(&self) -> u64 {
+        self.shared.startup_failures.load(Ordering::Acquire)
     }
     pub(in crate::isolated_worker) fn physical_jobs(&self) -> u64 {
         self.shared.physical.load(Ordering::Acquire)
@@ -361,6 +381,8 @@ struct Native {
     thread: Option<std::thread::JoinHandle<Result<Option<ExitReceipt>, CoreError>>>,
     _pin: RetainedReservation,
     shared: Arc<Shared>,
+    startup_permit: Option<retention_evaluation::StartupPermit>,
+    started: std::time::Instant,
 }
 fn limits(
     budget: Duration,
@@ -424,6 +446,22 @@ fn retained_artifact(node: &WasmNode) -> &WasmArtifact {
         .map_or(&node.artifact, |prepared| &prepared.consumer)
 }
 
+fn control_state(
+    shared: &Shared,
+    controller: &GuardedController,
+) -> Result<crate::execution_control::SessionControlState, CoreError> {
+    let _probe = shared
+        .control_probe
+        .as_ref()
+        .map(|probe| {
+            probe
+                .lock()
+                .map_err(|_| fail("worker-thread", "retained control probe unavailable"))
+        })
+        .transpose()?;
+    controller.control_state()
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -433,7 +471,12 @@ impl Native {
         configs: &[Value],
         shared: &Arc<Shared>,
     ) -> Result<Self, CoreError> {
-        let state = controller.control_state()?;
+        let startup_permit = shared
+            .startup_gate
+            .as_ref()
+            .map(|gate| gate.acquire(&shared.stop))
+            .transpose()?;
+        let state = control_state(shared, controller)?;
         let key = RunKey {
             session_epoch: controller.session_epoch().clone(),
             plan_version: state
@@ -515,6 +558,8 @@ impl Native {
             thread: Some(thread),
             _pin: pin,
             shared: shared.clone(),
+            startup_permit,
+            started: std::time::Instant::now(),
         })
     }
 }
@@ -608,16 +653,36 @@ fn coordinate(
     receive: mpsc::Receiver<Command>,
 ) {
     let stage_count = nodes.len();
-    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared).ok();
+    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared)
+        .inspect_err(|_| {
+            shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+        })
+        .ok();
     let mut pending = None;
-    while !shared.stop.is_cancelled() && controller.control_state().is_ok() {
+    while !shared.stop.is_cancelled() && control_state(&shared, &controller).is_ok() {
         let ready = native
             .as_mut()
             .map(|owner| owner.client.as_mut().unwrap().poll_ready());
         match ready {
-            Some(Ok(value)) => shared.ready.store(value, Ordering::Release),
-            Some(Err(_)) => drop(native.take()),
+            Some(Ok(value)) => {
+                shared.ready.store(value, Ordering::Release);
+                if value {
+                    native.as_mut().unwrap().startup_permit.take();
+                }
+            }
+            Some(Err(_)) => {
+                shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+                drop(native.take());
+            }
             None => (),
+        }
+        if native.as_ref().is_some_and(|owner| {
+            owner.startup_permit.is_some() && owner.started.elapsed() >= Duration::from_secs(10)
+        }) {
+            // Use the same readiness bound as an on-demand retained start.
+            // Native drops its original owners before returning this permit.
+            shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+            drop(native.take());
         }
         if native
             .as_ref()
@@ -660,6 +725,7 @@ fn coordinate(
             command.legacy();
             continue;
         }
+        drop(owner.startup_permit.take());
         shared.ready.store(true, Ordering::Release);
         if command.cancel.is_cancelled() {
             command.fail(fail(
