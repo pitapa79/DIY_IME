@@ -117,7 +117,19 @@ try {
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
   if(cadence==='paced') {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
-    report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true});
+    report.pacedRounds=[];
+    report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,
+      finishRound:async(intervalMs,attempts)=>{
+        report.pacedRounds.push({intervalMs,attempts,status:await host.call({method:'status'})});
+        assert.equal(attempts.at(-1).outcome,'correct','latest input must complete correctly');
+      }});
+    for(const scenario of report.pacing) {
+      assert.equal(scenario.attempts,steps.length*samples);
+      assert.equal(scenario.failed,scenario.admissionRejected,'unexpected execution failure');
+      assert.equal(scenario.timedOut,0);assert.equal(scenario.cancelled,0);
+      assert.equal(scenario.correct+scenario.superseded+scenario.admissionRejected,scenario.attempts);
+      assert.equal(scenario.byCase['6'].correct,samples);
+    }
   } else {
     for(let sample=0;sample<=samples;sample++) {
       if(sample)await delay(100);
