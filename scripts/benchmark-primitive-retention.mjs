@@ -23,7 +23,10 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primitive-retention-'));
 const kinds=shape==='identity' ? ['demo.identity'] : ['text.romaji-to-hiragana','experimental.text-trim','experimental.text-case','experimental.packet-passthrough'];
 const ids=Array.from({length:count},(_,i)=>`stage${i}`);
-const kindAt=i=>shape==='identity' ? kinds[0] : i===0 ? kinds[0] : kinds[1+(i-1)%3];
+// The passthrough advertises an `any` output root. It may be terminal,
+// but cannot feed a text-only input. Preserve the published contracts.
+const kindAt=i=>shape==='identity' ? kinds[0] : i===0 ? kinds[0]
+  : i===count-1 && count>=4 ? kinds[3] : kinds[1+(i-1)%2];
 const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1}))],
   edges:ids.map((id,i)=>({from:{node:i ? ids[i-1] : 'input',port:'out'},to:{node:id,port:'in'}}))};
 const target={node:ids.at(-1),port:'out'};
