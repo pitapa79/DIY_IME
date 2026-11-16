@@ -11,7 +11,7 @@ import sys
 parser = argparse.ArgumentParser()
 parser.add_argument('bundle', type=Path)
 parser.add_argument('output', type=Path)
-parser.add_argument('suite', choices=['comparison', 'safety'])
+parser.add_argument('suite', choices=['comparison', 'safety', 'recovery'])
 args = parser.parse_args()
 repo = Path(__file__).resolve().parent.parent
 bundle = args.bundle.resolve(strict=True)
@@ -36,10 +36,17 @@ if args.suite == 'comparison':
     for shape, samples in [('identity', 30), ('mixed', 20)]:
         cases.extend((mode, 20, samples, shape, 'warm')
                      for mode in ['0', 'separate', 'grouped', 'grouped', 'separate', '0'])
-else:
+elif args.suite == 'safety':
     for mode in ['separate', 'grouped']:
         cases.append((mode, 20, 1, 'identity', 'safety'))
         cases.append((mode, 20, 5, 'mixed', 'paced'))
+else:
+    # Four adjacent trials per condition, raw/compiled/compiled/raw.
+    for count in [1, 4, 20]:
+        for shape in (['identity', 'mixed'] if count == 20 else ['identity']):
+            for cadence, samples in [('warm', 30), ('paced', 5)]:
+                cases.extend(('separate', count, samples, shape, cadence) for _ in range(4))
+    cases.extend(('separate', 20, 1, 'identity', 'safety') for _ in range(4))
 
 manifest = {'source': os.environ.get('GITHUB_SHA'), 'suite': args.suite,
             'syntheticOnly': True, 'cases': [], 'complete': False}
@@ -56,11 +63,14 @@ try:
         name = f'{index:02}-{mode}-{count}-{shape}-{cadence}'
         env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
         env['DIY_EXPERIMENT_PREPARED_JIT'] = 'all' if mode == '0' else '0'
+        compiled = args.suite == 'recovery' and index % 4 in [1, 2]
+        env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if compiled else '0'
         env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(output/(name+'.json'))
         command = [sys.executable, 'scripts/measure-primitive-retention-job.py', '--command',
                    str(output/(name+'.job.json')), node, 'scripts/benchmark-primitive-retention.mjs',
                    *map(str, binaries), str(official), str(count), str(samples), shape, cadence]
-        case = dict(name=name, mode=mode, count=count, samples=samples, shape=shape, cadence=cadence)
+        case = dict(name=name, mode=mode, count=count, samples=samples, shape=shape, cadence=cadence,
+                    retainedCompiled=compiled)
         manifest['cases'].append(case)
         save()
         print(name, flush=True)

@@ -19,6 +19,37 @@ struct Compiled<'a> {
     limits: Limits,
 }
 impl<'a> Compiled<'a> {
+    /// # Safety
+    /// Parent must supply its own settled compiler output, source/policy bound
+    /// and pinned through this original process's exit and asset cleanup.
+    unsafe fn from_captured(
+        api: &'a Api,
+        bytes: &[u8],
+        limits: Limits,
+        digest: &str,
+        source: &str,
+    ) -> Result<Self, String> {
+        super::compiled_jit::validate_produced(
+            bytes,
+            source,
+            limits.fuel,
+            limits.memory.map(|m| m as u64),
+        )?;
+        // Compilation has no Instance or guest execution. The compiler format
+        // binds fuel/memory; table/count bounds are installed on EACH actual
+        // invocation below, not removed from that invocation's Store policy.
+        let preparation = Limits {
+            table_elements: None,
+            tables: None,
+            memories: None,
+            ..limits.clone()
+        };
+        let mut code =
+            unsafe { super::compiled_jit::prepare(api, &preparation, None, bytes, digest)? };
+        code.discard_store();
+        Ok(Self { code, limits })
+    }
+
     fn new(api: &'a Api, bytes: &[u8], limits: Limits) -> Result<Self, String> {
         let mut code = Runtime::prepare_module(api, &limits, None, |engine, result| unsafe {
             // SAFETY: verified API, live bytes, and output belongs to this Engine.
@@ -89,8 +120,22 @@ fn acknowledge(output: &mut impl Write, sequence: u64, slot: u32) -> io::Result<
 }
 
 pub(super) fn run(args: &[OsString]) -> Result<(), String> {
+    run_modules(args, false)
+}
+
+pub(super) fn run_compiled(args: &[OsString]) -> Result<(), String> {
+    run_modules(args, true)
+}
+
+fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
     // runtime calls fuel memory, then 1..4 (module, exact length) pairs.
-    if args.len() < 6 || args.len() > 4 + 2 * MAX_MODULES || !(args.len() - 4).is_multiple_of(2) {
+    // The new compile-cache experiment is restricted to one Node/module.
+    let stride = if compiled { 4 } else { 2 };
+    if (compiled && args.len() != 8)
+        || args.len() < 4 + stride
+        || args.len() > 4 + stride * MAX_MODULES
+        || !(args.len() - 4).is_multiple_of(stride)
+    {
         return Err("expected retained runtime calls fuel memory module length pairs".into());
     }
     let calls = positive(&args[1], MAX_CALLS)?;
@@ -110,7 +155,7 @@ pub(super) fn run(args: &[OsString]) -> Result<(), String> {
     };
     let mut modules = Vec::new();
     let mut total = 0usize;
-    for pair in args[4..].chunks_exact(2) {
+    for pair in args[4..].chunks_exact(stride) {
         let length = positive(&pair[1], MAX_MODULE_BYTES as u64)? as usize;
         total = total
             .checked_add(length)
@@ -128,7 +173,17 @@ pub(super) fn run(args: &[OsString]) -> Result<(), String> {
         if bytes.len() != length {
             return Err("retained module length mismatch".into());
         }
-        modules.push(Compiled::new(&api, &bytes, limits.clone())?);
+        let module = if compiled {
+            let digest = pair[2].to_str().ok_or("invalid retained code digest")?;
+            let source = pair[3].to_str().ok_or("invalid retained source digest")?;
+            // SAFETY: private native entry selected by the trusted Parent from
+            // its own compile-only producer. Frame/hash checks alone do NOT
+            // authorize a package to supply serialized executable bytes.
+            unsafe { Compiled::from_captured(&api, &bytes, limits.clone(), digest, source)? }
+        } else {
+            Compiled::new(&api, &bytes, limits.clone())?
+        };
+        modules.push(module);
     }
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
@@ -217,6 +272,145 @@ pub(in crate::isolated_worker) fn state_fixture(dll: &Path) -> Vec<u8> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    struct FixtureResources;
+    impl ResourceReader for FixtureResources {
+        fn read_resource(&mut self, _: u32, _: u64, length: u32) -> io::Result<Vec<u8>> {
+            assert_eq!(length, 1);
+            Ok(vec![0])
+        }
+        fn emit_artifact(&mut self, _: &[u8]) -> io::Result<()> {
+            panic!("execution cannot emit a prepared artifact")
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit pinned Wasmtime DLL"]
+    fn real_captured_retained_code_keeps_fresh_state_and_execution_limits() {
+        let dll = std::path::PathBuf::from(
+            std::env::var_os("DIY_RANGE_RUNTIME_DLL").expect("explicit pinned DLL"),
+        );
+        let api = Api::load(&dll).unwrap();
+        let limits = Limits {
+            fuel: Some(100_000),
+            memory: Some(65_536),
+            table_elements: Some(10_000),
+            tables: Some(1),
+            memories: Some(1),
+        };
+        let preparation = Limits {
+            table_elements: None,
+            tables: None,
+            memories: None,
+            ..limits.clone()
+        };
+        let state = state_fixture(&dll);
+        for strategy in [
+            compiled_jit::Strategy::Standard,
+            compiled_jit::Strategy::Winch,
+        ] {
+            // Test-only trusted native producer. No package/blob constructor.
+            let bytes = compiled_jit::compile_for(&api, &preparation, &state, strategy).unwrap();
+            let source = crate::isolated_worker::adapter::sha256(&state).unwrap();
+            let digest = crate::isolated_worker::adapter::sha256(&bytes).unwrap();
+            let mut code = unsafe {
+                Compiled::from_captured(&api, &bytes, limits.clone(), &digest, &source).unwrap()
+            };
+            for _ in 0..6 {
+                let reply = code.invoke(b"{}", &mut FixtureResources).unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+                assert_eq!(value["data"], serde_json::json!({"counter":1,"memory":1}));
+            }
+            assert!(
+                code.invoke(b"!", &mut FixtureResources)
+                    .unwrap_err()
+                    .contains("fuel")
+            );
+            assert!(code.invoke(b"{}", &mut FixtureResources).is_ok());
+            for (settings, hash, wasm_hash) in [
+                (
+                    Limits {
+                        fuel: Some(99_999),
+                        ..limits.clone()
+                    },
+                    digest.clone(),
+                    source.clone(),
+                ),
+                (
+                    Limits {
+                        memory: Some(131_072),
+                        ..limits.clone()
+                    },
+                    digest.clone(),
+                    source.clone(),
+                ),
+                (limits.clone(), "0".repeat(64), source.clone()),
+                (limits.clone(), digest.clone(), "0".repeat(64)),
+            ] {
+                assert!(
+                    unsafe { Compiled::from_captured(&api, &bytes, settings, &hash, &wasm_hash) }
+                        .is_err()
+                );
+            }
+        }
+
+        // A real grow attempt must see the retained Store's strict limits,
+        // despite the compile-only cache format not binding Store table counts.
+        let wat = br#"(module
+            (memory (export "memory") 1 4)
+            (table 1 20002 funcref)
+            (data (i32.const 32) "{}")
+            (func (export "diyime_api_version") (result i32) i32.const 1)
+            (func (export "diyime_alloc") (param i32) (result i32) i32.const 1024)
+            (func (export "diyime_release_reply"))
+            (func (export "diyime_call") (param i32 i32) (result i64)
+                i32.const 1 memory.grow i32.const -1 i32.ne if unreachable end
+                ref.null func i32.const 10000 table.grow i32.const -1 i32.ne if unreachable end
+                i64.const 8589934624))"#;
+        let mut wasm = Bytes {
+            size: 0,
+            data: ptr::null_mut(),
+        };
+        let bytes = unsafe {
+            api.check(
+                (api.wat)(wat.as_ptr(), wat.len(), &mut wasm),
+                ptr::null_mut(),
+            )
+            .unwrap();
+            let owned = std::slice::from_raw_parts(wasm.data, wasm.size).to_vec();
+            (api.bytes_delete)(&mut wasm);
+            owned
+        };
+        for strategy in [
+            compiled_jit::Strategy::Standard,
+            compiled_jit::Strategy::Winch,
+        ] {
+            let produced = compiled_jit::compile_for(&api, &preparation, &bytes, strategy).unwrap();
+            let source = crate::isolated_worker::adapter::sha256(&bytes).unwrap();
+            let digest = crate::isolated_worker::adapter::sha256(&produced).unwrap();
+            let mut code = unsafe {
+                Compiled::from_captured(&api, &produced, limits.clone(), &digest, &source).unwrap()
+            };
+            for _ in 0..3 {
+                assert_eq!(code.invoke(b"{}", &mut FixtureResources).unwrap(), b"{}");
+            }
+        }
+    }
+
+    #[test]
+    fn compiled_retained_entry_rejects_wrong_cardinality_before_runtime_load() {
+        for count in 0..=16 {
+            if count == 8 {
+                continue;
+            }
+            let args = vec![OsString::from("not-a-runtime"); count];
+            assert!(
+                run_compiled(&args)
+                    .unwrap_err()
+                    .contains("expected retained")
+            );
+        }
+    }
     #[test]
     fn native_sequence_slot_and_every_partial_header_are_checked() {
         let mut header = Vec::new();

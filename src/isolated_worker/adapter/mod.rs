@@ -151,6 +151,9 @@ enum WorkerImage {
 }
 enum WorkerRequest {
     Immediate(Vec<u8>),
+    // Same charged lifetime slot spans compile-only preparation and its
+    // original process/IO/ACL/profile cleanup. Carries no guest input.
+    RetainedCompile(crate::isolated_worker::RetainedReservation),
     Jit {
         request: Box<dyn FnOnce() -> Result<JitDelivery, String> + Send>,
         trace: Option<Arc<std::sync::OnceLock<OwnedInvocation>>>,
@@ -236,6 +239,30 @@ fn settle(mut outcome: Outcome<'_>) -> Option<ExitReceipt> {
     }
 }
 struct ScopedCache(Cache);
+struct PreparationProfile {
+    profile: Profile,
+    strict: bool,
+}
+impl std::ops::Deref for PreparationProfile {
+    type Target = Profile;
+    fn deref(&self) -> &Profile {
+        &self.profile
+    }
+}
+impl std::ops::DerefMut for PreparationProfile {
+    fn deref_mut(&mut self) -> &mut Profile {
+        &mut self.profile
+    }
+}
+impl Drop for PreparationProfile {
+    fn drop(&mut self) {
+        if self.strict && !self.profile.deleted {
+            while self.profile.delete().is_err() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
 impl std::ops::Deref for ScopedCache {
     type Target = Cache;
     fn deref(&self) -> &Cache {
@@ -391,6 +418,7 @@ impl CodeFiles {
             files: self,
             profile,
             active: true,
+            strict_cleanup: false,
         })
     }
 }
@@ -411,6 +439,7 @@ struct CodeLease<'a> {
     files: &'a CodeFiles,
     profile: &'a Profile,
     active: bool,
+    strict_cleanup: bool,
 }
 impl CodeLease<'_> {
     fn release(&mut self) -> Result<(), CoreError> {
@@ -443,7 +472,12 @@ impl CodeLease<'_> {
 }
 impl Drop for CodeLease<'_> {
     fn drop(&mut self) {
-        let _ = self.release();
+        while self.release().is_err() {
+            if !self.strict_cleanup {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 pub(super) fn remove_asset(path: &Path) -> Result<(), CoreError> {
@@ -766,6 +800,14 @@ impl WasmArtifact {
     }
 
     fn prepared_jit_image(&self, cancel: &CancellationToken) -> WorkerImage {
+        self.prepared_jit_image_owned(cancel, None)
+    }
+
+    fn prepared_jit_image_owned(
+        &self,
+        cancel: &CancellationToken,
+        owner: Option<crate::isolated_worker::RetainedReservation>,
+    ) -> WorkerImage {
         if std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
             != Some(std::ffi::OsStr::new("1"))
             || cancel.is_cancelled()
@@ -779,13 +821,12 @@ impl WasmArtifact {
         };
         if matches!(*state, CompiledState::Pending) {
             let produced: Result<CompiledAsset, CoreError> = (|| {
-                let bytes = self.call_worker(
-                    WorkerRequest::Immediate(Vec::new()),
-                    cancel.clone(),
-                    None,
-                    0,
-                    WorkerImage::CompileJit,
-                )?;
+                let request = owner.as_ref().map_or_else(
+                    || WorkerRequest::Immediate(Vec::new()),
+                    |pin| WorkerRequest::RetainedCompile(pin.clone()),
+                );
+                let bytes =
+                    self.call_worker(request, cancel.clone(), None, 0, WorkerImage::CompileJit)?;
                 // Only accept the captured compiler's output after original
                 // process/IO/ACL/profile cleanup, never a package artifact.
                 super::runtime::compiled_jit::validate_produced(
@@ -856,9 +897,14 @@ impl WasmArtifact {
         if cancel.is_cancelled() {
             return Err(fail("worker-cancelled", "Worker was not started"));
         }
+        // Declared before profile/leases: last to drop, including all failures.
+        let _compilation_pin = match &request {
+            WorkerRequest::RetainedCompile(pin) => Some(pin.clone()),
+            _ => None,
+        };
         let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let started = std::time::Instant::now();
-        let mut profile = self
+        let profile = self
             .0
             .profile_pool
             .as_ref()
@@ -871,8 +917,13 @@ impl WasmArtifact {
                     "AppContainer unavailable; refusing execution",
                 )
             })?;
+        let mut profile = PreparationProfile {
+            profile,
+            strict: _compilation_pin.is_some(),
+        };
         let runtime_files = self.runtime_code_files()?;
         let mut runtime_lease = runtime_files.lease(&profile)?;
+        runtime_lease.strict_cleanup = _compilation_pin.is_some();
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
         let verified_runtime = if matches!(
@@ -1012,6 +1063,9 @@ impl WasmArtifact {
             .as_ref()
             .map(|files| files.lease(&profile))
             .transpose()?;
+        if let Some(lease) = &mut module_lease {
+            lease.strict_cleanup = _compilation_pin.is_some();
+        }
         let module = module_files.as_ref().map_or_else(
             || OsString::from(module_name),
             |files| files.cache.path().join(module_name).into_os_string(),
@@ -1043,7 +1097,7 @@ impl WasmArtifact {
         // settle retains any unconfirmed owner on this same execution thread.
         let deferred_trace = match &request {
             WorkerRequest::Jit { trace, .. } => trace.clone(),
-            WorkerRequest::Immediate(_) => None,
+            WorkerRequest::Immediate(_) | WorkerRequest::RetainedCompile(_) => None,
         };
         let legacy_prepared_diagnostics = deferred_trace.is_some()
             && std::env::var_os("DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS").as_deref()
@@ -1073,6 +1127,7 @@ impl WasmArtifact {
                 Vec::new(),
             ),
             WorkerRequest::Immediate(bytes) => (scope, bytes),
+            WorkerRequest::RetainedCompile(_) => (scope, Vec::new()),
         };
         let receipt = settle(
             super::pipe::execute_with_diagnostics(scope, &exe, &args, bytes, &control, detailed)

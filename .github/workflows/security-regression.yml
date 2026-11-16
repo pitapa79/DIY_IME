@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        segment: [prepared, runtime-cache, neutral, code-mapping, primitive-comparison, primitive-safety]
+        segment: [prepared, runtime-cache, neutral, code-mapping, primitive-comparison, primitive-safety, primitive-recovery]
     defaults:
       run:
         shell: pwsh
@@ -135,14 +135,30 @@ jobs:
           }
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
-      - name: Reviewed primitive retention comparison
-        if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety'
+      - name: Captured retained code fresh state and actual execution limits
+        if: matrix.segment == 'primitive-recovery'
+        env:
+          DIY_RANGE_RUNTIME_DLL: ${{ github.workspace }}/target/windows-app/runtime/wasmtime.dll
         run: |
-          $suite = if ('${{ matrix.segment }}' -eq 'primitive-comparison') { 'comparison' } else { 'safety' }
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::retained_module::tests::real_captured_retained_code_keeps_fresh_state_and_execution_limits -- --ignored --exact --nocapture
+          exit $LASTEXITCODE
+      - name: Captured retained actual in-flight cancellation and deadline
+        if: matrix.segment == 'primitive-recovery'
+        env:
+          DIY_RANGE_RUNTIME_DLL: ${{ github.workspace }}/target/windows-app/runtime/wasmtime.dll
+          DIY_RANGE_WORKER_BINARY: ${{ github.workspace }}/target/windows-app/bin/diy-ime2-wasm-worker.exe
+          DIY_EXPERIMENT_COMPILED_JIT: '1'
+        run: |
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_captured_retained_driver_inflight_cancel_and_deadline -- --ignored --exact --nocapture
+          exit $LASTEXITCODE
+      - name: Reviewed primitive retention comparison
+        if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery'
+        run: |
+          $suite = '${{ matrix.segment }}'.Replace('primitive-', '')
           python scripts/run-primitive-retention-evaluation.py target/windows-app "target/primitive-$suite-evidence" $suite
           exit $LASTEXITCODE
       - name: Preserve primitive evidence including failures
-        if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety')
+        if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: primitive-evidence-${{ github.sha }}-${{ matrix.segment }}

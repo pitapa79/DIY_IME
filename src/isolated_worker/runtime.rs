@@ -153,6 +153,12 @@ fn runtime_only_bootstrap_rejects_a_preselected_module_before_loading() {
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args
         .first()
+        .is_some_and(|arg| arg == "--retained-compiled-resources-v1")
+    {
+        return retained_module::run_compiled(&args[1..]);
+    }
+    if args
+        .first()
         .is_some_and(|arg| arg == "--retained-resources-v1")
     {
         return retained_module::run(&args[1..]);

@@ -162,6 +162,9 @@ impl Owners {
     pub(in crate::isolated_worker) fn startup_failures(&self) -> u64 {
         self.owners.iter().map(|o| o.startup_failures()).sum()
     }
+    pub(in crate::isolated_worker) fn compiled_generations(&self) -> u64 {
+        self.owners.iter().map(|o| o.compiled_generations()).sum()
+    }
 }
 
 impl Drop for Owners {
