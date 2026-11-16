@@ -37,12 +37,18 @@ try {
  $oldRangeWorker=$env:DIY_RANGE_WORKER_BINARY
  $oldRangeRuntime=$env:DIY_RANGE_RUNTIME_DLL
  $oldPreparationCrash=$env:DIY_PREPARATION_CRASH_FIXTURE
+ $oldPreparedFixture=$env:DIY_RETAINED_HOST_FIXTURE_WASM
  try {
   $env:DIY_RANGE_WORKER_BINARY=$worker
   $env:DIY_RANGE_RUNTIME_DLL=$dll
   $env:DIY_PREPARATION_CRASH_FIXTURE=Join-Path $target 'debug/examples/worker_pipe_probe.exe'
   & $Cargo test --locked --lib isolated_worker::runtime::real_jit_ -- --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real JIT fallback and trap regression failed'}
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
+  & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Prepared JIT ownership regression'}
+  & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Deferred Native diagnostic transport regression'}
   & $Cargo test --locked --lib isolated_worker::adapter::ranges::transport_tests::real_appcontainer_ranges -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Real resource range AppContainer integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::prepared::tests::real_appcontainer_preparation -- --exact --ignored --nocapture
@@ -53,6 +59,7 @@ try {
   $env:DIY_RANGE_WORKER_BINARY=$oldRangeWorker
   $env:DIY_RANGE_RUNTIME_DLL=$oldRangeRuntime
   $env:DIY_PREPARATION_CRASH_FIXTURE=$oldPreparationCrash
+  $env:DIY_RETAINED_HOST_FIXTURE_WASM=$oldPreparedFixture
  }
  & (Join-Path $target 'debug/examples/wasm_package_probe.exe') $worker $dll $module
  if($LASTEXITCODE -ne 0){throw 'Real Wasm package/catalog integration failed'}
@@ -62,6 +69,17 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Real Wasm permission/flow/withdrawal integration failed'}
  & $Node (Join-Path $root 'scripts/check-external-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json')
  if($LASTEXITCODE -ne 0){throw 'Production external Host execution/consent/EOF integration failed'}
+ $oldPreparedJit=$env:DIY_EXPERIMENT_PREPARED_JIT
+ try {
+  $env:DIY_EXPERIMENT_PREPARED_JIT='1'
+  $preparedJitReport=& $Node (Join-Path $root 'scripts/benchmark-wasm-host-scaling.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module 3 2 single-detailed
+  if($LASTEXITCODE -ne 0){throw 'Opt-in prepared JIT Host integration failed'}
+  $preparedJit=$preparedJitReport | ConvertFrom-Json
+  if($preparedJit.scenarios.Count -ne 1 -or $preparedJit.scenarios[0].preparedWorkers -lt 1){throw 'Opt-in prepared JIT Host never used a prepared Worker'}
+  Write-Output "Opt-in prepared JIT Host verified $($preparedJit.scenarios[0].preparedWorkers)/3 warm routes and cleaned all reservations on close"
+ } finally {
+  $env:DIY_EXPERIMENT_PREPARED_JIT=$oldPreparedJit
+ }
  & $Node (Join-Path $root 'scripts/check-wasm-dictionary.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json') (Join-Path $target 'debug/examples/wasm_dictionary_probe.exe')
  if($LASTEXITCODE -ne 0){throw 'Dictionary broker resource consent/isolation/true-ending integration failed'}
  & $Node (Join-Path $root 'scripts/check-wasm-network.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json')
@@ -83,6 +101,8 @@ try {
   $env:DIY_RETAINED_HOST_FIXTURE_WASM=$module
   & $Cargo test --locked --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Prepared JIT production Worker lifecycle failed'}
+  & $Cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe -- --exact --ignored --nocapture
+  if($LASTEXITCODE -ne 0){throw 'Deferred Native diagnostic transport production Worker failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::retained::tests::real_core_skipped_suffix -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Retained coordinator actual Core Skipped suffix integration failed'}
  } finally {

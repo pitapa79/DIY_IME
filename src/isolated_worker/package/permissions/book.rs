@@ -312,6 +312,40 @@ pub struct PendingPermissionSession {
     owns_session: bool,
 }
 impl PendingPermissionSession {
+    pub(in crate::isolated_worker) fn jit_candidates(
+        &self,
+        limit: usize,
+        pooled: bool,
+    ) -> Vec<(Vec<String>, Vec<crate::isolated_worker::adapter::WasmNode>)> {
+        let neutral = crate::isolated_worker::adapter::WasmNode::neutral_jit_pool_enabled();
+        let mut candidates: Vec<(Vec<String>, Vec<crate::isolated_worker::adapter::WasmNode>)> =
+            Vec::new();
+        for node in self
+            .plan
+            .as_ref()
+            .expect("pending plan")
+            .nodes
+            .iter()
+            .filter(|node| node.node.can_prepare_jit())
+        {
+            if (pooled || neutral)
+                && let Some((ids, members)) = candidates.iter_mut().find(|(_, known)| {
+                    if neutral {
+                        known[0].shares_runtime_factory(&node.node)
+                    } else {
+                        known[0].shares_jit_preparation(&node.node)
+                    }
+                })
+            {
+                ids.push(node.id.clone());
+                members.push(node.node.clone());
+            } else if candidates.len() < limit {
+                candidates.push((vec![node.id.clone()], vec![node.node.clone()]));
+            }
+        }
+        candidates
+    }
+
     pub(in crate::isolated_worker) fn retained_stages(
         &self,
         proof: &super::super::StaticOfficialPipeline,

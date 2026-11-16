@@ -512,6 +512,7 @@ struct ActivePlan {
     session: PermissionSession,
     evidence: PlanEvidence,
     retained: Option<super::super::adapter::RetainedOwner>,
+    _prepared_jit: Vec<Arc<super::super::adapter::PreparedJitSlot>>,
 }
 struct Runner {
     catalog: Catalog,
@@ -913,13 +914,51 @@ impl Runner {
                     })?)
                 };
                 let pending = self.pending.take().unwrap();
+                let (jit_nodes, jit_limit) =
+                    match std::env::var("DIY_EXPERIMENT_PREPARED_JIT").as_deref() {
+                        Ok("1") => (1, 1),
+                        Ok("2") => (1, 2),
+                        Ok("all") => (
+                            self.host.policy().max_physical_jobs.saturating_sub(1) as usize,
+                            1,
+                        ),
+                        _ => (0, 0),
+                    };
+                let pooled_jit = std::env::var_os("DIY_EXPERIMENT_POOLED_JIT").as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
+                let jit_candidates = if pending.evidence.official.is_none() && jit_nodes > 0 {
+                    pending.session.jit_candidates(jit_nodes, pooled_jit)
+                } else {
+                    Vec::new()
+                };
+                let neutral_jit = super::super::adapter::WasmNode::neutral_jit_pool_enabled();
+                // Preparation's existing physical reservation covers each
+                // compile-only child sequentially, before neutral stock can
+                // occupy the spare capacity. No input/Store/Instance is used.
+                if neutral_jit && preparation_slot.is_some() {
+                    for (_, members) in &jit_candidates {
+                        for node in members {
+                            node.warm_neutral_code(&cancel);
+                            if cancel.is_cancelled() {
+                                return Err(error(
+                                    "worker-cancelled",
+                                    "neutral preparation cancelled",
+                                ));
+                            }
+                        }
+                    }
+                }
                 let retained_stages = pending
                     .evidence
                     .official
                     .as_ref()
                     .map(|proof| pending.session.retained_stages(proof))
                     .transpose()?;
-                let transactional = pending.evidence.official.is_some()
+                let wait_for_jit = std::env::var_os("DIY_EXPERIMENT_JIT_ACTIVATION_READY")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
+                let transactional = wait_for_jit
+                    || pending.evidence.official.is_some()
                     || self
                         .session
                         .as_ref()
@@ -940,11 +979,60 @@ impl Runner {
                     })
                     .transpose()?
                     .flatten();
+                let refill_controller = (std::env::var_os("DIY_EXPERIMENT_REFILL_AFTER_GRAPH")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1")))
+                .then(|| session.controller().clone());
+                let jit_groups = jit_candidates.len();
+                let jit_spares = jit_candidates
+                    .iter()
+                    .map(|(ids, _)| ids.len())
+                    .sum::<usize>()
+                    .min(jit_nodes)
+                    .saturating_mul(jit_limit)
+                    .min(self.host.policy().max_physical_jobs.saturating_sub(1) as usize);
                 let new = ActivePlan {
                     session,
                     evidence: pending.evidence,
                     retained,
+                    _prepared_jit: jit_candidates
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, (ids, members))| {
+                            let limit = if pooled_jit || neutral_jit {
+                                // Divide a bounded inventory among implementations, not
+                                // graph positions. Every actual process still reserves
+                                // its physical slot before starting and is used once.
+                                (jit_spares / jit_groups
+                                    + usize::from(index < jit_spares % jit_groups))
+                                .max(1)
+                            } else {
+                                jit_limit
+                            };
+                            let slot = members[0].prepare_jit_slot(
+                                &self.host,
+                                ids,
+                                limit,
+                                refill_controller.clone(),
+                                cancel.clone(),
+                            )?;
+                            for member in &members[1..] {
+                                member.attach_jit_slot(&slot);
+                            }
+                            Some(slot)
+                        })
+                        .collect(),
                 };
+                if wait_for_jit {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    for slot in &new._prepared_jit {
+                        // No policy lock is held while waiting. The binding's
+                        // cancellation token is also withdrawn on revocation.
+                        // A readiness timeout keeps the normal cold fallback.
+                        let _ = slot.wait_ready(&cancel, deadline)?;
+                        new.session.controller().control_state()?;
+                    }
+                }
                 if transactional {
                     // Order cancellation acceptance and the commit. Do not hold
                     // this lock while dropping the old process/Session owner.

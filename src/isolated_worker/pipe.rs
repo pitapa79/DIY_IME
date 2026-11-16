@@ -4,7 +4,7 @@ use crate::execution_control::CancellationToken;
 use std::{
     io::Write,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -12,6 +12,8 @@ use std::{
 
 const WIRE_LIMIT: usize = 8 * 1024 * 1024;
 const OUTPUT_LIMIT_ERROR: &str = "Worker output exceeds wire limit";
+#[cfg(test)]
+mod deferred_tests;
 #[cfg(target_arch = "x86_64")]
 mod preparation;
 #[cfg(target_arch = "x86_64")]
@@ -155,7 +157,7 @@ pub struct Running<'a> {
     _cache: &'a Cache,
     process: OwnedHandle,
     process_id: u32,
-    output: Option<thread::JoinHandle<Result<Vec<u8>, String>>>,
+    output: Option<thread::JoinHandle<Result<ExchangeOutput, String>>>,
     input: Option<thread::JoinHandle<Result<(), String>>>,
     diagnostics: Option<thread::JoinHandle<Result<Vec<u8>, ()>>>,
     diagnostics_requested: bool,
@@ -198,13 +200,17 @@ impl<'a> Running<'a> {
             None
         };
         let output = self.output.take().map_or_else(
-            || Ok(Vec::new()),
+            || Ok(ExchangeOutput::plain(Vec::new())),
             |t| {
                 t.join()
                     .map_err(|_| "Worker reader panicked".to_owned())
                     .and_then(|r| r)
             },
         );
+        let (output, inline_diagnostics) = match output {
+            Ok(output) => (Ok(output.bytes), output.diagnostics),
+            Err(error) => (Err(error), None),
+        };
         let input = self.input.take().map_or_else(
             || {
                 if self.exchange_used && output.is_err() {
@@ -219,12 +225,15 @@ impl<'a> Running<'a> {
                     .and_then(|r| r)
             },
         );
-        let diagnostics = self.diagnostics_requested.then(|| {
-            self.diagnostics
-                .take()
-                .ok_or(())
-                .and_then(|t| t.join().map_err(|_| ()).and_then(|r| r))
-        });
+        let diagnostics = self
+            .diagnostics_requested
+            .then(|| {
+                self.diagnostics
+                    .take()
+                    .ok_or(())
+                    .and_then(|t| t.join().map_err(|_| ()).and_then(|r| r))
+            })
+            .or(inline_diagnostics);
         if self.observed {
             self.activity
                 .as_ref()
@@ -348,54 +357,207 @@ fn verify(profile: &Profile, job: &Job, process: HANDLE) -> Result<(), String> {
 /// Validation errors occur before CreateProcess. Every post-create result is
 /// either a verified exit or an owner which still holds the live process.
 pub(super) struct WorkerScope<'a> {
+    verified_runtime: Option<&'a super::runtime::VerifiedRuntimeFile>,
     profile: &'a Profile,
     job: &'a Job,
     cache: &'a Cache,
     activity: Option<Arc<AtomicU64>>,
     resource_deadline: Option<Instant>,
     exchange: Option<HostExchange>,
+    jit_run_cancel: Option<Arc<OnceLock<CancellationToken>>>,
     #[cfg(target_arch = "x86_64")]
     resource_owner: Option<ResourcePin>,
     #[cfg(test)]
     prepared: bool,
 }
-type HostExchange = Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
+struct ExchangeOutput {
+    bytes: Vec<u8>,
+    diagnostics: Option<Result<Vec<u8>, ()>>,
+}
+impl ExchangeOutput {
+    fn plain(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            diagnostics: None,
+        }
+    }
+}
+fn read_inline_reply(mut output: impl Read) -> Result<ExchangeOutput, String> {
+    let mut length = [0; 4];
+    output
+        .read_exact(&mut length)
+        .map_err(|_| "Worker reply frame truncated")?;
+    let length = u32::from_le_bytes(length) as usize;
+    if length > WIRE_LIMIT {
+        return Err(OUTPUT_LIMIT_ERROR.into());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| "Worker reply buffer unavailable")?;
+    bytes.resize(length, 0);
+    output
+        .read_exact(&mut bytes)
+        .map_err(|_| "Worker reply body truncated")?;
+    // Only the Native Worker frames this private transport. The exact guest
+    // wire (including duplicate keys) is untouched. Bad/missing metadata cannot
+    // replace, enlarge or invalidate an otherwise complete guest reply.
+    let diagnostics = Some(super::worker_trace::read(output));
+    Ok(ExchangeOutput { bytes, diagnostics })
+}
+type HostExchange = Box<
+    dyn for<'target> FnOnce(
+            std::fs::File,
+            std::fs::File,
+            std::os::windows::io::BorrowedHandle<'target>,
+        ) -> Result<ExchangeOutput, String>
+        + Send,
+>;
+#[cfg(test)]
+type PlainExchange =
+    Box<dyn FnOnce(std::fs::File, std::fs::File) -> Result<Vec<u8>, String> + Send>;
 pub(super) type JitDeliveryCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
+pub(super) enum JitModuleDelivery {
+    Early,
+    LateBound(String),
+    Neutral,
+    NeutralMapped,
+}
 pub(super) struct JitDelivery {
     pub bytes: Vec<u8>,
     pub check: Option<JitDeliveryCheck>,
+    pub run_cancel: Option<CancellationToken>,
+    pub detailed: bool,
+    pub late_code: Option<Arc<super::adapter::LateJitCode>>,
 }
 impl<'a> WorkerScope<'a> {
+    pub(super) fn with_verified_runtime(
+        mut self,
+        verified: Option<&'a super::runtime::VerifiedRuntimeFile>,
+    ) -> Self {
+        self.verified_runtime = verified;
+        self
+    }
     pub(super) fn with_jit_delivery(
         mut self,
+        module: Option<Arc<[u8]>>,
         request: impl FnOnce() -> Result<JitDelivery, String> + Send + 'static,
         cancel: CancellationToken,
+        deferred_diagnostics: bool,
+        module_delivery: JitModuleDelivery,
     ) -> Self {
-        self.exchange = Some(Box::new(move |mut output, mut input| {
-            let mut ready = [0; super::runtime::JIT_READY.len()];
+        let run_cancellation = Arc::new(OnceLock::<CancellationToken>::new());
+        self.jit_run_cancel = Some(run_cancellation.clone());
+        self.exchange = Some(Box::new(move |mut output, mut input, target| {
+            let late = !matches!(module_delivery, JitModuleDelivery::Early);
+            if let Some(module) = module.as_ref().filter(|_| !late) {
+                input
+                    .write_all(module)
+                    .map_err(|_| "JIT module pipe closed")?;
+            }
+            let marker = if matches!(module_delivery, JitModuleDelivery::NeutralMapped) {
+                super::runtime::RUNTIME_MAPPED_READY
+            } else if late {
+                super::runtime::RUNTIME_READY
+            } else {
+                super::runtime::JIT_READY
+            };
+            let mut ready = vec![0; marker.len()];
             output
                 .read_exact(&mut ready)
                 .map_err(|_| "JIT readiness pipe closed")?;
-            if ready != super::runtime::JIT_READY {
+            if ready != marker {
                 return Err("invalid JIT readiness frame".into());
             }
             if cancel.is_cancelled() {
                 return Err("JIT input cancelled before delivery".into());
             }
-            let JitDelivery { bytes, check } = request()?;
+            let JitDelivery {
+                bytes,
+                check,
+                run_cancel,
+                detailed,
+                late_code,
+            } = request()?;
+            if let Some(token) = run_cancel {
+                let _ = run_cancellation.set(token);
+            }
             if bytes.is_empty() || bytes.len() > WIRE_LIMIT {
                 return Err("invalid prepared JIT request size".into());
             }
             if let Some(check) = check {
                 check()?;
             }
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled()
+                || run_cancellation
+                    .get()
+                    .is_some_and(CancellationToken::is_cancelled)
+            {
                 return Err("JIT input cancelled before delivery".into());
+            }
+            if deferred_diagnostics {
+                input
+                    .write_all(&[u8::from(detailed)])
+                    .map_err(|_| "Worker control pipe failed")?;
+            }
+            let late_bytes = match &module_delivery {
+                JitModuleDelivery::Early => {
+                    if late_code.is_some() {
+                        return Err("unexpected late code on Node-bound Worker".into());
+                    }
+                    None
+                }
+                JitModuleDelivery::LateBound(digest) => {
+                    if late_code.is_some() {
+                        return Err("unexpected replacement of bound code".into());
+                    }
+                    Some((
+                        module.as_deref().ok_or("late runtime module absent")?,
+                        digest.as_str(),
+                    ))
+                }
+                JitModuleDelivery::Neutral => {
+                    let code = late_code
+                        .as_ref()
+                        .ok_or("neutral runtime requires captured late code")?;
+                    code.check()?;
+                    Some((code.bytes(), code.digest()))
+                }
+                JitModuleDelivery::NeutralMapped => {
+                    let code = late_code
+                        .as_ref()
+                        .ok_or("mapped runtime requires captured late code")?;
+                    code.check()?;
+                    let mapping = code.mapping().ok_or("immutable code mapping absent")?;
+                    // The original process receives its ONLY code capability
+                    // after the same size/grant/generation/cancel checks above.
+                    let remote = mapping.duplicate_into(target)?;
+                    input
+                        .write_all(&(mapping.length() as u32).to_le_bytes())
+                        .and_then(|()| input.write_all(&remote.to_le_bytes()))
+                        .map_err(|_| "late mapped code pipe failed")?;
+                    None
+                }
+            };
+            if let Some((module, digest)) = late_bytes {
+                if !(1..=8 * 1024 * 1024).contains(&module.len()) || digest.len() != 64 {
+                    return Err("invalid late runtime module binding".into());
+                }
+                // No code bytes are sent until the normal size, grant,
+                // generation and cancellation checks above have succeeded.
+                input
+                    .write_all(&(module.len() as u32).to_le_bytes())
+                    .and_then(|()| input.write_all(digest.as_bytes()))
+                    .and_then(|()| input.write_all(module))
+                    .map_err(|_| "late runtime module pipe failed")?;
             }
             input
                 .write_all(&bytes)
                 .map_err(|_| "Worker input pipe failed")?;
             drop(input);
+            if deferred_diagnostics && detailed {
+                return read_inline_reply(output);
+            }
             let mut bytes = Vec::new();
             match output.take((WIRE_LIMIT + 1) as u64).read_to_end(&mut bytes) {
                 Ok(_) => (),
@@ -405,7 +567,7 @@ impl<'a> WorkerScope<'a> {
             if bytes.len() > WIRE_LIMIT {
                 return Err(OUTPUT_LIMIT_ERROR.into());
             }
-            Ok(bytes)
+            Ok(ExchangeOutput::plain(bytes))
         }));
         self
     }
@@ -417,12 +579,14 @@ impl<'a> WorkerScope<'a> {
         activity: Arc<AtomicU64>,
     ) -> Self {
         Self {
+            verified_runtime: None,
             profile,
             job,
             cache,
             activity: Some(activity),
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             #[cfg(test)]
@@ -432,12 +596,14 @@ impl<'a> WorkerScope<'a> {
     #[cfg(test)]
     pub(super) fn prepared(profile: &'a Profile, job: &'a Job, cache: &'a Cache) -> Self {
         Self {
+            verified_runtime: None,
             profile,
             job,
             cache,
             activity: None,
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             prepared: true,
@@ -449,8 +615,10 @@ impl<'a> WorkerScope<'a> {
         self
     }
     #[cfg(test)]
-    pub(super) fn with_test_exchange(mut self, exchange: HostExchange) -> Self {
-        self.exchange = Some(exchange);
+    pub(super) fn with_test_exchange(mut self, exchange: PlainExchange) -> Self {
+        self.exchange = Some(Box::new(move |output, input, _target| {
+            exchange(output, input).map(ExchangeOutput::plain)
+        }));
         self
     }
 }
@@ -465,12 +633,14 @@ pub fn execute<'a>(
 ) -> Result<Outcome<'a>, String> {
     execute_observed(
         WorkerScope {
+            verified_runtime: None,
             profile,
             job,
             cache,
             activity: None,
             resource_deadline: None,
             exchange: None,
+            jit_run_cancel: None,
             #[cfg(target_arch = "x86_64")]
             resource_owner: None,
             #[cfg(test)]
@@ -520,16 +690,21 @@ pub fn execute_resources<'a>(
     );
     let session = Arc::new(std::sync::Mutex::new(request.resources));
     let io_session = session.clone();
-    let exchange = Box::new(move |output, input| {
-        let mut session = io_session
-            .lock()
-            .map_err(|_| "resource owner unavailable")?;
-        let result = super::resource_transport::serve(output, input, &request.input, &mut session);
-        if result.is_err() {
-            session.withdraw();
-        }
-        result.map_err(|_| "Worker resource exchange failed".into())
-    });
+    let exchange = Box::new(
+        move |output, input, _target: std::os::windows::io::BorrowedHandle<'_>| {
+            let mut session = io_session
+                .lock()
+                .map_err(|_| "resource owner unavailable")?;
+            let result =
+                super::resource_transport::serve(output, input, &request.input, &mut session);
+            if result.is_err() {
+                session.withdraw();
+            }
+            result
+                .map(ExchangeOutput::plain)
+                .map_err(|_| "Worker resource exchange failed".into())
+        },
+    );
     execute_observed(
         WorkerScope {
             profile,
@@ -537,6 +712,8 @@ pub fn execute_resources<'a>(
             cache,
             activity: None,
             exchange: Some(exchange),
+            verified_runtime: None,
+            jit_run_cancel: None,
             resource_deadline,
             resource_owner: Some(Box::new(session)),
             #[cfg(test)]
@@ -568,12 +745,14 @@ pub(super) fn execute_with_diagnostics<'a>(
     #[cfg(test)]
     let launch_started = Instant::now();
     let WorkerScope {
+        verified_runtime,
         profile,
         job,
         cache,
         activity,
         resource_deadline,
         exchange,
+        jit_run_cancel,
         #[cfg(target_arch = "x86_64")]
         resource_owner,
         #[cfg(test)]
@@ -599,20 +778,40 @@ pub(super) fn execute_with_diagnostics<'a>(
     let executable = wide(program.as_os_str());
     // A diagnostics-only setup failure never changes execution authority/results.
     let mut diagnostics = detailed.then(diagnostic_pipe).transpose().ok().flatten();
+    let runtime_file = verified_runtime
+        .map(super::runtime::VerifiedRuntimeFile::inherit)
+        .transpose()?;
     let mut command = quote(program.as_os_str());
     for arg in args {
         command.push(b' ' as u16);
         command.extend(quote(arg));
     }
     let normal_command_length = command.len();
-    if let Some((_, write)) = &diagnostics {
-        command.push(b' ' as u16);
-        command.extend(
-            wide(OsStr::new(&format!("--diagnostics={}", write.0 as usize)))
-                .into_iter()
-                .take_while(|c| *c != 0),
-        );
-    }
+    let append_extension =
+        |command: &mut Vec<u16>, diagnostics: &Option<(OwnedHandle, OwnedHandle)>| {
+            let diagnostic = diagnostics
+                .as_ref()
+                .map_or(0, |(_, write)| write.0 as usize);
+            let extension = if let Some(file) = &runtime_file {
+                Some(format!(
+                    "--verified-runtime-file={}:{diagnostic}",
+                    file.0 as usize
+                ))
+            } else if diagnostic != 0 {
+                Some(format!("--diagnostics={diagnostic}"))
+            } else {
+                None
+            };
+            if let Some(extension) = extension {
+                command.push(b' ' as u16);
+                command.extend(
+                    wide(OsStr::new(&extension))
+                        .into_iter()
+                        .take_while(|c| *c != 0),
+                );
+            }
+        };
+    append_extension(&mut command, &diagnostics);
     command.push(0);
     let sa = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -651,29 +850,40 @@ pub(super) fn execute_with_diagnostics<'a>(
     };
     // Both arrays outlive Attributes, including the diagnostics-failure branch.
     // A temporary array is invalid: Windows retains the supplied value pointer.
+    let file_handle = runtime_file.as_ref().map_or(ptr::null_mut(), |file| file.0);
+    let diagnostic_handle = diagnostics
+        .as_ref()
+        .map_or(ptr::null_mut(), |(_, write)| write.0);
     let ordinary_handles = [input.0, write.0];
-    let handles = [
-        input.0,
-        write.0,
-        diagnostics.as_ref().map_or(ptr::null_mut(), |(_, w)| w.0),
-    ];
+    let runtime_handles = [input.0, write.0, file_handle];
+    let diagnostic_handles = [input.0, write.0, diagnostic_handle];
+    let both_handles = [input.0, write.0, file_handle, diagnostic_handle];
     let jobs = [job.0.0];
     let mut attributes = Attributes::new()?;
     attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps)?;
     if diagnostics.is_some() {
-        if attributes
-            .set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)
-            .is_err()
-        {
+        let installed = if runtime_file.is_some() {
+            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &both_handles)
+        } else {
+            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &diagnostic_handles)
+        };
+        if installed.is_err() {
             // Preserve the ordinary isolated launch if only the optional handle
             // could not be installed. Never remove AppContainer or Job policy.
             diagnostics = None;
             command.truncate(normal_command_length);
+            append_extension(&mut command, &diagnostics);
             command.push(0);
             attributes = Attributes::new()?;
             attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps)?;
-            attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
+            if runtime_file.is_some() {
+                attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &runtime_handles)?;
+            } else {
+                attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
+            }
         }
+    } else if runtime_file.is_some() {
+        attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &runtime_handles)?;
     } else {
         attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ordinary_handles)?;
     }
@@ -797,8 +1007,15 @@ pub(super) fn execute_with_diagnostics<'a>(
     let exceeded = overflow.clone();
     let pipes = if let Some(exchange) = exchange {
         let exceeded = overflow.clone();
+        let process_handle = running.process.0 as usize;
         running.output = Some(thread::spawn(move || {
-            let result = exchange(file, writer);
+            // SAFETY: Running::finish and Running::drop ALWAYS join this IO
+            // owner before its original process handle is closed. No PID
+            // reopening/reuse or handle ownership transfer is involved.
+            let target = unsafe {
+                std::os::windows::io::BorrowedHandle::borrow_raw(process_handle as HANDLE)
+            };
+            let result = exchange(file, writer, target);
             if matches!(&result, Err(error) if error == OUTPUT_LIMIT_ERROR) {
                 exceeded.store(true, Ordering::Release);
             }
@@ -868,8 +1085,8 @@ pub(super) fn execute_with_diagnostics<'a>(
                 return Err(OUTPUT_LIMIT_ERROR.into());
             }
             match result {
-                Ok(_) => Ok(bytes),
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(bytes),
+                Ok(_) => Ok(ExchangeOutput::plain(bytes)),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(ExchangeOutput::plain(bytes)),
                 Err(_) => Err("Worker output pipe failed".into()),
             }
         }));
@@ -927,7 +1144,12 @@ pub(super) fn execute_with_diagnostics<'a>(
             // Resource expiry also cancels the shared token. Preserve the
             // absolute deadline cause instead of relabelling it cancellation.
             Some(EndReason::Deadline)
-        } else if control.cancel.is_cancelled() {
+        } else if control.cancel.is_cancelled()
+            || jit_run_cancel
+                .as_deref()
+                .and_then(OnceLock::get)
+                .is_some_and(CancellationToken::is_cancelled)
+        {
             Some(EndReason::Cancelled)
         } else if overflow.load(Ordering::Acquire) {
             Some(EndReason::OutputLimit)

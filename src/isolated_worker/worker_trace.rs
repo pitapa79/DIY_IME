@@ -12,7 +12,9 @@ pub(super) const LIMIT: usize = 4096;
 
 pub(super) struct Recorder {
     output: RefCell<Option<File>>,
-    origin: Instant,
+    inline: RefCell<Option<Vec<u8>>>,
+    deferred: bool,
+    origin: Cell<Option<Instant>>,
     frames: Cell<u8>,
 }
 impl Recorder {
@@ -20,11 +22,46 @@ impl Recorder {
         let valid = file.write_all(MAGIC).is_ok();
         let result = Self {
             output: RefCell::new(valid.then_some(file)),
-            origin: Instant::now(),
+            inline: RefCell::new(None),
+            deferred: false,
+            origin: Cell::new(Some(Instant::now())),
             frames: Cell::new(0),
         };
         result.write(0, WorkerTracePhase::Main, 0);
         result
+    }
+    pub(super) fn deferred() -> Self {
+        Self {
+            output: RefCell::new(None),
+            inline: RefCell::new(None),
+            deferred: true,
+            origin: Cell::new(None),
+            frames: Cell::new(0),
+        }
+    }
+    pub(super) fn is_deferred(&self) -> bool {
+        self.deferred
+    }
+    pub(super) fn enable_inline(&self) {
+        if !self.deferred || self.origin.get().is_some() || self.frames.get() != 0 {
+            return;
+        }
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(MAGIC.len() + 24 * 10).is_err() {
+            return;
+        }
+        bytes.extend_from_slice(MAGIC);
+        *self.inline.borrow_mut() = Some(bytes);
+        self.origin.set(Some(Instant::now()));
+        self.write(0, WorkerTracePhase::Main, 0);
+    }
+    pub(super) fn finish_inline(&self) -> Option<Vec<u8>> {
+        if !self.deferred || self.origin.get().is_none() {
+            return None;
+        }
+        self.event(1, WorkerTracePhase::Main);
+        self.origin.set(None);
+        self.inline.borrow_mut().take()
     }
     fn write(&self, kind: u8, phase: WorkerTracePhase, at: u64) {
         let Ok(mut output) = self.output.try_borrow_mut() else {
@@ -34,29 +71,35 @@ impl Recorder {
         // buffer even if the Parent reader has not yet been scheduled.
         if self.frames.get() >= 24 {
             *output = None;
+            *self.inline.borrow_mut() = None;
             return;
         }
-        let Some(file) = output.as_mut() else {
-            return;
-        };
         let mut frame = [0u8; 10];
         frame[0] = kind;
         frame[1] = phase as u8;
         frame[2..].copy_from_slice(&at.to_le_bytes());
-        if file.write_all(&frame).is_err() {
-            *output = None;
-        } else {
+        if let Some(file) = output.as_mut() {
+            if file.write_all(&frame).is_err() {
+                *output = None;
+            } else {
+                self.frames.set(self.frames.get() + 1);
+            }
+        } else if let Some(bytes) = self.inline.borrow_mut().as_mut() {
+            bytes.extend_from_slice(&frame);
             self.frames.set(self.frames.get() + 1);
         }
     }
     fn event(&self, kind: u8, phase: WorkerTracePhase) {
-        if self.output.borrow().is_none() {
+        let Some(origin) = self.origin.get() else {
+            return;
+        };
+        if self.output.borrow().is_none() && self.inline.borrow().is_none() {
             return;
         }
         self.write(
             kind,
             phase,
-            u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX),
+            u64::try_from(origin.elapsed().as_micros()).unwrap_or(u64::MAX),
         );
     }
     pub(super) fn span(&self, phase: WorkerTracePhase) -> Span<'_> {
@@ -64,6 +107,7 @@ impl Recorder {
         Span {
             recorder: self,
             phase,
+            active: self.origin.get().is_some(),
         }
     }
 }
@@ -75,10 +119,13 @@ impl Drop for Recorder {
 pub(super) struct Span<'a> {
     recorder: &'a Recorder,
     phase: WorkerTracePhase,
+    active: bool,
 }
 impl Drop for Span<'_> {
     fn drop(&mut self) {
-        self.recorder.event(1, self.phase);
+        if self.active {
+            self.recorder.event(1, self.phase);
+        }
     }
 }
 
@@ -91,7 +138,10 @@ pub(super) fn read(mut input: impl Read) -> Result<Vec<u8>, ()> {
         match input.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if bytes.len().saturating_add(n) <= LIMIT && !overflow {
+                if bytes.len().saturating_add(n) <= LIMIT
+                    && !overflow
+                    && bytes.try_reserve(n).is_ok()
+                {
                     bytes.extend_from_slice(&buf[..n]);
                 } else {
                     overflow = true;
@@ -173,6 +223,52 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Interval>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_off_has_no_clock_file_buffer_or_frames() {
+        let recorder = Recorder::deferred();
+        for _ in 0..1000 {
+            drop(recorder.span(WorkerTracePhase::Compile));
+        }
+        assert!(recorder.origin.get().is_none());
+        assert!(recorder.output.borrow().is_none());
+        assert!(recorder.inline.borrow().is_none());
+        assert_eq!(recorder.frames.get(), 0);
+        assert!(recorder.finish_inline().is_none());
+    }
+    #[test]
+    fn deferred_on_records_only_observed_phases_and_finishes_once() {
+        let recorder = Recorder::deferred();
+        let unobserved = recorder.span(WorkerTracePhase::Compile);
+        recorder.enable_inline();
+        drop(unobserved); // cannot manufacture an end for the unobserved start
+        drop(recorder.span(WorkerTracePhase::GuestCall));
+        drop(recorder.span(WorkerTracePhase::Cleanup));
+        let bytes = recorder.finish_inline().unwrap();
+        assert!(bytes.len() <= MAGIC.len() + 24 * 10);
+        let intervals = decode(&bytes).unwrap();
+        assert_eq!(intervals.len(), 3);
+        assert!(intervals.iter().all(|phase| phase.end.is_some()));
+        assert!(
+            !intervals
+                .iter()
+                .any(|phase| phase.phase == WorkerTracePhase::Compile)
+        );
+        assert!(recorder.finish_inline().is_none());
+        assert!(recorder.origin.get().is_none());
+        recorder.enable_inline();
+        assert!(recorder.origin.get().is_none());
+    }
+    #[test]
+    fn inline_overflow_loses_metadata_without_growing_the_buffer() {
+        let recorder = Recorder::deferred();
+        recorder.enable_inline();
+        for _ in 0..1000 {
+            drop(recorder.span(WorkerTracePhase::GuestCall));
+        }
+        assert!(recorder.inline.borrow().is_none());
+        assert_eq!(recorder.frames.get(), 24);
+        assert!(recorder.finish_inline().is_none());
+    }
     fn stream(frames: &[(u8, u8, u64)]) -> Vec<u8> {
         let mut b = MAGIC.to_vec();
         for (k, p, t) in frames {

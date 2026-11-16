@@ -108,7 +108,7 @@ describe('persistent editor session', () => {
     expect(JSON.parse(localStorage.getItem('diy-ime2.editor.runtime-input.v1')!)).toEqual(saved);
     mocks.openSession.mockResolvedValueOnce({ id: 'retry-session', state: empty() });
     fireEvent.click(button('入力を保持して再接続')); await screen.findByText('計画未設定');
-    expect(JSON.parse(localStorage.getItem('diy-ime2.editor.runtime-input.v1')!)).toEqual({ ...saved, revision: 1 });
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('diy-ime2.editor.runtime-input.v1')!)).toEqual({ ...saved, revision: 1 }));
     fireEvent.change(screen.getByLabelText('input 入力テキスト'), { target: { value: 'before𠮷after' } });
     expect((screen.getByLabelText('input 入力テキスト') as HTMLTextAreaElement).value).toBe('before𠮷after');
     expect(button('実行').disabled).toBe(true); expect(mocks.runActive).not.toHaveBeenCalled();

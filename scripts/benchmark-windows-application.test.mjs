@@ -4,6 +4,66 @@ import {summarize,physicallyEnded,verifySample,benchmarkOptions,traceConfigurati
 import {PhaseProfiler,mergePhaseSummaries} from './trace-phase-profile.mjs';
 import {measureHostInput} from './host-input-scenarios.mjs';
 import {emptyTrace} from '../editor/src/executionTrace.ts';
+import {graphOverhead,wasmCodeSha256} from './wasm-host-overhead.mjs';
+
+test('heterogeneous Wasm evidence distinguishes executable code from custom-section aliases', () => {
+ const header = Buffer.from([0,97,115,109,1,0,0,0]);
+ const module = Buffer.concat([header, Buffer.from([10,5,1,3,0,1,11])]);
+ const alias = Buffer.concat([module, Buffer.from([0,2,1,120])]);
+ const different = Buffer.from(module);
+ different[different.length - 2] = 0;
+ assert.equal(wasmCodeSha256(module), wasmCodeSha256(alias));
+ assert.notEqual(wasmCodeSha256(module), wasmCodeSha256(different));
+ // Bounds/overflow/duplicate section failures cannot manufacture provenance.
+ for (const bytes of [header, module.subarray(0, -1), Buffer.concat([module,module.subarray(8)]),
+   Buffer.concat([header,Buffer.from([10,255,255,255,255,16])]),
+   Buffer.concat([header,Buffer.from([10,128])]), Buffer.alloc(8)]) {
+  assert.throws(() => wasmCodeSha256(bytes), /Wasm code section/);
+ }
+ // A valid padded u32 LEB length is accepted without treating the padding as code.
+ assert.equal(wasmCodeSha256(Buffer.concat([header,Buffer.from([10,133,0,1,3,0,1,11])])), wasmCodeSha256(module));
+});
+
+function graphEvent(event, atUs, node, extra = {}) {
+ return {event, atUs: String(atUs), run: 1, plan: 1, input: 1, ...(node ? {node} : {}), ...extra};
+}
+function queuedGraph() {
+ return {events: [graphEvent('run-accepted', 0), graphEvent('node-ready', 10, 'n'),
+  graphEvent('node-started', 1010, 'n'), graphEvent('call-ended', 1510, 'n'),
+  graphEvent('node-resolved', 1520, 'n'), graphEvent('host-response-published', 1530),
+  graphEvent('worker-interval', 1500, 'n', {worker: {phase: 'guest-call', startedUs: '9000', finishedUs: '9100'}})]};
+}
+test('Wasm overhead includes queueing and resolution without subtracting independent clock offsets', () => {
+ const trace = queuedGraph();
+ const result = graphOverhead(trace, [trace.events[2]], 'serial');
+ assert.equal(result.lowerUs, 1430);
+ assert.equal(result.upperUs, 1430);
+ assert.deepEqual(result.nodes, [400]);
+ assert.deepEqual(result.readyToResolved, [1410]);
+ // A delayed event from the preceding input cannot supply this run's duration.
+ trace.events.push({...trace.events[6], run: 2});
+ assert.deepEqual(graphOverhead(trace, [trace.events[2]], 'serial'), result);
+});
+test('Wasm graph timing refuses missing, ambiguous, reversed or reused invocation anchors', () => {
+ for (const change of [t => t.events.pop(), t => t.events.push({...t.events[3]}),
+  t => t.events[4].atUs = '1000', t => t.events[6].worker.finishedUs = '9600']) {
+  const trace = queuedGraph(); change(trace);
+  assert.equal(graphOverhead(trace, [trace.events[2]], 'serial'), undefined);
+ }
+ const trace = queuedGraph();
+ assert.equal(graphOverhead(trace, [trace.events[2], trace.events[2]], 'serial'), undefined);
+ assert.equal(graphOverhead(trace, [{...trace.events[2], input: 2}], 'serial'), undefined);
+});
+test('parallel Wasm graph overhead keeps overlap bounds rather than adding Worker clocks', () => {
+ const trace = queuedGraph();
+ trace.events[5].atUs = '3000';
+ trace.events.push(graphEvent('node-ready', 10, 'm'), graphEvent('node-started', 20, 'm'),
+  graphEvent('call-ended', 2000, 'm'), graphEvent('node-resolved', 2010, 'm'),
+  graphEvent('worker-interval', 1990, 'm', {worker: {phase: 'guest-call', startedUs: '0', finishedUs: '200'}}));
+ const result = graphOverhead(trace, [trace.events[2], trace.events[8]], 'parallel');
+ assert.equal(result.lowerUs, 2700);
+ assert.equal(result.upperUs, 2800);
+});
 
 function tracePage(events,dropped=0){return {...emptyTrace(),recordingId:'a'.repeat(32),nowUs:'100000',firstSequence:String(events[0]?.sequence??0),nextSequence:String(events.at(-1)?.sequence??0),events,dropped};}
 test('Host input counts bad results and refuses stale payloads after a newer revision', async () => {
@@ -25,6 +85,78 @@ test('Host input counts bad results and refuses stale payloads after a newer rev
   assert.equal(scenario.firstCorrectResponse, null);
  }
  await assert.rejects(measure(true), /stale-host-result/);
+});
+
+test('admission rejection stays in the attempted denominator without a fake run or physical exit', async () => {
+ let latest = 0;
+ const scenarios = await measureHostInput({
+  steps: [{id:'first',text:'reject',expected:'reject'}, {id:'middle',text:'accept',expected:'accept'}, {id:'last',text:'reject',expected:'reject'}],
+  submit: async text => { const key = ++latest; return text === 'accept' ? key : {admissionRejected:'busy'}; },
+  read: async key => { assert.equal(typeof key, 'number'); return {current:key === latest, result:key === latest ? {text:'accept'} : null}; },
+  ended: () => true,
+  verify: (snapshot, expected) => assert.equal(snapshot.result.text, expected),
+  summarize, pollMs: 5, rounds: 1, independentInput: true,
+ });
+ for (const scenario of scenarios) {
+  assert.equal(scenario.attempts, 3);
+  assert.equal(scenario.admitted, 1);
+  assert.equal(scenario.admissionRejected, 2);
+  assert.equal(scenario.failed, 2);
+  assert.equal(scenario.correct + scenario.superseded + scenario.failed, 3);
+  assert.equal(scenario.physicalEnd.count, 1);
+  for (const id of ['first', 'last']) {
+   assert.equal(scenario.byCase[id].correct, 0);
+   assert.equal(scenario.byCase[id].physicalEnd, null);
+   assert.equal(scenario.byCase[id].firstCorrectResponse, null);
+  }
+ }
+ assert.equal(scenarios[0].correct, 1);
+});
+
+test('all rejected inputs create no read or physical-end sample and unexpected errors still fail', async () => {
+ const args = {steps:[{id:'only',text:'x',expected:'x'}], submit:async()=>({admissionRejected:'busy'}),
+  read:async()=>{throw new Error('rejected input has no run');}, ended:()=>true,
+  verify:()=>{throw new Error('rejected input has no result');}, summarize, pollMs:5, rounds:1};
+ const scenarios = await measureHostInput(args);
+ for (const scenario of scenarios) {
+  assert.equal(scenario.attempts, 1); assert.equal(scenario.admitted, 0);
+  assert.equal(scenario.failed, 1); assert.equal(scenario.admissionRejected, 1);
+  assert.equal(scenario.correct, 0); assert.equal(scenario.physicalEnd, null);
+ }
+ await assert.rejects(measureHostInput({...args,submit:async()=>({admissionRejected:'unknown'})}), /invalid-admission-rejection/);
+ await assert.rejects(measureHostInput({...args,submit:async()=>{throw new Error('unexpected-host-error');}}), /unexpected-host-error/);
+});
+test('fixed cadence submits the next revision during an outstanding result read', {timeout: 3000}, async () => {
+ let round = 0, latest = 0, heldKey, reading = false;
+ const heldRead = Promise.withResolvers();
+ const scenarios = await measureHostInput({
+  steps: [{id:'a',text:'a',expected:'a'}, {id:'b',text:'b',expected:'b'}],
+  beginRound: () => { round++; },
+  submit: async text => {
+   const key = ++latest;
+   if (round === 3 && text === 'a') heldKey = key;
+   if (round === 3 && text === 'b') {
+    assert.equal(reading, true);
+    heldRead.resolve();
+   }
+   return key;
+  },
+  read: async key => {
+   assert.equal(reading, false);
+   if (key === heldKey && latest === heldKey) {
+    reading = true;
+    await heldRead.promise;
+    reading = false;
+   }
+   return {current: key === latest, result: key === latest ? {key} : null};
+  },
+  ended: () => true,
+  verify: () => {},
+  summarize, pollMs: 5, rounds: 1, independentInput: true,
+ });
+ assert.equal(scenarios[2].correct, 1);
+ assert.equal(scenarios[2].superseded, 1);
+ assert.equal(scenarios[2].failed, 0);
 });
 test('synthetic dictionary preserves the ranked seed and fits the actual broker limits', () => {
  const seed = Buffer.from('reading\tsurface\tweight\r\nこうすい\t降水\t90\r\nこうすい\t香水\t30\r\nこうすい\t洪水\t90\r\n');

@@ -10,9 +10,14 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  windows-core-editor:
+  windows_regression_segments:
+    name: Windows regression (${{ matrix.segment }})
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        segment: [prepared, runtime-cache, neutral, code-mapping]
     defaults:
       run:
         shell: pwsh
@@ -130,22 +135,625 @@ jobs:
           }
           # check-external-host holds a real Worker across invalidation to test supersession.
           $result | Set-Content target/windows-host-input-smoke.json -Encoding utf8
+      - name: Prepared JIT latency diagnostic
+        if: matrix.segment == 'prepared'
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+        run: |
+          $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result | Set-Content target/windows-prepared-jit-latency.json -Encoding utf8
+          $report = $result | ConvertFrom-Json
+          $scenario = $report.scenarios[0]
+          if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Prepared JIT latency run incomplete' }
+          @{samples=$report.samples;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs;firstInput=@{activationToInputMs=$scenario.first.activationToInputMs;preparedWorker=$scenario.first.preparedWorker;hostMinusGuestCallUs=$scenario.first.hostMinusGuestCallUs}} | ConvertTo-Json -Depth 4
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single | Set-Content target/windows-prepared-jit-response.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p diy-ime2-core --lib measure_code_acl_and_profile_cleanup -- --ignored --nocapture
+          exit $LASTEXITCODE
+      - name: Prepared JIT inherited code ACL comparison
+        if: matrix.segment == 'prepared'
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+          DIY_EXPERIMENT_INHERITED_CODE_ACL: '1'
+        run: |
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::code_grants_are_specific_to_each_fresh_profile_and_revocation_preserves_the_other -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed | Set-Content target/windows-prepared-jit-inherited-acl.json -Encoding utf8
+          exit $LASTEXITCODE
+      - name: Prepared JIT streamed module comparison
+        if: matrix.segment == 'prepared'
+        env:
+          DIY_EXPERIMENT_PREPARED_JIT: '1'
+          DIY_EXPERIMENT_JIT_STREAM_MODULE: '1'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($mode in @('streamed-module', 'streamed-module-inherited-acl', 'streamed-module-overlap-cleanup')) {
+            $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = if ($mode -eq 'streamed-module') { '0' } else { '1' }
+            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -eq 'streamed-module-overlap-cleanup') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE = $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP
+            if ($env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP -eq '1') {
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            $result = node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 2 single-detailed
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $result | Set-Content "target/windows-prepared-jit-$mode.json" -Encoding utf8
+            $scenario = ($result | ConvertFrom-Json).scenarios[0]
+            if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw 'Streamed JIT module run incomplete' }
+            @{mode=$mode;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs;workerCleanupUs=$scenario.workerCleanupUs;firstInput=@{activationToInputMs=$scenario.first.activationToInputMs;preparedWorker=$scenario.first.preparedWorker;hostMinusGuestCallUs=$scenario.first.hostMinusGuestCallUs}} | ConvertTo-Json -Depth 4
+          }
+      - name: Prepared JIT spare capacity comparison
+        if: matrix.segment == 'prepared'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          foreach ($spares in @('1', '2')) {
+            $env:DIY_EXPERIMENT_PREPARED_JIT = $spares
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-spares-$spares.json"
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-spares-$spares.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 150 4 single-detailed
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $report = Get-Content -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH -Raw | ConvertFrom-Json
+            $scenario = $report.scenarios[0]
+            if ($scenario.records.Count -ne 151 -or $scenario.preparedWorkers -lt 1) { throw "Incomplete spare capacity run ($spares)" }
+            @{spares=$spares;preparedWorkers=$scenario.preparedWorkers;hostMinusGuestCallUs=$scenario.hostMinusGuestCallUs} | ConvertTo-Json -Depth 4
+          }
+      - name: Prepared JIT fixed-cadence comparison
+        if: matrix.segment == 'prepared'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          foreach ($mode in @('1', 'all', 'all-stream-acl', 'all-stream-acl-independent', 'all-stream-acl-overlap-independent', 'all-stream-acl-overlap-after-graph-independent', 'all-stream-acl-overlap-pooled-independent')) {
+            $env:DIY_EXPERIMENT_POOLED_JIT = if ($mode -like '*-pooled-*') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = if ($mode -like '*-independent') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like '*-overlap-*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_REFILL_AFTER_GRAPH = if ($mode -like '*-after-graph*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
+            $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '1') { '1' } else { 'all' }
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-paced-$mode.json"
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-paced-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 5 6 paced
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing fixed-cadence report ($mode)" }
+          }
+      - name: Build alternate executable Wasm fixture
+        run: |
+          $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
+          cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepared JIT mixed Wasm graph comparison
+        if: matrix.segment == 'prepared'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          foreach ($mode in @('0', 'all', 'all-wait', 'all-stream-acl', 'all-stream-acl-overlap', 'all-stream-acl-overlap-fresh', 'all-stream-acl-overlap-fresh-no-refill', 'all-stream-acl-overlap-wide-capacity', 'all-stream-acl-overlap-after-graph', 'all-stream-acl-overlap-pooled')) {
+            $env:DIY_EXPERIMENT_POOLED_JIT = if ($mode -like '*-pooled') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_FRESH_GRAPH = if ($mode -like '*-fresh*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_NO_JIT_REFILL = if ($mode -eq 'all-stream-acl-overlap-fresh-no-refill') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_REFILL_AFTER_GRAPH = if ($mode -like '*-after-graph*') { '1' } else { '0' }
+            $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = if ($mode -like 'all-stream-acl*') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_WIDE_GRAPHS = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
+            $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = if ($mode -like 'all-stream-acl-overlap*') { '1' } else { '0' }
+            $physicalSlots = if ($mode -eq 'all-stream-acl-overlap-wide-capacity') { 18 } else { 6 }
+            $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = $env:DIY_EXPERIMENT_JIT_STREAM_MODULE
+            $env:DIY_EXPERIMENT_PREPARED_JIT = if ($mode -eq '0') { '0' } else { 'all' }
+            $env:DIY_EXPERIMENT_PREPARED_JIT_WAIT = if ($mode -eq 'all-wait') { '1' } else { '0' }
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-mixed-$mode.json"
+            python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-mixed-$mode.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 10 $physicalSlots mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing mixed graph report ($mode)" }
+          }
+      - name: Native serialized JIT feasibility
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::compiled_jit_probe::real_serialized_jit_preserves_fresh_state_start_traps_and_exact_provenance -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:DIY_COMPILED_JIT_PROBE_REPORT = 'target/windows-prepared-jit-compiled-native.json'
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::compiled_jit_probe::real_serialized_jit_refill_cost_probe -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Runtime image verification comparison
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          cargo build --locked --release --features copied-runtime-verification-baseline --bin diy-ime2-wasm-worker --target-dir target/copied-runtime-control
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = '1'
+          foreach ($mode in @('copied', 'mapped', 'parent-verified-file')) {
+            $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = if ($mode -eq 'parent-verified-file') { '1' } else { '0' }
+            $worker = if ($mode -eq 'copied') { 'target/copied-runtime-control/release/diy-ime2-wasm-worker.exe' } else { 'target/windows-app/bin/diy-ime2-wasm-worker.exe' }
+            if ($mode -eq 'parent-verified-file') {
+              $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path $worker).Path
+              $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+              $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::runtime_image::tests::real_verified_runtime_file_pins_full_hash_identity_and_readonly_inheritance -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 150 } elseif ($scenario -eq 'paced') { 35 } else { 50 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-image-$mode-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-image-$mode-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe $worker target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+      - name: Compiled JIT replenishment comparison
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_WASM_SCALING_INDEPENDENT_INPUT = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          foreach ($stream in @('0', '1')) {
+            $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = $stream
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_compiled_jit_cache_preserves_source_policy_single_use_and_exit -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $env:DIY_EXPERIMENT_RUNTIME_ONLY_SPARE = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_compiled_jit_cache_preserves_source_policy_single_use_and_exit -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Remove-Item Env:DIY_EXPERIMENT_RUNTIME_ONLY_SPARE, Env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          foreach ($cache in @('0', '1')) {
+            $env:DIY_EXPERIMENT_COMPILED_JIT = $cache
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 150 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-cache-$cache-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-cache-$cache-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing compiled cache report ($cache / $scenario)" }
+            }
+          }
+      - name: Prepared diagnostic delivery comparison
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $trial = 0
+          foreach ($legacy in @('1', '0', '0', '1')) {
+            $trial++
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            foreach ($scenario in @('single', 'single-detailed')) {
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-diagnostics-$trial-legacy-$legacy-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-diagnostics-$trial-legacy-$legacy-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 100 2 $scenario
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing diagnostic delivery report ($trial / $scenario)" }
+            }
+          }
+      - name: Neutral single-use factory and code ownership
+        if: matrix.segment == 'neutral'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::neutral::tests::real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_cleanup -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Neutral stock same-binary ABBA comparison
+        if: matrix.segment == 'neutral'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = $neutral
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $taskEvidenceRoot = 'target/neutral-stock-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $taskStem = "windows-prepared-jit-neutral-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = if ($scenario -eq 'mixed') { 10 } elseif ($scenario -eq 'paced') { 2 } else { 1 }
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralJitPool -ne ($neutral -eq '1')) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 24) { throw 'Neutral evidence must contain all 24 report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-evidence-manifest.json" -Encoding utf8
+      - name: Cached neutral single-use factory and code ownership
+        if: matrix.segment == 'neutral'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::neutral::tests::real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_cleanup -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json target/windows-app/official
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Neutral code cache same-binary ABBA comparison
+        if: matrix.segment == 'neutral'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = $neutral
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $taskEvidenceRoot = 'target/neutral-code-cache-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced')) {
+              $taskStem = "windows-prepared-jit-neutral-cache-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = if ($scenario -eq 'mixed') { 10 } elseif ($scenario -eq 'paced') { 2 } else { 1 }
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralCodeCache -ne ($neutral -eq '1') -or $taskReport.requestedNeutralJitPool -ne $true) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 24) { throw 'Neutral evidence must contain all 24 report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-code-cache-evidence-manifest.json" -Encoding utf8
+      - name: Neutral official-catalog same-binary ABBA comparison
+        if: matrix.segment == 'neutral'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = $neutral
+            foreach ($scenario in @('official')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-official-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-official-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $taskEvidenceRoot = 'target/neutral-official-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('official')) {
+              $taskStem = "windows-prepared-jit-neutral-official-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = 5
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralJitPool -ne ($neutral -eq '1') -or $taskReport.requestedNeutralCodeCache -ne $true) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              $taskOfficialHash = (Get-FileHash -LiteralPath 'target/windows-app/official/official.wasm' -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($taskReport.officialModuleSha256 -ne $taskOfficialHash) { throw "Wrong official source: $taskStem" }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 8) { throw 'Neutral evidence must contain all 8 official report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-official-evidence-manifest.json" -Encoding utf8
+      - name: Read-only code mapping ownership and product safety
+        if: matrix.segment == 'code-mapping'
+        run: |
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = '1'
+          foreach ($legacy in @('0', '1')) {
+            $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = $legacy
+            cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::neutral::tests::real_neutral_stock_selects_one_source_after_ready_and_preserves_factory_and_cleanup -- --exact --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/check-neutral-stock-host.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm tests/contracts/execution_control.json target/windows-app/official
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          # Keep the old single-use paths as explicit regressions; no readiness
+          # timeout or expected result is relaxed for the new transport.
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING = '0'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '0'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '0'
+          $env:DIY_EXPERIMENT_LEGACY_PREPARED_DIAGNOSTICS = '0'
+          $env:DIY_EXPERIMENT_RUNTIME_ONLY_SPARE = '0'
+          $env:DIY_RETAINED_HOST_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_compiled_jit_cache_preserves_source_policy_single_use_and_exit -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '0'
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::tests::real_prepared_jit_uses_production_worker_lifecycle -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::runtime::real_deferred_jit_diagnostics_follow_input_without_a_diagnostic_pipe -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Read-only code mapping same-binary ABBA comparison
+        if: matrix.segment == 'code-mapping'
+        run: |
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_WIDE_GRAPHS = '1'
+          $env:DIY_WASM_SCALING_DISTINCT_UNUSED = '1'
+          $env:DIY_EXPERIMENT_NEUTRAL_JIT_POOL = '1'
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            $env:DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING = $neutral
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced', 'official')) {
+              $samples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $slots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-neutral-mapping-$trial-mode-$neutral-$scenario.json"
+              python scripts/measure-windows-benchmark-job.py --command "target/windows-prepared-jit-neutral-mapping-$trial-mode-$neutral-$scenario.job.json" $node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm $samples $slots $scenario target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $taskEvidenceRoot = 'target/neutral-mapping-evidence'
+          New-Item -ItemType Directory -Path $taskEvidenceRoot -ErrorAction Stop | Out-Null
+          $taskHostHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-external-host.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskWorkerHash = (Get-FileHash -LiteralPath 'target/windows-app/bin/diy-ime2-wasm-worker.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskRuntimeHash = (Get-FileHash -LiteralPath 'target/windows-app/runtime/wasmtime.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $taskEvidenceEntries = @()
+          $trial = 0
+          foreach ($neutral in @('0', '1', '1', '0')) {
+            $trial++
+            foreach ($scenario in @('single-detailed', 'mixed', 'paced', 'official')) {
+              $taskStem = "windows-prepared-jit-neutral-mapping-$trial-mode-$neutral-$scenario"
+              $taskReport = Get-Content -LiteralPath "target/$taskStem.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              $taskExpectedSamples = if ($scenario -eq 'single-detailed') { 100 } elseif ($scenario -eq 'paced') { 35 } else { 10 }
+              $taskExpectedSlots = if ($scenario -eq 'single-detailed') { 2 } else { 6 }
+              $taskExpectedShapes = if ($scenario -eq 'mixed') { 10 } elseif ($scenario -eq 'paced') { 2 } elseif ($scenario -eq 'official') { 5 } else { 1 }
+              if ($taskReport.samples -ne $taskExpectedSamples -or $taskReport.physicalSlots -ne $taskExpectedSlots -or $taskReport.scenarios.Count -ne $taskExpectedShapes) { throw "Incomplete neutral matrix: $taskStem" }
+              if ($taskReport.requestedNeutralCodeMapping -ne ($neutral -eq '1') -or $taskReport.requestedNeutralJitPool -ne $true) { throw "Wrong neutral control: $taskStem" }
+              if ($taskReport.hostSha256 -ne $taskHostHash -or $taskReport.workerSha256 -ne $taskWorkerHash -or $taskReport.runtimeSha256 -ne $taskRuntimeHash) { throw "Unmatched neutral binaries: $taskStem" }
+              if (-not $taskReport.alternateFixtureSupplied -or $taskReport.moduleCodeSha256[0] -eq $taskReport.moduleCodeSha256[1]) { throw "Missing distinct executable fixture: $taskStem" }
+              if ($taskReport.requestedNeutralCodeCache -ne $true) { throw "Immutable byte cache control changed: $taskStem" }
+              if ($scenario -eq 'official') {
+                $taskOfficialHash = (Get-FileHash -LiteralPath 'target/windows-app/official/official.wasm' -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($taskReport.officialModuleSha256 -ne $taskOfficialHash) { throw "Wrong official source: $taskStem" }
+              }
+              foreach ($taskShape in $taskReport.scenarios) {
+                if ($scenario -eq 'paced') {
+                  if ($taskShape.pacing.Count -ne 3) { throw "Missing pacing intervals: $taskStem" }
+                  foreach ($taskInterval in $taskShape.pacing) {
+                    if ($taskInterval.attempts -ne 245) { throw "Incomplete paced input count: $taskStem" }
+                  }
+                } elseif ($taskShape.records.Count -ne ($taskExpectedSamples + 1)) { throw "Incomplete input records: $taskStem" }
+              }
+              $taskAccounting = Get-Content -LiteralPath "target/$taskStem.job.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+              if ($taskAccounting.cpuMs -le 0 -or $taskAccounting.peakJobCommitBytes -le 0 -or $taskAccounting.ownedProcessCount -le 0) { throw "Missing Job accounting: $taskStem" }
+              foreach ($taskSuffix in @('.json', '.job.json')) {
+                $taskEvidencePath = "target/$taskStem$taskSuffix"
+                $taskEvidenceHash = (Get-FileHash -LiteralPath $taskEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Copy-Item -LiteralPath $taskEvidencePath -Destination $taskEvidenceRoot -ErrorAction Stop
+                $taskEvidenceEntries += @{ file = "$taskStem$taskSuffix"; sha256 = $taskEvidenceHash }
+              }
+            }
+          }
+          if ($taskEvidenceEntries.Count -ne 32) { throw 'Neutral evidence must contain all 32 mapping report/accounting files' }
+          @{ source = $env:GITHUB_SHA; count = $taskEvidenceEntries.Count; files = $taskEvidenceEntries } | ConvertTo-Json -Depth 5 | Set-Content "$taskEvidenceRoot/neutral-mapping-evidence-manifest.json" -Encoding utf8
+      - name: Immediate input after activation readiness comparison
+        if: matrix.segment == 'prepared'
+        run: |
+          $env:DIY_EXPERIMENT_PREPARED_JIT = 'all'
+          $env:DIY_EXPERIMENT_POOLED_JIT = '1'
+          $env:DIY_EXPERIMENT_JIT_STREAM_MODULE = '1'
+          $env:DIY_EXPERIMENT_INHERITED_CODE_ACL = '1'
+          $env:DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP = '1'
+          $env:DIY_WASM_SCALING_FRESH_GRAPH = '1'
+          $env:DIY_WASM_SCALING_FIRST_INPUT_IMMEDIATE = '1'
+          foreach ($ready in @('0', '1')) {
+            $env:DIY_EXPERIMENT_JIT_ACTIVATION_READY = $ready
+            $env:DIY_WASM_SCALING_REPORT_PATH = "target/windows-prepared-jit-activation-$ready.json"
+            node scripts/benchmark-wasm-host-scaling.mjs target/windows-app/bin/diy-ime2-external-host.exe target/debug/diy-ime2-node-package.exe target/windows-app/bin/diy-ime2-wasm-worker.exe target/windows-app/runtime/wasmtime.dll target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm 30 6 mixed target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Preserve partial Wasm benchmark reports on failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: wasm-benchmark-failure-${{ github.sha }}-${{ matrix.segment }}
+          path: target/windows-prepared-jit-*.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Preserve verified Windows application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-application-${{ github.sha }}
+          name: windows-application-${{ github.sha }}-${{ matrix.segment }}
           path: |
             target/windows-app.zip
             target/windows-app/bundle-manifest.json
             target/windows-latency-smoke.json
             target/windows-detailed-trace-smoke.json
             target/windows-host-input-smoke.json
+            target/windows-prepared-jit-latency.json
+            target/windows-prepared-jit-inherited-acl.json
+            target/windows-prepared-jit-streamed-module*.json
+            target/windows-prepared-jit-spares-*.json
+            target/windows-prepared-jit-response.json
+            target/windows-prepared-jit-paced-*.json
+            target/windows-prepared-jit-mixed-*.json
+            target/windows-prepared-jit-image-*.json
+            target/windows-prepared-jit-cache-*.json
+            target/windows-prepared-jit-compiled-native.json
+            target/windows-prepared-jit-activation-*.json
+            target/windows-prepared-jit-diagnostics-*.json
+            target/neutral-stock-evidence/*.json
+            target/neutral-code-cache-evidence/*.json
+            target/neutral-official-evidence/*.json
+            target/neutral-mapping-evidence/*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
       - name: Preserve synthetic compiler comparison canaries
         run: |
-          $files = @('target/debug/examples/wasm_v3_probe.exe','target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm')
+          $files = @('target/debug/examples/wasm_v3_probe.exe','target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm','target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm')
           $hashes = @($files | ForEach-Object { @{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} })
           @{source=$env:GITHUB_SHA;syntheticOnly=$true;files=$hashes} | ConvertTo-Json -Depth 5 | Set-Content target/compiler-comparison-provenance.json -Encoding utf8
           $off = Get-Content target/windows-latency-smoke.json -Raw | ConvertFrom-Json
@@ -153,10 +761,11 @@ jobs:
           @{kind='compiler-candidate-smoke-only';source=$env:GITHUB_SHA;off=$off.summary;detailed=$detailed.summary;phases=$detailed.diagnostics.phaseSummary;dropped=$detailed.diagnostics.dropped;checks=$detailed.checks} | ConvertTo-Json -Depth 8
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: wasm-compiler-canaries-${{ github.sha }}
+          name: wasm-compiler-canaries-${{ github.sha }}-${{ matrix.segment }}
           path: |
             target/debug/examples/wasm_v3_probe.exe
             target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
+            target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm
             target/compiler-comparison-provenance.json
           if-no-files-found: error
           retention-days: 30
@@ -176,3 +785,15 @@ jobs:
           if (Test-Path -LiteralPath 'target/security-audit/summary.json') {
             Get-Content target/security-audit/summary.json >> $env:GITHUB_STEP_SUMMARY
           }
+  windows-core-editor:
+    # Preserve the required check name. It succeeds only after every original
+    # regression and benchmark step has succeeded in its Windows segment.
+    needs: windows_regression_segments
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all Windows segments
+        env:
+          TASK_SEGMENT_RESULT: ${{ needs.windows_regression_segments.result }}
+        run: test "$TASK_SEGMENT_RESULT" = success

@@ -932,8 +932,13 @@ mod tests {
             "service-fault"
         );
         assert_eq!(shared.requests.load(Ordering::Acquire), 0);
+        let old_owner = Arc::downgrade(&shared);
         drop(service);
         drop(shared);
+        // stopped publishes the fault before the control thread releases its
+        // final Arc. Keep rejecting replacement while that owner still exists;
+        // only an actually disposed owner permits a new service on this Host.
+        until(|| old_owner.upgrade().is_none());
         let retry = ExecutionService::with_clock(host, clock).unwrap();
         drop(retry);
     }
