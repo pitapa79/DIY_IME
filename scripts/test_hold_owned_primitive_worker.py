@@ -184,6 +184,11 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(released['reason'], 'original-exit')
         self.assertTrue(released['originalHandleSignalled'])
         self.assertFalse(released['forcedCleanup'])
+        # Keep the original process handle open so its PID cannot be reused.
+        # A stale status PID must be refused before image/thread inspection.
+        self.assertFalse(hold.alive(self.owner.process.handle))
+        with self.assertRaisesRegex(ValueError, 'original Worker already ended'):
+            hold.checked_worker(self.owner.process.pid, self.workers, self.digest)
 
     def test_wrong_digest_and_unrelated_image_are_refused_before_hold(self):
         with self.assertRaisesRegex(ValueError, 'digest differs'):

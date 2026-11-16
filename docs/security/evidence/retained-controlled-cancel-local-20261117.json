@@ -251,5 +251,16 @@
     "Controlled suspended Worker does not prove guest instructions executing.",
     "No semantic Node overhead or product performance claim.",
     "General qualification, full matrix, practical response and main integration remain incomplete."
+  ],
+  "supplementalTests": [
+    {
+      "case": "stale original PID refused while its original handle prevents PID reuse",
+      "count": 1,
+      "seconds": 16.345,
+      "passed": true,
+      "testScriptSha256": "b72da005381f3515a2fed60ea0464b4e97d638a050f34a186c93183b6cd4292f",
+      "log": "cancel121-stale-original-unit-v1.log",
+      "logSha256": "168986fd73e6ab7dd295452f2a252b3494ba04c3d40830d86fbc4eabebc97fca"
+    }
   ]
 }

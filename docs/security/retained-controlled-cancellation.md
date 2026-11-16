@@ -40,6 +40,10 @@ Job zero and immediate deletion. Fixtures now have independent executable
 identities, close helper pipes, and allow only bounded3s deletion retries AFTER
 original exit and strict Job zero; permanent failure still fails the test.
 All failed logs are preserved. These five cases prove the helper's behavior.
+Final self-review added an explicit stale-PID refusal to the original-exit test:
+the original handle remains open to prevent PID reuse, and a second request is
+rejected before image/thread inspection. That targeted actual Windows test
+passed1 in16.345s; its tested source and log hashes are recorded separately.
 
 Normal Host20-stage compiled safety passed97.781s on actual Windows. Harness
 5a16ae7111433da82b4473d6495f5daa21b50500 reused pinned runtime build
