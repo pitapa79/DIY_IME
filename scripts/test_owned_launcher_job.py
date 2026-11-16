@@ -13,6 +13,50 @@ spec.loader.exec_module(module)
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_ended_member_image_race_is_kept_until_fresh_zero(self):
+        owner = module.LauncherJob([sys.executable, '-u', '-c',
+                                   'import json,time;print(json.dumps({"ready":True}),flush=True);time.sleep(30)'])
+        original = module.image_name
+        process_id = module.base.api('GetProcessId', w.DWORD, w.HANDLE)
+
+        def exit_during_image_query(handle, flags, buffer, length):
+            if process_id(handle) == owner.process.pid:
+                owner.crash()
+                c.set_last_error(5)
+                return False
+            return original(handle, flags, buffer, length)
+
+        try:
+            owner.first_line()
+            module.image_name = exit_during_image_query
+            observed = owner.members()
+            self.assertGreaterEqual(observed['listed'], 1)
+            self.assertTrue(any(m['pid'] == owner.process.pid and m.get('exited')
+                                for m in observed['members']))
+            self.assertTrue(owner.job)
+        finally:
+            module.image_name = original
+            owner.close()
+
+    def test_live_member_image_denial_fails_closed(self):
+        owner = module.LauncherJob([sys.executable, '-u', '-c',
+                                   'import json,time;print(json.dumps({"ready":True}),flush=True);time.sleep(30)'])
+        original = module.image_name
+
+        def deny_live_image(*args):
+            c.set_last_error(5)
+            return False
+
+        try:
+            owner.first_line()
+            module.image_name = deny_live_image
+            with self.assertRaises(PermissionError):
+                owner.members()
+            self.assertEqual(module.base.wait(owner.process.handle, 0), 258)
+        finally:
+            module.image_name = original
+            owner.close()
+
     def test_original_handle_crash_and_empty_before_outer_close(self):
         owner = module.LauncherJob([sys.executable, '-u', '-c',
                                    'import json,time;print(json.dumps({"ready":True}),flush=True);time.sleep(30)'])

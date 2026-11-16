@@ -99,7 +99,7 @@ class LauncherJob:
             raise RuntimeError('owned Job membership exceeds observation bound')
         members = []
         for pid in ids.ids[:ids.listed]:
-            handle = open_process(0x1000, False, pid)
+            handle = open_process(0x1000 | 0x100000, False, pid)
             if not handle:
                 # A concurrent exit can remove it. Accounting below still
                 # prevents an omitted live process becoming empty evidence.
@@ -110,7 +110,15 @@ class LauncherJob:
                 if not belongs.value:
                     continue  # PID recycled after the Job snapshot.
                 buffer, length = c.create_unicode_buffer(32768), w.DWORD(32768)
-                base.check(image_name(handle, 0, buffer, c.byref(length)))
+                if not image_name(handle, 0, buffer, c.byref(length)):
+                    error = c.get_last_error()
+                    if base.wait(handle, 0) == 0:
+                        # A terminating member may no longer expose its image.
+                        # Keep it in this observation: zero proof still needs
+                        # both a fresh empty raw list AND zero accounting.
+                        members.append({'pid': pid, 'image': None, 'exited': True})
+                        continue
+                    raise c.WinError(error)  # A live access denial fails closed.
                 members.append({'pid': pid, 'image': Path(buffer.value).name})
             finally:
                 base.close(handle)

@@ -48,3 +48,13 @@ check in Windows CI. This is added coverage, not removal of a safety gate.
 Pending: actual built application verification and unchanged existing Windows
 CI, source/evidence binding and final diff review. No independent review or
 Goal completion. PR120 remains Draft.
+
+CI43861130794 at86c35cb failed the new Python tests before the built application
+ran: QueryFullProcessImageNameW returned access denied on an exiting member.
+The correction checks the held, verified member handle. A signalled member is
+kept with image=null/exited=true; it is not removed to manufacture zero. Fresh
+raw membership AND accounting must still reach zero. A live image denial still
+fails closed. Python4 actual Windows tests passed3.807s after this correction,
+including a forced image-query race with actual original-handle termination,
+live denial, original zero proof and deliberately surviving-child rejection.
+The failed CI/log is preserved; no built application success claimed yet.
