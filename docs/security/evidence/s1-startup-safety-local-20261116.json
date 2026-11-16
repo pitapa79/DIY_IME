@@ -1,0 +1,178 @@
+{
+  "scope": "Experimental private compiled S1 startup; failure preserved; no general qualification/main adoption claim",
+  "cases": [
+    {
+      "name": "s1-startup115-refusal2-v1-separate-1-identity-startup-refusal",
+      "completed": false,
+      "failure": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert(snapshot.result.ports.every(port=>port.value.status!=='data'))\n",
+      "startupRefusalVerified": null,
+      "safety": null,
+      "workspaceAfterHostExit": null,
+      "sourceCommit": null,
+      "binaries": {
+        "host": "a3c7d61b6fa0c5ae029c192b9b16f8d63e9665ee4bfb1d67cc977d12e9420d9f",
+        "manager": "ae600351671a1f7434050c09e46403d47a0fc0f5c59971e9a9c5270539eb2aea",
+        "worker": "eee7fca5561fb8b5eca8c2d4f7d8e8fd79b37898eb71ad9bb524cda9aafb04cc",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "job": {
+        "cpuMs": 4859.375,
+        "peakJobCommitBytes": 113745920,
+        "ownedProcessCount": 17,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-startup115-refusal2-v1-separate-1-identity-startup-refusal.json",
+          "sha256": "b602941306344dfe0c6b15695538b232cc7abb126f25f0c6fcc44629ca2f8a09"
+        },
+        {
+          "name": "s1-startup115-refusal2-v1-separate-1-identity-startup-refusal.job.json",
+          "sha256": "cbae51776da6ac5a02b0206560a33932d5d6223a6a2d482ae4f64b69080d2c66"
+        },
+        {
+          "name": "s1-startup115-refusal2-v1-separate-1-identity-startup-refusal.log",
+          "sha256": "af09f9226ee914fb7232c720ef22f59e93176a5523385f3d1007a5cfaec1d80b"
+        }
+      ]
+    },
+    {
+      "name": "s1-startup115-refusal2-v2-separate-1-identity-startup-refusal",
+      "completed": true,
+      "failure": null,
+      "startupRefusalVerified": true,
+      "safety": null,
+      "workspaceAfterHostExit": [],
+      "sourceCommit": "91215452776012e60072620b112fb7f5cacd92f3",
+      "binaries": {
+        "host": "a3c7d61b6fa0c5ae029c192b9b16f8d63e9665ee4bfb1d67cc977d12e9420d9f",
+        "manager": "ae600351671a1f7434050c09e46403d47a0fc0f5c59971e9a9c5270539eb2aea",
+        "worker": "eee7fca5561fb8b5eca8c2d4f7d8e8fd79b37898eb71ad9bb524cda9aafb04cc",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "job": {
+        "cpuMs": 5562.5,
+        "peakJobCommitBytes": 115249152,
+        "ownedProcessCount": 17,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-startup115-refusal2-v2-separate-1-identity-startup-refusal.json",
+          "sha256": "553f694e1a0c89c4931627c0c95eb18c27d3305f750cbc4cc6a6090a44d800ce"
+        },
+        {
+          "name": "s1-startup115-refusal2-v2-separate-1-identity-startup-refusal.job.json",
+          "sha256": "d60a8c0b8303c2937e14d841ffa5d6c369e9d5dd3319a3926f7ee402f4ebdb93"
+        },
+        {
+          "name": "s1-startup115-refusal2-v2-separate-1-identity-startup-refusal.log",
+          "sha256": "ae714da51a5eb46f52893c52ecaee811dd662a22b50df9bbb19f569ef3fb726f"
+        }
+      ]
+    },
+    {
+      "name": "s1-startup115-safety2-v1-separate-20-identity-safety",
+      "completed": true,
+      "failure": null,
+      "startupRefusalVerified": null,
+      "safety": [
+        {
+          "check": "empty-and-unicode",
+          "passed": true
+        },
+        {
+          "check": "plan-session-replacement-and-old-key-fence",
+          "passed": true
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 0,
+          "observedActive": true,
+          "outcome": "cancelled"
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 1,
+          "observedActive": false,
+          "outcome": "completed"
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 2,
+          "observedActive": false,
+          "outcome": "completed"
+        },
+        {
+          "check": "protection-response-fence-original-process-drain-and-recovery",
+          "passed": true
+        },
+        {
+          "check": "revocation-drain-consent-and-recovery",
+          "passed": true
+        },
+        {
+          "check": "owned-original-process-fault-no-retroactive-result-change-and-recovery",
+          "passed": true,
+          "pid": 87336
+        },
+        {
+          "check": "close-session-and-fresh-reopen",
+          "passed": true
+        }
+      ],
+      "workspaceAfterHostExit": [],
+      "sourceCommit": "aae3f2002670e08e364b499176815dedcafc6f20",
+      "binaries": {
+        "host": "a3c7d61b6fa0c5ae029c192b9b16f8d63e9665ee4bfb1d67cc977d12e9420d9f",
+        "manager": "ae600351671a1f7434050c09e46403d47a0fc0f5c59971e9a9c5270539eb2aea",
+        "worker": "eee7fca5561fb8b5eca8c2d4f7d8e8fd79b37898eb71ad9bb524cda9aafb04cc",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "job": {
+        "cpuMs": 57828.125,
+        "peakJobCommitBytes": 555732992,
+        "ownedProcessCount": 247,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-startup115-safety2-v1-separate-20-identity-safety.json",
+          "sha256": "b58c4f300b3c4872b557d43bb2cb4392306ece1331754b904630c3ae21e3ae10"
+        },
+        {
+          "name": "s1-startup115-safety2-v1-separate-20-identity-safety.job.json",
+          "sha256": "8905badf518ee2d357e1abaa273b624c9c409e48ead4f6a129a0a1a665c93517"
+        },
+        {
+          "name": "s1-startup115-safety2-v1-separate-20-identity-safety.log",
+          "sha256": "94133e0b691544114c441944cc369b520e39517acde520a3ae6d98309051cb1a"
+        }
+      ]
+    }
+  ]
+}

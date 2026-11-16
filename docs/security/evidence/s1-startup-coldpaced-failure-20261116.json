@@ -1,0 +1,59 @@
+{
+  "scope": "Failed cold-paced trial; no suite success or semantic overhead claim",
+  "sourceCommit": "aae3f2002670e08e364b499176815dedcafc6f20",
+  "failure": {
+    "message": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n2 !== 0\n",
+    "stack": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n2 !== 0\n\n    at collectTrace (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-s1-startup/scripts/benchmark-primitive-retention.mjs:152:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async finishRound (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-s1-startup/scripts/benchmark-primitive-retention.mjs:191:35)\n    at async measureHostInput (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-s1-startup/scripts/host-input-scenarios.mjs:105:24)\n    at async file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-s1-startup/scripts/benchmark-primitive-retention.mjs:183:19"
+  },
+  "latest": [
+    {
+      "intervalMs": 20,
+      "outcome": "correct",
+      "responseMs": 12445.664000000004
+    },
+    {
+      "intervalMs": 20,
+      "outcome": "correct",
+      "responseMs": 698.9518000000025
+    }
+  ],
+  "job": {
+    "cpuMs": 15609.375,
+    "peakJobCommitBytes": 335044608,
+    "ownedProcessCount": 61,
+    "activeAtObservation": 0,
+    "driverExitCode": 1,
+    "timedOut": false,
+    "allDescendantsExited": true,
+    "successful": false,
+    "memorySamplingIntervalMs": 100,
+    "missingProcessMemoryReads": 0,
+    "workingSetSumCountsSharedPagesMultipleTimes": true
+  },
+  "traceLoss": [
+    {
+      "recordingId": "382f03bd4ee9064d7740ed2579d0aaca",
+      "dropped": 0,
+      "eventCount": 347
+    },
+    {
+      "recordingId": "4a69d929281dbbfd64a803f4ae09c900",
+      "dropped": 2,
+      "eventCount": 391
+    }
+  ],
+  "files": [
+    {
+      "name": "s1-startup115-coldpaced2-v1-separate-20-identity-cold-paced.json",
+      "sha256": "525cdf0c7a9d1cd55ace90aa6938a5972ce11a74ee1009a84faeaf476fc60db3"
+    },
+    {
+      "name": "s1-startup115-coldpaced2-v1-separate-20-identity-cold-paced.job.json",
+      "sha256": "d33261ab5a24ad1e328f5497c1a6c5c38e3e17ad54d930cfa112ccfb9702a5c1"
+    },
+    {
+      "name": "s1-startup115-coldpaced2-v1-separate-20-identity-cold-paced.log",
+      "sha256": "ccd208a6e96b32143b33d1105f2a3df8f25251be019dfeb21cf739c8c52eaf0e"
+    }
+  ]
+}

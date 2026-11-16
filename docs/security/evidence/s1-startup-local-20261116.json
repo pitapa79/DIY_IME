@@ -1,0 +1,120 @@
+{
+  "scope": "Single exploratory trial per setting, same binary/policy/machine; NOT a population percentile or semantic Node overhead",
+  "sourceCommit": "aae3f2002670e08e364b499176815dedcafc6f20",
+  "binaries": {
+    "host": "a3c7d61b6fa0c5ae029c192b9b16f8d63e9665ee4bfb1d67cc977d12e9420d9f",
+    "manager": "ae600351671a1f7434050c09e46403d47a0fc0f5c59971e9a9c5270539eb2aea",
+    "worker": "eee7fca5561fb8b5eca8c2d4f7d8e8fd79b37898eb71ad9bb524cda9aafb04cc",
+    "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+  },
+  "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+  "machine": {
+    "osPlatform": "win32",
+    "osRelease": "10.0.19045",
+    "architecture": "x64",
+    "logicalCpus": 4,
+    "availableParallelism": 4,
+    "cpuModels": [
+      "Intel(R) Core(TM) i5-7300U CPU @ 2.60GHz"
+    ],
+    "totalPhysicalMemoryBytes": 4179914752
+  },
+  "rows": [
+    {
+      "parallelism": 1,
+      "firstResultMs": 27417.1852,
+      "followupMs": {
+        "count": 1,
+        "p50": 77.3894999999975,
+        "p95": 77.3894999999975,
+        "p99": 77.3894999999975,
+        "max": 77.3894999999975
+      },
+      "observedStartupPeak": 1,
+      "observedPreparationPeak": 1,
+      "compiledGenerations": 20,
+      "cpuMs": 14531.25,
+      "peakJobCommitBytes": 336089088,
+      "allDescendantsExited": true,
+      "workspace": [],
+      "files": [
+        {
+          "name": "s1-startup115-cold1-v1-separate-20-identity-cold.json",
+          "sha256": "1eb80bba08985759e18186796174036fa1eb385564125d959190a5e634614097"
+        },
+        {
+          "name": "s1-startup115-cold1-v1-separate-20-identity-cold.job.json",
+          "sha256": "f7c788bc339b7e029bebe293281ef37aa4f709f67256dbbd1bd684b196f593e2"
+        },
+        {
+          "name": "s1-startup115-cold1-v1-separate-20-identity-cold.log",
+          "sha256": "e7cdd35ec480e31d98b36d9e77165460974d550d46e74dbbc5ac5d01a9cdc6e3"
+        }
+      ]
+    },
+    {
+      "parallelism": 2,
+      "firstResultMs": 17343.616399999995,
+      "followupMs": {
+        "count": 1,
+        "p50": 68.47610000000714,
+        "p95": 68.47610000000714,
+        "p99": 68.47610000000714,
+        "max": 68.47610000000714
+      },
+      "observedStartupPeak": 2,
+      "observedPreparationPeak": 1,
+      "compiledGenerations": 20,
+      "cpuMs": 13171.875,
+      "peakJobCommitBytes": 338919424,
+      "allDescendantsExited": true,
+      "workspace": [],
+      "files": [
+        {
+          "name": "s1-startup115-cold2-v1-separate-20-identity-cold.json",
+          "sha256": "b8477bccc9a6628474524cb02165583c2b4c30a99bd6008c08d89801ed9fa1fc"
+        },
+        {
+          "name": "s1-startup115-cold2-v1-separate-20-identity-cold.job.json",
+          "sha256": "daab171c71ceba780a28454fab893304bb6914744ddeebee59ac7393a3bb09b2"
+        },
+        {
+          "name": "s1-startup115-cold2-v1-separate-20-identity-cold.log",
+          "sha256": "360b88e8705fdd19c79b036da724bbf3bd3fe1bccd5327e796addec55a4fb062"
+        }
+      ]
+    },
+    {
+      "parallelism": 4,
+      "firstResultMs": 17779.592400000005,
+      "followupMs": {
+        "count": 1,
+        "p50": 67.17079999999987,
+        "p95": 67.17079999999987,
+        "p99": 67.17079999999987,
+        "max": 67.17079999999987
+      },
+      "observedStartupPeak": 4,
+      "observedPreparationPeak": 1,
+      "compiledGenerations": 20,
+      "cpuMs": 13671.875,
+      "peakJobCommitBytes": 331419648,
+      "allDescendantsExited": true,
+      "workspace": [],
+      "files": [
+        {
+          "name": "s1-startup115-cold4-v1-separate-20-identity-cold.json",
+          "sha256": "cf49474cd2d9ac0b25d18f77de7b524d9c29f92899f54e9aec60d2400b74197e"
+        },
+        {
+          "name": "s1-startup115-cold4-v1-separate-20-identity-cold.job.json",
+          "sha256": "047d6499fe5763702eaee138f41fe1d6874820f9316968d4e0f8444a8b3420e0"
+        },
+        {
+          "name": "s1-startup115-cold4-v1-separate-20-identity-cold.log",
+          "sha256": "b24fbbd8d2c43b90913389628198e1c7bba6a40bbc10ac1fb048735b478f1d24"
+        }
+      ]
+    }
+  ]
+}

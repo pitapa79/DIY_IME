@@ -65,6 +65,10 @@ elif args.suite == 'timing':
         timing_controls.append((compiled, True))
     assert len(cases) == len(timing_controls) == 46
 else:
+    # Verify refusal before longer comparisons can fail on diagnostic loss.
+    for limit in [2, 4]:
+        cases.append(('separate', 1, 1, 'identity', 'startup-refusal'))
+        startup_limits.append(limit)
     for count in [1, 4, 20]:
         for limit in [1, 2, 4]:
             cases.append(('separate', count, 1, 'identity', 'cold'))
@@ -74,9 +78,6 @@ else:
         startup_limits.append(limit)
     for limit in [2, 4]:
         cases.append(('separate', 20, 1, 'identity', 'safety'))
-        startup_limits.append(limit)
-    for limit in [2, 4]:
-        cases.append(('separate', 1, 1, 'identity', 'startup-refusal'))
         startup_limits.append(limit)
     assert len(cases) == len(startup_limits) == 16
 
