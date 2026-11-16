@@ -39,10 +39,29 @@ An independent-copy probe confirmed12 threads held/resumed, original exit,
 Job zero and immediate deletion. Fixtures now have independent executable
 identities, close helper pipes, and allow only bounded3s deletion retries AFTER
 original exit and strict Job zero; permanent failure still fails the test.
-All failed logs are preserved. This is helper proof, not normal Host proof yet.
+All failed logs are preserved. These five cases prove the helper's behavior.
 
-The benchmark integration and full normal Host/combined CI remain under
-validation. Helper/tests are included by the existing primitive-script evidence
+Normal Host20-stage compiled safety passed97.781s on actual Windows. Harness
+5a16ae7111433da82b4473d6495f5daa21b50500 reused pinned runtime build
+33b8c4701daa33a541e88d79d2aa4e4f81b30a84; Rust/Cargo/Editor execution diff is
+empty. The controlled case observed running1, cancelled through normal Host,
+then original-handle exit without helper termination, running0 and a fresh
+generation/latest correct output. The three natural trials recorded one
+cancelled and two completed, without relabeling completed calls. All subsequent
+protection/revocation/original-process fault/close/reopen checks passed. Both
+trace collections had149 events/dropped0 and passed the unchanged actual Editor
+decoder. Final workspace was empty; outer Job had zero descendants and no
+timeout/missing process-memory reads. CPU63812.5ms, peak Job commit623030272B
+and251 cumulative owned processes are safety-trial totals, not per-input costs.
+See [source-bound local evidence](evidence/retained-controlled-cancel-local-20261117.json).
+This is not guest-running proof, semantic-work separation or a performance pass.
+
+Full exact-source combined CI and final review remain required. Parent118
+CI43877903036 failed a startup temporary-directory deletion after actual Job-zero
+proof and timing case34; the timing cause is still being investigated. Neither
+failure is discarded or treated as success.
+
+Helper/tests are included by the existing primitive-script evidence
 manifest glob and are not shipped. No S1 adoption or Goal109 completion claimed.
 
 Primary API references:
