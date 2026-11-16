@@ -10,6 +10,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {measureHostInput} from './host-input-scenarios.mjs';
 import {analyzeLinearCallTiming} from './analyze-retained-call-timing.mjs';
 import {analyzeRetainedLifecycle} from './analyze-retained-lifecycle.mjs';
+import {decodeTracePage} from '../editor/src/executionTrace.ts';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
@@ -135,12 +136,14 @@ try {
     // takes its mutex and can itself cause diagnostic try_lock contention.
     // Stop also drains the worker inbox before we inspect its final loss count.
     const {trace:stopped}=await host.call({method:'traceStop'});
+    decodeTracePage(stopped);
     const collection={recordingId:stopped.recordingId ?? null,dropped:stopped.dropped,eventCount:0};
     (report.traceCollections ??= []).push(collection);
     assert.equal(stopped.recording,false);
     let after='0',events=[];
     for(;;){
       const {trace}=await host.call({method:'traceRead',after,limit:256});
+      decodeTracePage(trace);
       assert.equal(trace.recording,false);
       collection.dropped=Math.max(collection.dropped,trace.dropped);
       events.push(...trace.events);

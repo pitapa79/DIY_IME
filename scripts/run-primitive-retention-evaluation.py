@@ -88,7 +88,7 @@ def save():
              *sorted((repo/'scripts').glob('*primitive*'))]
     files.extend(sorted((repo/'scripts').glob('analyze-retained-*.mjs')))
     files.extend([repo/'scripts/host-input-scenarios.mjs', repo/'scripts/host-input-intervals.test.mjs',
-                  repo/'scripts/terminate-owned-retention-worker.py'])
+                  repo/'scripts/terminate-owned-retention-worker.py', repo/'editor/src/executionTrace.ts'])
     files.extend(sorted(output.glob('*.json')))
     files.extend(sorted(output.glob('*.log')))
     manifest['files'] = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}

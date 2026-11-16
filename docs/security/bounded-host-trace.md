@@ -39,7 +39,10 @@ their Worker-local spans remain a separate clock. No input/output text, length,
 hash, config, path, URL, secret or raw external key is added to serialized data.
 No trace JSON fields, Graph/Packet/SDK, permission or safety guarantees change.
 
-Validation is pending. An initial prototype passed 25 focused tests but allowed
+The revised implementation passed fmt, release all-target Clippy, 28 focused
+runtime tests and the three production executable builds. JS analysis/cadence
+tests passed (8). Actual normal Host validation and final Windows CI are pending.
+An initial prototype passed 25 focused tests but allowed
 nonmonotonic timestamp pages; it was rejected during consumer compatibility
 inspection. The revised ordering/reservation implementation must pass the
 actual Editor decoder, boundary/limit tests, normal Host pacing/safety and all
