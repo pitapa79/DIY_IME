@@ -272,6 +272,295 @@
           "sha256": "a9aedf2333dbc696f2b3a971b924ccc4f923fbb27fc9da0e0020468b88b52039"
         }
       ]
+    },
+    {
+      "name": "s1-trace117-compiled-coldpaced2-fallback-v1-separate-20-identity-cold-paced",
+      "sourceCommit": "33b8c4701daa33a541e88d79d2aa4e4f81b30a84",
+      "binaries": {
+        "host": "0809ac8f7ec75fd8e2ae3cff5e4116a4b1bbaca968b2fd5f6f523a8a23b5e3cc",
+        "manager": "dad9ee900fc27fca3ec919ce7602961076ab121b32b1ddc89e4505e36e2fb6a2",
+        "worker": "3c34bc3966eb177fcc05b56fedf49eaacf41aff729df4113f8ee5a32b1380955",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": true,
+      "failure": null,
+      "audit": null,
+      "latest": [
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 11986.370100000004
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2483.0175000000017
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 541.3846000000049
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 75.45359999999346
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2868.335100000004
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 160.851800000004
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 2839.561799999996
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 568.3873999999996
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 250.04620000000432
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 126.69429999999556
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 103.26199999999517
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 146.43329999999696
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 161.9936000000016
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 160.85169999999925
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 98.37180000000808
+        }
+      ],
+      "traceCollections": [
+        {
+          "recordingId": "89ea60a10aefd8fa1e92fd8c2e9c1a35",
+          "dropped": 0,
+          "eventCount": 340
+        },
+        {
+          "recordingId": "168f54f74be13931dc9bb549e5ddcf4d",
+          "dropped": 0,
+          "eventCount": 457
+        },
+        {
+          "recordingId": "a354a29326b1691ea27fbcf29c890c3f",
+          "dropped": 0,
+          "eventCount": 573
+        },
+        {
+          "recordingId": "6b5b3332236d9c715bc9ef81f84c6606",
+          "dropped": 0,
+          "eventCount": 570
+        },
+        {
+          "recordingId": "1d8a9017a3b051a05091dc18ba3092a4",
+          "dropped": 0,
+          "eventCount": 431
+        },
+        {
+          "recordingId": "af7dbcc077fb0dbd5cd39ad08e6a527c",
+          "dropped": 0,
+          "eventCount": 975
+        },
+        {
+          "recordingId": "436a585c0bb674e09a910d6f79fbb526",
+          "dropped": 0,
+          "eventCount": 762
+        },
+        {
+          "recordingId": "2beb686618c06725e28070d4493326fc",
+          "dropped": 0,
+          "eventCount": 437
+        },
+        {
+          "recordingId": "af239d6d6da23b1c3a956af0289fa3c7",
+          "dropped": 0,
+          "eventCount": 644
+        },
+        {
+          "recordingId": "ed8ffd065c580987e148c647fb9a6289",
+          "dropped": 0,
+          "eventCount": 994
+        },
+        {
+          "recordingId": "29f6e8425eec9fafe2936f4ddcbb9047",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "a614eb6c1cbf1e57186a09e0993439eb",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "c98aba5eeb185b5c916d72c53a2ab574",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "7e09f7a81001fac9484f3c95ae1dc6cf",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "04b53911a41ea7712c20e7caca6b2a0a",
+          "dropped": 0,
+          "eventCount": 1043
+        }
+      ],
+      "safety": null,
+      "workspaceAfterHostExit": [],
+      "workspaceInspectionReached": true,
+      "job": {
+        "cpuMs": 42281.25,
+        "peakJobCommitBytes": 410259456,
+        "ownedProcessCount": 73,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-compiled-coldpaced2-fallback-v1-separate-20-identity-cold-paced.json",
+          "sha256": "08091716735d7b65b0870462945745afe975bfb4a40c43de28a70d9ab100e366",
+          "bytes": 8144060
+        },
+        {
+          "name": "s1-trace117-compiled-coldpaced2-fallback-v1-separate-20-identity-cold-paced.log",
+          "sha256": "e64b661e7699d15ba1f4a3f82b9c637aecae15827493368dc561f08eeda680fc",
+          "bytes": 403
+        },
+        {
+          "name": "s1-trace117-compiled-coldpaced2-fallback-v1-separate-20-identity-cold-paced.job.json",
+          "sha256": "b3765c2b2b90dc37703f9c2c494672b9db353ac27aece3864055176aeef40151",
+          "bytes": 2061863
+        }
+      ]
+    },
+    {
+      "name": "s1-trace117-compiled-safety-fallback-v1-separate-20-identity-safety",
+      "sourceCommit": "33b8c4701daa33a541e88d79d2aa4e4f81b30a84",
+      "binaries": {
+        "host": "0809ac8f7ec75fd8e2ae3cff5e4116a4b1bbaca968b2fd5f6f523a8a23b5e3cc",
+        "manager": "dad9ee900fc27fca3ec919ce7602961076ab121b32b1ddc89e4505e36e2fb6a2",
+        "worker": "3c34bc3966eb177fcc05b56fedf49eaacf41aff729df4113f8ee5a32b1380955",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": false,
+      "failure": {
+        "message": "AssertionError [ERR_ASSERTION]: must observe actual active-input cancellation",
+        "stack": "AssertionError [ERR_ASSERTION]: must observe actual active-input cancellation\n    at file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-trace-host/scripts/benchmark-primitive-retention.mjs:284:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+      },
+      "audit": null,
+      "latest": [],
+      "traceCollections": [
+        {
+          "recordingId": "c75469d74c8e3dea77cce66d03f8f52b",
+          "dropped": 0,
+          "eventCount": 149
+        },
+        {
+          "recordingId": "c2c9e5810bf90860221768e6a0e46af7",
+          "dropped": 0,
+          "eventCount": 149
+        }
+      ],
+      "safety": [
+        {
+          "check": "empty-and-unicode",
+          "passed": true
+        },
+        {
+          "check": "plan-session-replacement-and-old-key-fence",
+          "passed": true
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 0,
+          "observedActive": false,
+          "outcome": "completed"
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 1,
+          "observedActive": false,
+          "outcome": "completed"
+        },
+        {
+          "check": "active-cancel-and-recovery",
+          "trial": 2,
+          "observedActive": false,
+          "outcome": "completed"
+        }
+      ],
+      "workspaceAfterHostExit": null,
+      "workspaceInspectionReached": false,
+      "job": {
+        "cpuMs": 50843.75,
+        "peakJobCommitBytes": 592928768,
+        "ownedProcessCount": 105,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-compiled-safety-fallback-v1-separate-20-identity-safety.json",
+          "sha256": "5434bbc6ad9ee4135ba362e2a58464c5df838c2b9a8d9b9335809136e3ba8eba",
+          "bytes": 335743
+        },
+        {
+          "name": "s1-trace117-compiled-safety-fallback-v1-separate-20-identity-safety.log",
+          "sha256": "0ffd4cfe264870848a01ea44e40eb89fc2dc3c89ab5b6eed607de586ea7bf7b9",
+          "bytes": 853
+        },
+        {
+          "name": "s1-trace117-compiled-safety-fallback-v1-separate-20-identity-safety.job.json",
+          "sha256": "bdfeb819e0a67a0a737eadc9c8e2aec492e6bf978cb0258fa3e0d9afdcbbed63",
+          "bytes": 2894526
+        }
+      ]
     }
   ]
 }

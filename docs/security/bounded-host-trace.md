@@ -81,10 +81,29 @@ instance was a contended notification after admission. The next fix queues
 detailed non-payload Core notifications on a recorder miss too, preserving
 their call identity and original measured time. A deterministic held-mutex
 test covers this path. All69 runtime tests and release all-target Clippy passed
-after this change; production build and actual Host validation are pending.
+after this change; all three production executable builds also passed.
 The private recorderBusy counter now counts contention observations, including
 successfully queued notifications. It is no longer an exclusive loss count;
 the public dropped count still records actual missing events.
+
+At33b8c4701daa33a541e88d79d2aa4e4f81b30a84 compiled20-stage cold-paced
+parallelism2 passed80.563s: all15 latest inputs correct, all trace pages passed
+the unchanged Editor decoder, dropped0, final workspace empty and outer Job
+descendants0. The first20ms latest response was11986.3701ms; later20ms responses
+were2483.0175/541.3846/75.4536/2868.3351ms. This is evidence for the trace fix,
+not a performance success or semantic overhead measurement.
+
+The following compiled20-stage safety trial FAILED154.328s because none of
+three trials observed an active-input cancellation (all completed). The
+required cancellation assertion is unchanged. Empty/Unicode and plan/session
+replacement old-key fencing passed; collected traces had dropped0; outer Job
+descendants0. Protection/revoke/fault checks and workspace inspection were not
+reached, so no complete safety success is claimed. Failure is preserved.
+
+Windows CI43856200591 for33b8c47 is running. Previous644f799 CI43851601798 was
+superseded/cancelled after timing and startup failed; five other segments had
+passed. Startup case13 at parallelism4 had dropped1 and recorderBusy1 only,
+supporting the diagnosed notification contention. No whole-run pass claimed.
 
 Hash-bound reports, logs, Job accounting, successes and failures are summarized
 in [local evidence](evidence/host-trace-local-20261116.json). The source of the
