@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
+import {OwnedLauncherJob} from './owned-launcher-job.mjs';
 import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {resolve,join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -10,7 +11,7 @@ const [folder, option, ...extra]=process.argv.slice(2);
 if(!folder||extra.length||(option!==undefined&&option!=='--authority-regression'))throw Error('usage: BUILT_APPLICATION_FOLDER [--authority-regression]');
 const root=mkdtempSync(join(tmpdir(),'diyime-app-smoke-')),data=join(root,'data'),manifest=JSON.parse(readFileSync(join(folder,'bundle-manifest.json'),'utf8'));
 for(const file of manifest.files){assert(!file.path.includes('..')&&!file.path.includes('\\')&&!file.path.startsWith('/'));const bytes=readFileSync(join(folder,file.path));assert.equal(bytes.length,file.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),file.sha256);}
-let child,url,beat,closed;
+let child,url,beat,closed,ownedCrash;
 async function until(test,ms=240000){const end=Date.now()+ms;while(Date.now()<end){const value=await test();if(value)return value;await delay(30);}throw Error('application check timed out');}
 async function request(path,operation,method='POST'){const response=await fetch(url+path,{method,headers:{'Content-Type':'application/json',Origin:url.slice(0,-1)},body:method==='GET'||method==='DELETE'?undefined:JSON.stringify(operation??{})});return {response,value:await response.json()};}
 async function call(path,operation,method){const {response,value}=await request(path,operation,method);assert(response.ok,JSON.stringify(value));assert.equal(value.ok,true);return value.data;}
@@ -99,11 +100,16 @@ try{
  }
  await stop();
  // A crashed launcher must not orphan the privileged server/Host or isolated Workers.
- const crashData=join(root,'crash-data');child=spawn(join(folder,'DIY_IME2.exe'),['--no-browser','--data-root',crashData,'--port','0'],{stdio:'pipe',windowsHide:true,env:{...process.env,PATH:''}});child.stderr.on('data',()=>{});closed=new Promise(resolve=>child.once('close',code=>resolve(code)));const crashLines=createInterface({input:child.stdout});url=await new Promise((resolve,reject)=>{crashLines.once('line',line=>resolve(JSON.parse(line).url));child.once('close',code=>reject(Error('crash probe launch '+code)));});
- const rootPid=child.pid,system=process.env.SystemRoot;
- async function allProcesses(){const script='@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,Name) | ConvertTo-Json -Compress';const p=spawn(join(system,'System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,stdio:['ignore','pipe','pipe']});let output='';p.stdout.on('data',b=>output+=b);p.stderr.on('data',()=>{});assert.equal(await new Promise(resolve=>p.once('close',resolve)),0);const value=JSON.parse(output||'[]');return Array.isArray(value)?value:[value];}
- function descendants(all){const ids=new Set([rootPid]);for(let i=0;i<all.length;i++){let changed=false;for(const p of all)if(ids.has(p.ParentProcessId)&&!ids.has(p.ProcessId)){ids.add(p.ProcessId);changed=true;}if(!changed)break;}return all.filter(p=>p.ProcessId!==rootPid&&ids.has(p.ProcessId));}
- const observed=await until(async()=>{const current=descendants(await allProcesses());return current.some(p=>p.Name==='worker.exe')?current:null;},30000);assert(observed.some(p=>p.Name==='node.exe'));assert(observed.some(p=>p.Name==='diy-ime2-node-manager.exe'));child.kill();await closed;child=undefined;
- await until(async()=>{const current=await allProcesses();return !observed.some(old=>current.some(p=>p.ProcessId===old.ProcessId&&p.CreationDate===old.CreationDate));},30000);
+ const crashData=join(root,'crash-data');
+ ownedCrash=new OwnedLauncherJob([resolve(folder,'DIY_IME2.exe'),'--no-browser','--data-root',crashData,'--port','0']);
+ const crashStart=await ownedCrash.started;url=crashStart.startup.url;assert.equal(typeof url,'string');
+ const observed=await until(async()=>{const current=await ownedCrash.call('members');return current.members.some(p=>p.image==='worker.exe')?current:null;},30000);
+ assert(observed.members.some(p=>p.image==='node.exe'));assert(observed.members.some(p=>p.image==='diy-ime2-node-manager.exe'));
+ assert(observed.members.some(p=>p.pid===crashStart.pid),'original launcher must remain in its Job');
+ assert.equal((await ownedCrash.call('crash')).originalHandleSignalled,true);
+ await until(async()=>{const current=await ownedCrash.call('members');return current.active===0&&current.listed===0&&current.members.length===0?current:null;},30000);
+ const ownership=await ownedCrash.call('assertEmpty');assert.equal(ownership.emptyBeforeJobClose,true);
+ await ownedCrash.close();ownedCrash=undefined;
+ console.log(JSON.stringify({kind:'launcher-crash-job-proof',observedMembers:observed.members.length,originalHandleSignalled:true,emptyBeforeJobClose:true,pidAncestryUsed:false}));
  console.log(JSON.stringify({kind:'built-windows-application',files:manifest.files.length,firstBootMs,restartMs,runMs,officialPackages:48,definitions:52,explicitConsent:true,partialConsentRefused:true,savedReopen:true,unicodeTieUnknownEmpty:true,noPathToolchain:true,trueClose:true,launcherCrashChildrenEnded:true}));
-}finally{clearInterval(beat);if(child){try{await stop();}catch{child.kill();await closed;}}if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-app-smoke-')))throw Error('unsafe cleanup');rmSync(root,{recursive:true});}
+}finally{clearInterval(beat);if(ownedCrash)await ownedCrash.close();if(child){try{await stop();}catch{child.kill();await closed;}}if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-app-smoke-')))throw Error('unsafe cleanup');rmSync(root,{recursive:true});}
