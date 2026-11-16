@@ -103,6 +103,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Built application and launcher ownership
         run: |
+          python scripts/test_owned_launcher_job.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/owned-launcher-job.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-windows-distribution.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app')
           exit $LASTEXITCODE
       - name: Bundled graph latency measurement (smoke only)
