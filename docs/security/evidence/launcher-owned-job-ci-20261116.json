@@ -1,0 +1,33 @@
+{
+  "scope": "CI ownership regression; no S1/performance/default adoption",
+  "run": 43867282730,
+  "job": 133298966435,
+  "conclusion": "success",
+  "implementationHead": "8b4a2e2a613bad8c7b4fbb7993dfe86405975ec0",
+  "base": "057a0e28d88103269db1e6d1268af5fd5ac88710",
+  "testMerge": "3c8bded776b3cd26a7a6b0b21445569c3cbccbc1",
+  "verifiedEqualTree": "dc6b7ec83cf29533290f035d0848250c14c39e92",
+  "proof": {
+    "observedMembers": 7,
+    "requiredNodeManagerWorkerImagesObserved": true,
+    "originalHandleSignalled": true,
+    "emptyBeforeJobClose": true,
+    "pidAncestryUsed": false
+  },
+  "bundleChecks": {
+    "files": 163,
+    "officialPackages": 48,
+    "definitions": 52,
+    "explicitConsent": true,
+    "partialConsentRefused": true,
+    "savedReopen": true,
+    "trueClose": true,
+    "noPathToolchain": true
+  },
+  "binaryDownloadIndependentlyVerified": false,
+  "retainedJobLog": {
+    "name": "ci43867282730-job.log",
+    "bytes": 247420,
+    "sha256": "7de6716f12063ffaa41063a92a244e8c507b279442d5c35e51d63a0edb2a14a0"
+  }
+}

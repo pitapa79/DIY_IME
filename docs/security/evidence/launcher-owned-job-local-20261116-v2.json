@@ -1,0 +1,113 @@
+{
+  "scope": "Local actual Windows test-only ownership proofs; not a built application or Goal109 pass",
+  "testedSourceFiles": [
+    {
+      "name": "scripts/owned-launcher-job.py",
+      "sha256": "c0fef7c1c3aea47c4c4b519d000c7f06dbc96e57bd15feb949cacb195fd86d0e",
+      "bytes": 8450
+    },
+    {
+      "name": "scripts/owned-launcher-job.mjs",
+      "sha256": "28feff5233d96a89308c4b91283e042accafddd512492306a5ded83b2a70e71e",
+      "bytes": 2895
+    },
+    {
+      "name": "scripts/owned-launcher-job.test.mjs",
+      "sha256": "b00942dcf261f94aec2004bafac16a3fccb34799a35a92b6803d44b3ee41a9bd",
+      "bytes": 1362
+    },
+    {
+      "name": "scripts/test_owned_launcher_job.py",
+      "sha256": "49d58d9cf792fc6c9f905caa543ea9eecc004907dea8697d386e62a799caec23",
+      "bytes": 5559
+    },
+    {
+      "name": "scripts/measure-windows-benchmark-job.py",
+      "sha256": "db2b91cb3f4e1f1b8dcb194395dd254bd9099c8c2aa6f123ed4b2aa61b20e0f4",
+      "bytes": 6067
+    },
+    {
+      "name": "scripts/check-windows-distribution.mjs",
+      "sha256": "9022b2d343dd44415a1e18ad89058c5bc4f0f27722fe098db1d732e5db9c873e",
+      "bytes": 14045
+    }
+  ],
+  "logs": [
+    {
+      "name": "launcher119-owned-job-tests-v1.log",
+      "sha256": "9a9741c902aa549ea146efe01445c17cd0a61be43b8b5c67769625542735cea0",
+      "bytes": 1176,
+      "outcome": "failed: fixed exact member counts assumed no conhost"
+    },
+    {
+      "name": "launcher119-owned-job-tests-v2.log",
+      "sha256": "c6020dbb0256a7ef203ddfaa6afeeb3c8e2aac0f3fca1e2d4738b46f83237649",
+      "bytes": 105,
+      "outcome": "passed: 2 Windows Job tests"
+    },
+    {
+      "name": "launcher119-node-protocol-v1.log",
+      "sha256": "79d03d0cbdaae7f1226ac2fae918634c73c6c8b7ad1d2aeb8e730d60dd2f5078",
+      "bytes": 203,
+      "outcome": "passed: 1 actual Node/Windows protocol test"
+    },
+    {
+      "name": "launcher119-owned-job-tests-v3.log",
+      "sha256": "d17d9b2ae7ba46fe9934e42b49e500acbe14b835ce2eefd151f1967185a2a88d",
+      "bytes": 107,
+      "outcome": "passed: 4 Windows tests including live denial and actual exit race"
+    },
+    {
+      "name": "launcher119-node-protocol-v2.log",
+      "sha256": "e4ccac445aa65faae70b70f6e2ab36ebffecbd7b0a0cd2d6797f4579f3506c63",
+      "bytes": 204,
+      "outcome": "passed: 1 protocol test after race correction"
+    },
+    {
+      "name": "ci43861130794-job.log",
+      "sha256": "a4b6acca4be53061da4dc5c0217fa401e2d0c247234ba99d549dd663fa31efaf",
+      "bytes": 229992,
+      "outcome": "CI failed before built application: exiting-member image query access denied"
+    },
+    {
+      "name": "ci43864078609-job.log",
+      "sha256": "2cf4b0623fdb18719b81cd82f210a106976bc62bdd0936bcb047f1a60d52bbfe",
+      "bytes": 230658,
+      "outcome": "CI failed before built application: image unavailable before process exit signal"
+    },
+    {
+      "name": "launcher119-owned-job-tests-v4.log",
+      "sha256": "bce8ad6eb59cb3ddea46f743c015e28e834e74bcd0b7476377a2e62e38bc869c",
+      "bytes": 107,
+      "outcome": "passed: 4 tests; live opaque member retained and empty proof rejected"
+    },
+    {
+      "name": "launcher119-node-protocol-v3.log",
+      "sha256": "466a2af5c4c6875ad7dd152a2c2299e52c26c4fe354b65d14b16a707ffd54212",
+      "bytes": 204,
+      "outcome": "passed: 1 actual protocol test with optional image metadata"
+    }
+  ],
+  "ci": {
+    "run": 43864078609,
+    "reportedHead": "8369a2311c594651d207802f9b8f9ddd3aff38ec",
+    "conclusion": "failure",
+    "builtApplicationReached": false
+  },
+  "invariants": [
+    "all member images retained, no OS-name filter",
+    "zero raw list AND accounting before Job close",
+    "original launcher handle receives crash",
+    "only owned Job used for failure cleanup",
+    "original 30s observation/ending limits unchanged"
+  ],
+  "latest": {
+    "pythonTests": 4,
+    "pythonSeconds": 1.158,
+    "nodeTests": 1,
+    "nodeBodyMs": 1055.7486,
+    "builtApplicationValidated": false,
+    "fullCiValidated": false,
+    "productChanged": false
+  }
+}
