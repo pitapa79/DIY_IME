@@ -1,4 +1,4 @@
-# Launcher crash ownership proof (#119, validation in progress)
+# Launcher crash ownership proof (#119)
 
 Parent #109. Start main057a0e28d88103269db1e6d1268af5fd5ac88710.
 Dedicated codex/119-launcher-job-ownership / DIY_IME-launcher-job. Test-only
@@ -45,9 +45,10 @@ child handle. No product files/defaults/permissions changed or unrelated process
 is terminated. New tests are required before the existing built-application
 check in Windows CI. This is added coverage, not removal of a safety gate.
 
-Pending: actual built application verification and unchanged existing Windows
-CI, source/evidence binding and final diff review. No independent review or
-Goal completion. PR120 remains Draft.
+At the initial checkpoint, built application verification and existing Windows
+CI were pending and PR120 was Draft. The verified result is recorded below;
+the following failed trials are retained as history. No independent review or
+Goal109 completion is claimed.
 
 CI43861130794 at86c35cb failed the new Python tests before the built application
 ran: QueryFullProcessImageNameW returned access denied on an exiting member.
@@ -69,3 +70,22 @@ or timeout change. Required startup Node/manager/Worker images must still be
 positively observed. The live-denial regression explicitly asserts the opaque
 original PID is kept, still alive, and cannot pass empty proof. Source/log
 receipts for both failures and subsequent local validation remain preserved.
+
+## Verified result
+
+Implementation8b4a2e2a613bad8c7b4fbb7993dfe86405975ec0 passed the complete
+[Windows workflow43867282730](https://github.com/pitapa79/DIY_IME/actions/runs/43867282730)
+in12m29s. Its actual built application observed7 owned members, positively
+observed Node/manager/Worker, signalled the original launcher handle and proved
+zero members before closing the outer Job. Existing163-file bundle integrity,
+48 packages/52 definitions, explicit/partial consent, saved reopen, compatibility,
+Unicode/empty cases, no-PATH startup and true close checks passed. Remaining
+existing regression and measurement steps also passed. This is an ownership
+regression result, not S1 qualification or a performance claim.
+
+The CI test merge3c8bded776b3cd26a7a6b0b21445569c3cbccbc1 has parents
+main057a0e28d88103269db1e6d1268af5fd5ac88710 and implementation8b4a2e2.
+Its complete tree dc6b7ec83cf29533290f035d0848250c14c39e92 equals the implementation
+tree. Local code-file SHA256 receipts also match. The final documentation
+revision preserves this execution code; its required checks must pass before
+merge. Completing this test-only child does not complete Goal109.
