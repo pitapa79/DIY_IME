@@ -58,3 +58,14 @@ fails closed. Python4 actual Windows tests passed3.807s after this correction,
 including a forced image-query race with actual original-handle termination,
 live denial, original zero proof and deliberately surviving-child rejection.
 The failed CI/log is preserved; no built application success claimed yet.
+
+CI43864078609 at8369a23 also failed before built application: image metadata
+can disappear while the verified member has not signalled exit yet. Image
+name is now optional diagnostic metadata for an independently verified Job
+member. A failed image query retains image=null, its Win32 error, and actual
+handle signalled status. A live opaque member still prevents assertEmpty;
+fresh raw membership AND accounting must both be zero, with no member filter
+or timeout change. Required startup Node/manager/Worker images must still be
+positively observed. The live-denial regression explicitly asserts the opaque
+original PID is kept, still alive, and cannot pass empty proof. Source/log
+receipts for both failures and subsequent local validation remain preserved.

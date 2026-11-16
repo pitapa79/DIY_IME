@@ -112,13 +112,16 @@ class LauncherJob:
                 buffer, length = c.create_unicode_buffer(32768), w.DWORD(32768)
                 if not image_name(handle, 0, buffer, c.byref(length)):
                     error = c.get_last_error()
-                    if base.wait(handle, 0) == 0:
-                        # A terminating member may no longer expose its image.
-                        # Keep it in this observation: zero proof still needs
-                        # both a fresh empty raw list AND zero accounting.
-                        members.append({'pid': pid, 'image': None, 'exited': True})
-                        continue
-                    raise c.WinError(error)  # A live access denial fails closed.
+                    signalled = base.wait(handle, 0)
+                    if signalled not in (0, 258):
+                        raise c.WinError(c.get_last_error())
+                    # Image metadata can disappear before the process signals.
+                    # Membership was verified independently above. Keep even a
+                    # live opaque member: assertEmpty MUST reject it until both
+                    # a fresh raw list and accounting are zero.
+                    members.append({'pid': pid, 'image': None,
+                                    'exited': signalled == 0, 'imageError': error})
+                    continue
                 members.append({'pid': pid, 'image': Path(buffer.value).name})
             finally:
                 base.close(handle)

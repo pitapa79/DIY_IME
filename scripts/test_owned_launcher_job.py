@@ -38,7 +38,7 @@ class OwnershipTests(unittest.TestCase):
             module.image_name = original
             owner.close()
 
-    def test_live_member_image_denial_fails_closed(self):
+    def test_live_member_image_denial_cannot_prove_empty(self):
         owner = module.LauncherJob([sys.executable, '-u', '-c',
                                    'import json,time;print(json.dumps({"ready":True}),flush=True);time.sleep(30)'])
         original = module.image_name
@@ -50,8 +50,12 @@ class OwnershipTests(unittest.TestCase):
         try:
             owner.first_line()
             module.image_name = deny_live_image
-            with self.assertRaises(PermissionError):
-                owner.members()
+            observed = owner.members()
+            self.assertTrue(any(m['pid'] == owner.process.pid and
+                                m.get('imageError') == 5 and not m['exited']
+                                for m in observed['members']))
+            with self.assertRaisesRegex(RuntimeError, 'left owned Job members'):
+                owner.assert_empty()
             self.assertEqual(module.base.wait(owner.process.handle, 0), 258)
         finally:
             module.image_name = original
