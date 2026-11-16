@@ -54,6 +54,7 @@ struct Shared {
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
     compiled_generations: AtomicU64,
+    samples: Option<crate::isolated_worker::retained_metrics::Samples>,
 }
 struct ActiveInput {
     key: RunKey,
@@ -71,11 +72,21 @@ fn successful(snapshot: &RunSnapshot) -> bool {
         })
 }
 impl Shared {
+    fn record_phase(&self, phase: &'static str) {
+        self.record_run_phase(phase, None);
+    }
+    fn record_run_phase(&self, phase: &'static str, run_id: Option<DecimalId>) {
+        if let Some(samples) = &self.samples {
+            let pid = self.process_id.load(Ordering::Acquire);
+            samples.phase(phase, (pid != 0).then_some(pid), run_id);
+        }
+    }
     fn cancel_input(&self, key: &RunKey) {
         if let Some(input) = &*self.input.lock().unwrap_or_else(|p| p.into_inner())
             && &input.key == key
             && !input.completed
         {
+            self.record_run_phase("input-cancel-requested", Some(key.run_id));
             input.cancel.cancel();
         }
     }
@@ -119,6 +130,7 @@ impl NodeLink {
             return Err(Box::new(arguments));
         };
         let (invocation, completion, cancel) = arguments;
+        shared.record_run_phase("invocation-offered", Some(invocation.key().run_id));
         let node = node.clone();
         let token = cancel.clone();
         let key = invocation.key().clone();
@@ -190,7 +202,7 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
-        Self::install_stages(host, controller, stages, false, None, None)
+        Self::install_stages(host, controller, stages, false, None, None, None)
     }
 
     pub(super) fn install_evaluation(
@@ -199,6 +211,7 @@ impl Owner {
         stages: Vec<(String, WasmNode, Value)>,
         startup_gate: Arc<retention_evaluation::StartupGate>,
         control_probe: Arc<Mutex<()>>,
+        diagnostic_origin: Option<std::time::Instant>,
     ) -> Result<Option<Self>, CoreError> {
         if stages
             .iter()
@@ -213,6 +226,7 @@ impl Owner {
             true,
             Some(startup_gate),
             Some(control_probe),
+            diagnostic_origin,
         )
     }
 
@@ -223,6 +237,7 @@ impl Owner {
         evaluation: bool,
         startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
         control_probe: Option<Arc<Mutex<()>>>,
+        diagnostic_origin: Option<std::time::Instant>,
     ) -> Result<Option<Self>, CoreError> {
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
@@ -250,6 +265,17 @@ impl Owner {
             return Ok(None);
         }
         let (send, receive) = mpsc::sync_channel(1);
+        let samples = if evaluation
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_TIMING").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            Some(crate::isolated_worker::retained_metrics::Samples::new(
+                &host,
+                diagnostic_origin.ok_or_else(|| fail("retained-timing", "missing cohort clock"))?,
+            )?)
+        } else {
+            None
+        };
         let shared = Arc::new(Shared {
             send,
             stop: CancellationToken::default(),
@@ -266,6 +292,7 @@ impl Owner {
             control_probe,
             startup_failures: AtomicU64::new(0),
             compiled_generations: AtomicU64::new(0),
+            samples,
         });
         let worker_shared = shared.clone();
         let links: Vec<_> = ids
@@ -316,6 +343,14 @@ impl Owner {
     }
     pub(super) fn compiled_generations(&self) -> u64 {
         self.shared.compiled_generations.load(Ordering::Acquire)
+    }
+    pub(super) fn call_samples(&self) -> Option<Value> {
+        self.shared.samples.as_ref().map(|samples| {
+            let mut value = serde_json::Map::new();
+            value.insert("nodeIds".into(), json!(self.shared.ids));
+            value.insert("calls".into(), samples.snapshot());
+            Value::Object(value)
+        })
     }
     pub(in crate::isolated_worker) fn physical_jobs(&self) -> u64 {
         self.shared.physical.load(Ordering::Acquire)
@@ -476,11 +511,16 @@ impl Native {
         configs: &[Value],
         shared: &Arc<Shared>,
     ) -> Result<Self, CoreError> {
+        if let Some(samples) = &shared.samples {
+            samples.begin_attempt();
+        }
+        shared.record_phase("attempt-started");
         let startup_permit = shared
             .startup_gate
             .as_ref()
             .map(|gate| gate.acquire(&shared.stop))
             .transpose()?;
+        shared.record_phase("startup-permit-acquired");
         let state = control_state(shared, controller)?;
         let key = RunKey {
             session_epoch: controller.session_epoch().clone(),
@@ -527,6 +567,8 @@ impl Native {
         // Reserve BEFORE any compiler process starts. Preparation and the
         // replacement process never overlap and use this same charged slot.
         let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
+        shared.record_phase("reservation-acquired");
+        shared.record_phase("code-preparation-started");
         let compiled = if shared.startup_gate.is_some()
             && nodes.len() == 1
             && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
@@ -552,6 +594,7 @@ impl Native {
             None
         };
         let used_compiled = compiled.is_some();
+        shared.record_phase("code-preparation-finished");
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
         let (client, request) = RetainedClient::channel(
@@ -569,7 +612,7 @@ impl Native {
         let artifact = nodes[0].artifact.clone();
         shared.ready.store(false, Ordering::Release);
         shared.process_id.store(0, Ordering::Release);
-        let process_id = shared.process_id.clone();
+        let owner_shared = shared.clone();
         let cleanup_pin = pin.clone();
         let control = RunControl {
             cancel: cancel.clone(),
@@ -585,7 +628,7 @@ impl Native {
                     request,
                     &control,
                     cleanup_pin,
-                    process_id,
+                    owner_shared,
                 )
             })
             .map_err(|_| fail("worker-thread", "retained native owner unavailable"))?;
@@ -608,11 +651,13 @@ impl Native {
 impl Drop for Native {
     fn drop(&mut self) {
         self.shared.ready.store(false, Ordering::Release);
+        self.shared.record_phase("retirement-requested");
         self.cancel.cancel();
         drop(self.client.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        self.shared.record_phase("owner-joined");
         self.shared.physical.fetch_sub(1, Ordering::AcqRel);
         self.shared.process_id.store(0, Ordering::Release);
     }
@@ -635,13 +680,16 @@ impl WasmArtifact {
         request: RetainedWorkerRequest,
         control: &RunControl,
         _cleanup_pin: RetainedReservation,
-        process_id: Arc<AtomicU64>,
+        shared: Arc<Shared>,
     ) -> Result<Option<ExitReceipt>, CoreError> {
+        shared.record_phase("profile-create-started");
         let mut profile = PreparationProfile {
             profile: Profile::new()
                 .map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?,
             strict: compiled.is_some(),
         };
+        shared.record_phase("profile-create-finished");
+        shared.record_phase("code-access-started");
         let runtime = self.runtime_code_files()?;
         let module_files = if let Some(code) = &compiled {
             code.files.check_healthy()?;
@@ -678,8 +726,12 @@ impl WasmArtifact {
                     args.push(artifact.0.module.len().to_string().into());
                 }
             }
+            shared.record_phase("code-access-finished");
+            shared.record_phase("job-create-started");
             let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
                 .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;
+            shared.record_phase("job-create-finished");
+            shared.record_phase("native-launch-started");
             crate::isolated_worker::pipe::execute_retained_observed(
                 &profile,
                 &job,
@@ -690,14 +742,20 @@ impl WasmArtifact {
                 control,
                 Some(crate::isolated_worker::pipe::RetainedObservation {
                     activity: self.0.activity.clone(),
-                    process_id,
+                    process_id: shared.process_id.clone(),
                 }),
             )
             .map(settle)
             .map_err(|_| fail("worker-start", "retained Worker could not start"))
         })();
+        shared.record_phase(if receipt.as_ref().is_ok_and(|exit| exit.is_some()) {
+            "original-process-io-ended"
+        } else {
+            "original-exit-unconfirmed"
+        });
         // Keep the original pin on this same thread until actual exit/IO and ACL
         // cleanup. A cleanup retry cannot mint a successor or refund ownership.
+        shared.record_phase("acl-release-started");
         for mut lease in module_leases {
             while lease.release().is_err() {
                 std::thread::sleep(Duration::from_millis(100));
@@ -707,9 +765,12 @@ impl WasmArtifact {
             std::thread::sleep(Duration::from_millis(100));
         }
         drop(runtime_lease);
+        shared.record_phase("acl-release-finished");
+        shared.record_phase("profile-delete-started");
         while profile.delete().is_err() {
             std::thread::sleep(Duration::from_millis(100));
         }
+        shared.record_phase("profile-delete-finished");
         receipt
     }
 }
@@ -738,6 +799,9 @@ fn coordinate(
             Some(Ok(value)) => {
                 shared.ready.store(value, Ordering::Release);
                 if value {
+                    if native.as_ref().unwrap().startup_permit.is_some() {
+                        shared.record_phase("readiness-observed");
+                    }
                     native.as_mut().unwrap().startup_permit.take();
                 }
             }
@@ -770,6 +834,7 @@ fn coordinate(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        shared.record_run_phase("invocation-dequeued", Some(command.invocation.key().run_id));
         if command.cancel.is_cancelled() {
             command.fail(fail("worker-cancelled", "invocation cancelled"));
             continue;
@@ -795,6 +860,9 @@ fn coordinate(
             drop(native.take());
             command.legacy();
             continue;
+        }
+        if owner.startup_permit.is_some() {
+            shared.record_phase("readiness-observed");
         }
         drop(owner.startup_permit.take());
         shared.ready.store(true, Ordering::Release);
@@ -895,7 +963,45 @@ fn coordinate(
                     let bytes = serde_json::to_vec(&request)
                         .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     drop(request_phase);
-                    let data = input.as_mut().unwrap().call(bytes, scope)?;
+                    let measured = shared.samples.is_some();
+                    shared.record_run_phase("invocation-call-started", Some(key.run_id));
+                    let call_started = measured.then(std::time::Instant::now);
+                    let reply = input
+                        .as_mut()
+                        .unwrap()
+                        .call_measured(bytes, scope, measured);
+                    let call_elapsed_ns = call_started
+                        .and_then(|start| u64::try_from(start.elapsed().as_nanos()).ok());
+                    shared.record_run_phase(
+                        if reply.is_ok() {
+                            "invocation-call-finished"
+                        } else {
+                            "invocation-call-failed"
+                        },
+                        Some(key.run_id),
+                    );
+                    if let Some(samples) = &shared.samples {
+                        samples.push(crate::isolated_worker::retained_metrics::Sample {
+                            run_id: key.run_id,
+                            plan_version: key.plan_version,
+                            input_revision: key.input_revision,
+                            delivery_generation: key.delivery_generation,
+                            stage: completed,
+                            generation: shared.generation.load(Ordering::Acquire),
+                            process_id: match shared.process_id.load(Ordering::Acquire) {
+                                0 => None,
+                                pid => Some(pid),
+                            },
+                            parent_call_ns: call_elapsed_ns,
+                            outcome: if reply.is_ok() { "success" } else { "error" },
+                            native: reply
+                                .as_ref()
+                                .ok()
+                                .and_then(|(_, m)| m.as_ref())
+                                .and_then(|m| m.value),
+                        });
+                    }
+                    let (data, _measurement) = reply?;
                     shared.replies.fetch_add(1, Ordering::AcqRel);
                     let outputs = wire::retained_outputs(data, &command.node.definition)?;
                     input.as_mut().unwrap().publish_stage(|| {

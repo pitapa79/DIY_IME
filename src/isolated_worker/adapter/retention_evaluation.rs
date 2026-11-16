@@ -98,6 +98,9 @@ impl Owners {
         // request permits with simultaneous liveness probes. Keep every check
         // fresh, with one outstanding probe for this evaluation cohort.
         let control_probe = Arc::new(Mutex::new(()));
+        let diagnostic_origin = (std::env::var_os("DIY_EXPERIMENT_RETAINED_TIMING").as_deref()
+            == Some(std::ffi::OsStr::new("1")))
+        .then(std::time::Instant::now);
         for stages in groups {
             result.sizes.push(stages.len());
             let owner = retained::Owner::install_evaluation(
@@ -106,6 +109,7 @@ impl Owners {
                 stages,
                 startup_gate.clone(),
                 control_probe.clone(),
+                diagnostic_origin,
             )?
             .ok_or_else(|| {
                 fail(
@@ -164,6 +168,12 @@ impl Owners {
     }
     pub(in crate::isolated_worker) fn compiled_generations(&self) -> u64 {
         self.owners.iter().map(|o| o.compiled_generations()).sum()
+    }
+    pub(in crate::isolated_worker) fn call_samples(&self) -> Vec<Value> {
+        self.owners
+            .iter()
+            .filter_map(|o| o.call_samples())
+            .collect()
     }
 }
 

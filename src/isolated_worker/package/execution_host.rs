@@ -625,6 +625,10 @@ impl Runner {
             value["retainedWorker"]["processIds"] = json!(owner.process_ids());
             value["retainedWorker"]["startupFailures"] = json!(owner.startup_failures());
             value["retainedWorker"]["compiledGenerations"] = json!(owner.compiled_generations());
+            let samples = owner.call_samples();
+            if !samples.is_empty() {
+                value["retainedWorker"]["callSamples"] = Value::Array(samples);
+            }
         }
         Ok(value)
     }

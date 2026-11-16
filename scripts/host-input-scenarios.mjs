@@ -10,9 +10,11 @@ const defaultSteps = [
   {id: 'dictionary-hit', text: 'kousui', expected: '降水'},
 ];
 
-export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound, independentInput = false}) {
+export async function measureHostInput({submit, read, ended, verify, summarize, pollMs, rounds, steps = defaultSteps, beginRound, finishRound, independentInput = false, intervals = [null, 100, 20]}) {
+  if(!Array.isArray(intervals) || intervals.length!==3 || new Set(intervals).size!==3 ||
+    intervals.some(value=>![null,100,20].includes(value)))throw new Error('all-three-input-intervals-required');
   const scenarios = [];
-  for (const intervalMs of [null, 100, 20]) {
+  for (const intervalMs of intervals) {
     const records = [];
     for (let round = 0; round < rounds; round++) {
       if (beginRound) await beginRound();

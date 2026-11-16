@@ -5,7 +5,7 @@ use crate::{
     execution_control::{ExecutionHost, ResourceUsage},
     isolated_worker::{
         DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedReservation,
-        execute_retained, runtime,
+        execute_retained, resource_transport, runtime,
     },
 };
 use std::{sync::mpsc, thread};
@@ -519,6 +519,49 @@ fn real_retained_driver_inflight_cancel_and_deadline() {
 #[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
 fn real_captured_retained_driver_inflight_cancel_and_deadline() {
     check_inflight_cancel_and_deadline(true);
+}
+
+#[test]
+#[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
+fn real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget() {
+    let mut fixture = Fixture::start_variant(policy(), true, true);
+    fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .wait_ready(Duration::from_secs(10))
+        .unwrap();
+    let cancel = CancellationToken::default();
+    let mut scope = fixture_scope(
+        &fixture.gate,
+        &fixture.target,
+        2,
+        cancel.clone(),
+        fixture.source.clone(),
+    );
+    scope.after_read = Some(Box::new(|| thread::sleep(Duration::from_millis(20))));
+    let mut input = fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .begin_input(fixture_key(2), cancel)
+        .unwrap();
+    let (data, measurement) = input.call_measured(b"@".to_vec(), scope, true).unwrap();
+    let measurement = measurement.expect("requested metadata retains its charged owner");
+    let metrics = measurement
+        .value
+        .expect("actual Native supplies same-call metrics");
+    assert_eq!(data, json!({"counter":1,"memory":1}));
+    assert_eq!(metrics.resource_reads, 1);
+    assert!(metrics.guest_callback_ns >= 20_000_000);
+    assert!(metrics.guest_call_ns >= metrics.guest_callback_ns);
+    assert!(metrics.invocation_ns >= metrics.guest_call_ns);
+    input.finish(|| Ok(())).unwrap();
+    assert!(fixture.host.usage().retained_bytes >= resource_transport::METRICS_CALL_BUDGET + 8);
+    drop(measurement);
+    assert_eq!(fixture.host.usage().retained_bytes, 8);
+    let exit = fixture.close();
+    assert_ne!(exit.process_id(), 0);
 }
 
 fn check_inflight_cancel_and_deadline(captured: bool) {
