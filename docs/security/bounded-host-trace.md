@@ -105,6 +105,14 @@ superseded/cancelled after timing and startup failed; five other segments had
 passed. Startup case13 at parallelism4 had dropped1 and recorderBusy1 only,
 supporting the diagnosed notification contention. No whole-run pass claimed.
 
+At the same33b8c47 runtime source, raw20 mixed-paced also passed88.984s:15
+latest results correct, all pages decoded, dropped0, final workspace empty,
+outer descendants0 and missingRAMreads0. Current-source CI startup/timing,
+prepared/code-mapping/comparison/safety/recovery passed; neutral failed in the
+separate launcher ownership check and runtime-cache was still running at last
+observation. The launcher test correction is separate Issue119/PR120 from
+current main, with no independent experimental dependency merges.
+
 Hash-bound reports, logs, Job accounting, successes and failures are summarized
 in [local evidence](evidence/host-trace-local-20261116.json). The source of the
 first2080866 loss remains unproven; do not label it the same cause automatically.

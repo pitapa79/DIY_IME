@@ -561,6 +561,206 @@
           "bytes": 2894526
         }
       ]
+    },
+    {
+      "name": "s1-trace117-rawpaced-fallback-v1-separate-20-mixed-paced",
+      "sourceCommit": "33b8c4701daa33a541e88d79d2aa4e4f81b30a84",
+      "binaries": {
+        "host": "0809ac8f7ec75fd8e2ae3cff5e4116a4b1bbaca968b2fd5f6f523a8a23b5e3cc",
+        "manager": "dad9ee900fc27fca3ec919ce7602961076ab121b32b1ddc89e4505e36e2fb6a2",
+        "worker": "3c34bc3966eb177fcc05b56fedf49eaacf41aff729df4113f8ee5a32b1380955",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": true,
+      "failure": null,
+      "audit": null,
+      "latest": [
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 56.41169999999693
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 65.96730000000389
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 56.866399999998976
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 65.94049999999697
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 54.85199999999895
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 82.19729999999981
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 58.25569999999425
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 126.76729999999225
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 77.10319999999774
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 66.6356999999989
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2491.7150999999867
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2586.922200000001
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2312.4686999999976
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 136.26020000000426
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 118.2274999999936
+        }
+      ],
+      "traceCollections": [
+        {
+          "recordingId": "9af2590dfaabd67ac8c65992c6b1fded",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "2fd2957b46c4fef6243da15ca5ebfdbc",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "da4c5ae291a5b058302b619752d67f55",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "73f8fe8bccc13b31146dc1f617018348",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "819e0c206f4c20591b0b53119ff768ca",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "c8571d8d425dd50832af5c75904fda1f",
+          "dropped": 0,
+          "eventCount": 831
+        },
+        {
+          "recordingId": "c868417f643552d1501a455cf3ed4fca",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "29a458a6d8c89ed8195a3ff22200628a",
+          "dropped": 0,
+          "eventCount": 564
+        },
+        {
+          "recordingId": "0072947b63a194e21cb252cf26576ddd",
+          "dropped": 0,
+          "eventCount": 927
+        },
+        {
+          "recordingId": "606ed408cb2a3a947dfd75130482eb81",
+          "dropped": 0,
+          "eventCount": 755
+        },
+        {
+          "recordingId": "52c6f3a971bd8b4b819a926a32b617dd",
+          "dropped": 0,
+          "eventCount": 425
+        },
+        {
+          "recordingId": "43cd60823996238c4f056aec3e24de51",
+          "dropped": 0,
+          "eventCount": 451
+        },
+        {
+          "recordingId": "96a545d95191fdf37da684ed831447f5",
+          "dropped": 0,
+          "eventCount": 594
+        },
+        {
+          "recordingId": "cac3c20151105a0b7b8fb8cd049d94d1",
+          "dropped": 0,
+          "eventCount": 361
+        },
+        {
+          "recordingId": "ecc3ddd1f9c8efc9c6f05fccaba791b8",
+          "dropped": 0,
+          "eventCount": 364
+        }
+      ],
+      "safety": null,
+      "workspaceAfterHostExit": [],
+      "workspaceInspectionReached": true,
+      "job": {
+        "cpuMs": 66843.75,
+        "peakJobCommitBytes": 452235264,
+        "ownedProcessCount": 87,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-rawpaced-fallback-v1-separate-20-mixed-paced.json",
+          "sha256": "7be08883dceb06d02aaf664df62e6f49831cc77e841cb57e6c70351749b6a3fd",
+          "bytes": 1847675
+        },
+        {
+          "name": "s1-trace117-rawpaced-fallback-v1-separate-20-mixed-paced.log",
+          "sha256": "ec1d8d9858af624e61155d6043232d236b1366cf27695eba9bb4a568a9c09a0e",
+          "bytes": 395
+        },
+        {
+          "name": "s1-trace117-rawpaced-fallback-v1-separate-20-mixed-paced.job.json",
+          "sha256": "05321953ea26cd14282bfd3a26d91d1c011d8e27541fa9c624f415e4eb505eb5",
+          "bytes": 2221080
+        }
+      ]
     }
   ]
 }
