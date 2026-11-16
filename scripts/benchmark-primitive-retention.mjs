@@ -67,7 +67,13 @@ class Client {
     this.child.stdin.write(Buffer.concat([header,body,payload]));return result;
   }
   async call(operation,payload) { const r=await this.send(operation,payload);assert.equal(r.ok,true,JSON.stringify(r.error));return r.data; }
-  async close() {this.child.stdin.end();assert.equal(await this.ended,0,Buffer.concat(this.stderr).toString());}
+  async close() {
+    this.child.stdin.end();assert.equal(await this.ended,0,Buffer.concat(this.stderr).toString());
+    const size=Math.min(65536,this.stderr.reduce((sum,part)=>sum+part.length,0));
+    const audit=Buffer.concat(this.stderr,size).toString().split(/\r?\n/).filter(line=>
+      /^host-trace-loss-audit total=\d{1,20} probeBusy=\d{1,20} reservationFull=\d{1,20} clockUnavailable=\d{1,20} recorderBusy=\d{1,20} hostQueueFull=\d{1,20} invalidNative=\d{1,20} unfinished=\d{1,20}$/.test(line)).slice(0,64);
+    if(audit.length)report.traceLossAudit=[...(report.traceLossAudit ?? []),...audit].slice(0,64);
+  }
 }
 async function until(check) {
   const end=performance.now()+120000;
@@ -93,7 +99,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
   mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,readinessBarrierUsed:mode!=='0' && !cold,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
-  requestedControls:Object.fromEntries(['RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
+  requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {

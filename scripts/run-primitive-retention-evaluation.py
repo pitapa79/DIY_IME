@@ -29,6 +29,7 @@ controls = ['INHERITED_CODE_ACL', 'VERIFIED_RUNTIME_FILE', 'OVERLAP_WORKER_CLEAN
 env = {k: v for k, v in os.environ.items() if not k.startswith('DIY_EXPERIMENT_')}
 env.update({'DIY_EXPERIMENT_'+k: '1' for k in controls})
 env['DIY_PRIMITIVE_PYTHON'] = sys.executable
+env['DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT'] = '1'
 cases = []
 timing_controls = []
 startup_limits = []

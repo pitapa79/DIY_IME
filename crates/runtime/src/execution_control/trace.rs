@@ -23,6 +23,7 @@ const WORKER_QUEUE_SLOTS: usize = 128;
 const WORKER_QUEUE_BYTES: usize = WORKER_QUEUE_SLOTS * 4096;
 // Escrow tree/Box overhead and 8-byte completion tags in the existing budget.
 const EVENT_INDEX_BYTES: usize = MAX_EVENTS * 128;
+static AUDIT_REPORTS: AtomicU64 = AtomicU64::new(0);
 pub(crate) type QueuedWorkerInterval = (WorkerTracePhase, u64, Option<u64>);
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -175,6 +176,17 @@ struct RecordSignals {
     lost: AtomicU64,
     publication_loss_through: AtomicU64,
     first_run: AtomicU64,
+    audit: LossAudit,
+}
+#[derive(Default)]
+struct LossAudit {
+    probe_busy: AtomicU64,
+    reservation_full: AtomicU64,
+    clock_unavailable: AtomicU64,
+    recorder_busy: AtomicU64,
+    host_queue_full: AtomicU64,
+    invalid_native: AtomicU64,
+    unfinished: AtomicU64,
 }
 struct ProbeGuard<'a>(&'a AtomicBool);
 impl Drop for ProbeGuard<'_> {
@@ -199,6 +211,7 @@ impl RecordSignals {
             lost: AtomicU64::new(0),
             publication_loss_through: AtomicU64::new(0),
             first_run: AtomicU64::new(0),
+            audit: LossAudit::default(),
         })
     }
     fn capture(&self, clock: &ExecutionClock) -> Option<Stamp> {
@@ -217,6 +230,7 @@ impl RecordSignals {
             }
         }
         if !acquired {
+            self.audit.probe_busy.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         let _guard = ProbeGuard(&self.probe);
@@ -226,11 +240,21 @@ impl RecordSignals {
         let visible = self.visible.load(Ordering::Acquire);
         let issued = self.issued.load(Ordering::Acquire);
         if issued.saturating_sub(visible) >= MAX_EVENTS as u64 {
+            self.audit.reservation_full.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         let sequence = issued.checked_add(1)?;
-        let at_us =
-            u64::try_from(clock.now().ok()?.saturating_sub(self.origin).as_micros()).ok()?;
+        let at_us = match clock
+            .now()
+            .ok()
+            .and_then(|now| u64::try_from(now.saturating_sub(self.origin).as_micros()).ok())
+        {
+            Some(at) => at,
+            None => {
+                self.audit.clock_unavailable.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
         self.issued.store(sequence, Ordering::Release);
         Some(Stamp { sequence, at_us })
     }
@@ -268,6 +292,7 @@ impl RecordSignals {
                 != sequence
             {
                 self.lost.fetch_add(1, Ordering::Relaxed);
+                self.audit.unfinished.fetch_add(1, Ordering::Relaxed);
                 self.completed[(sequence % MAX_EVENTS as u64) as usize]
                     .store(sequence, Ordering::Release);
             }
@@ -574,6 +599,29 @@ impl TraceSession {
                     u64::try_from(stopped.saturating_sub(r.origin).as_micros()).unwrap_or(u64::MAX),
                 );
             }
+            // Bounded opt-in counter audit. No user values or public schema.
+            if r.dropped != 0
+                && std::env::var_os("DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                && AUDIT_REPORTS
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                        if n < 64 { Some(n + 1) } else { None }
+                    })
+                    .is_ok()
+            {
+                let a = &r.signals.audit;
+                eprintln!(
+                    "host-trace-loss-audit total={} probeBusy={} reservationFull={} clockUnavailable={} recorderBusy={} hostQueueFull={} invalidNative={} unfinished={}",
+                    r.dropped,
+                    a.probe_busy.load(Ordering::Relaxed),
+                    a.reservation_full.load(Ordering::Relaxed),
+                    a.clock_unavailable.load(Ordering::Relaxed),
+                    a.recorder_busy.load(Ordering::Relaxed),
+                    a.host_queue_full.load(Ordering::Relaxed),
+                    a.invalid_native.load(Ordering::Relaxed),
+                    a.unfinished.load(Ordering::Relaxed)
+                );
+            }
             self.enabled.store(false, Ordering::Release);
         }
     }
@@ -613,6 +661,7 @@ impl TraceSession {
         let mut state = match self.state.try_lock() {
             Ok(s) => s,
             Err(_) => {
+                signals.audit.recorder_busy.fetch_add(1, Ordering::Relaxed);
                 signals.lost.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
@@ -836,6 +885,10 @@ impl TraceTicket {
             .try_send(ReceivedMetadata::Host(bundle))
             .is_err()
         {
+            signals
+                .audit
+                .host_queue_full
+                .fetch_add(1, Ordering::Relaxed);
             signals.lose(event, self.run);
             signals.complete(stamp.sequence);
         }
@@ -922,6 +975,7 @@ impl TraceTicket {
         if self.is_detailed()
             && let Some(signals) = self.signals.upgrade()
         {
+            signals.audit.invalid_native.fetch_add(1, Ordering::Relaxed);
             signals.lost.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -970,6 +1024,7 @@ impl TraceTicket {
         let mut sessions = match registry.state.try_lock() {
             Ok(s) => s,
             Err(_) => {
+                signals.audit.recorder_busy.fetch_add(1, Ordering::Relaxed);
                 signals.lose(event, self.run);
                 return;
             }

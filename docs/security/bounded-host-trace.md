@@ -47,3 +47,23 @@ nonmonotonic timestamp pages; it was rejected during consumer compatibility
 inspection. The revised ordering/reservation implementation must pass the
 actual Editor decoder, boundary/limit tests, normal Host pacing/safety and all
 existing Windows CI gates. No independent review or Goal109 completion claimed.
+
+## First actual Host trial and loss audit
+
+At implementation commit20808661fe326067ca81f3c103a441ff1a9dab8e, normal Host
+20-stage raw/mixed pacing failed after91.125s on one lost event. All ten
+sequential/100ms latest inputs and the first20ms latest input were correct;
+the latter took1292.5708ms. Every collected frozen page passed the actual
+Editor decoder. Final outer Job descendants were zero, but workspace
+inspection was not reached. This is not a fixed-loss or performance success.
+
+A bounded opt-in internal loss audit is being validated to distinguish probe,
+reservation, recorder, queue, Native metadata and unfinished-notification loss.
+It prints static aggregate counters only, at most64 short lines per Host;
+private evaluation reports retain only exact digit-only audit lines from a
+bounded stderr prefix. No public trace fields or execution authority change.
+The audit's first production build failed with LLVM IO NoSpaceLeft after
+Clippy passed; this is a build-environment failure, not a functional test.
+A separate owned compressed compiler-temp directory and lossless compression
+of the private dependency cache are used for the next build. Failed trials
+and evidence are retained; no trace-loss assertion is relaxed.
