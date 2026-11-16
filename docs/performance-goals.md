@@ -4,6 +4,8 @@ DIY_IME の性能は、**ユーザーが作る IME の自由を制限するた�
 
 この文書の数値は、現時点の設計目標であり、ユーザーが作成する IME に対する強制制限ではない。Windows TSF 統合後の実測を踏まえて見直してよい。
 
+[#106の安全性クラス別仕様案](security/wasm-execution-classes-v1.md)は、Wasmの**Node単体の基盤追加遅延**をS0/S1/S2に分ける。S0の10/20ms必達を外す対象は旧#95のその指標であり、本書のReference IME全体の暫定目標やCore目標ではない。仕様案はメンテナー承認とmainへのマージ前は未発効で、既定動作・#95の現行条件を変更しない。[Goal移行案と未承認の最新入力復旧時間の提案](security/issue95-goal-migration-v1.md)も、製品採用の合格基準として未承認である。
+
 ## 1. 主指標: Reference IME Latency
 
 最も重要な指標は、DIY_IME 上で構成できる **最軽量かつ実用的な IME** の応答時間とする。
