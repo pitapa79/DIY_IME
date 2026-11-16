@@ -85,6 +85,36 @@ impl Fixture {
             &control.cancel,
         )
         .unwrap();
+        let state = runtime::state_fixture(&dll);
+        // The new fixture has a separate, bounded compile-only setup phase.
+        // Complete that phase before starting the unchanged driver readiness
+        // clock; no input or retained process exists during compilation.
+        let compiled_artifact = if captured {
+            let mut policy = WorkerPolicy::bounded_probe();
+            policy.fuel_per_call = Some(5_000_000_000);
+            policy.wasm_memory_bytes = Some(134_217_728);
+            policy.process_memory_bytes = Some(512 * 1024 * 1024);
+            policy.walltime = Some(Duration::from_secs(30));
+            Some(
+                WasmArtifact::capture(
+                    Path::new(env!("CARGO_MANIFEST_DIR")),
+                    &worker,
+                    &dll,
+                    state.clone(),
+                    policy,
+                )
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        let compiled = compiled_artifact.as_ref().map(|artifact| {
+            assert_eq!(host.usage().physical_jobs, 1);
+            let image = artifact.prepared_jit_image_owned(&control.cancel, Some(pin.clone()));
+            assert_eq!(host.usage().physical_jobs, 1);
+            assert!(matches!(image, WorkerImage::PreparedCompiled(..)));
+            image
+        });
         let calls = policy.max_calls;
         let stages = if captured { vec![0] } else { vec![0, 1] };
         let (client, request) =
@@ -105,7 +135,6 @@ impl Fixture {
                 let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile)?;
                 let program = cache.copy(&worker, "worker.exe")?;
                 let runtime_path = cache.copy(&dll, "wasmtime.dll")?;
-                let state = runtime::state_fixture(&dll);
                 let module0 = cache.write("counter.wasm", &state)?;
                 let sdk = sdk.map_or_else(
                     || Ok(Vec::new()),
@@ -130,28 +159,8 @@ impl Fixture {
                     module1.into_os_string(),
                     sdk.len().to_string().into(),
                 ];
-                let compiled_artifact = if captured {
-                    let mut policy = WorkerPolicy::bounded_probe();
-                    policy.fuel_per_call = Some(5_000_000_000);
-                    policy.wasm_memory_bytes = Some(134_217_728);
-                    policy.process_memory_bytes = Some(512 * 1024 * 1024);
-                    policy.walltime = Some(Duration::from_secs(30));
-                    Some(
-                        WasmArtifact::capture(
-                            Path::new(env!("CARGO_MANIFEST_DIR")),
-                            &worker,
-                            &dll,
-                            state.clone(),
-                            policy,
-                        )
-                        .map_err(|e| e.to_string())?,
-                    )
-                } else {
-                    None
-                };
-                let compiled = compiled_artifact.as_ref().map(|artifact| {
-                    artifact.prepared_jit_image_owned(&control.cancel, Some(cleanup_pin.clone()))
-                });
+                // Retain the source factory through the original driver's end.
+                let _compiled_artifact = compiled_artifact;
                 let mut compiled_lease = None;
                 if let Some(image) = &compiled {
                     let WorkerImage::PreparedCompiled(files, length, digest) = image else {

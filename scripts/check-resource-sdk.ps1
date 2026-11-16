@@ -50,8 +50,16 @@ try {
   if($LASTEXITCODE -ne 0){throw 'SDK actual Wasm/AppContainer integration failed'}
   & $Cargo test --locked --lib isolated_worker::adapter::retained_tests::real_retained_module_loop -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Retained module/Store lifetime integration failed'}
-  & $Cargo test --locked --lib isolated_worker::adapter::retained_driver_tests:: -- --include-ignored --nocapture --test-threads=1
-  if($LASTEXITCODE -ne 0){throw 'Retained bounded driver/cancellation/fault integration failed'}
+  $taskPreviousCompiledJit=$env:DIY_EXPERIMENT_COMPILED_JIT
+  try {
+   # This module now also exercises its own captured compiler output. Existing
+   # raw fixtures still choose raw Worker arguments; enable only this suite.
+   $env:DIY_EXPERIMENT_COMPILED_JIT='1'
+   & $Cargo test --locked --lib isolated_worker::adapter::retained_driver_tests:: -- --include-ignored --nocapture --test-threads=1
+   if($LASTEXITCODE -ne 0){throw 'Retained bounded driver/cancellation/fault integration failed'}
+  } finally {
+   $env:DIY_EXPERIMENT_COMPILED_JIT=$taskPreviousCompiledJit
+  }
   & $Cargo test --locked --lib isolated_worker::package::official::fixed_pipeline::tests::real_official_fixed_review -- --exact --ignored --nocapture
   if($LASTEXITCODE -ne 0){throw 'Official fixed pipeline static review integration failed'}
  } finally {

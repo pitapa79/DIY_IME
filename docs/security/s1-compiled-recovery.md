@@ -41,4 +41,8 @@ private native入口`--retained-compiled-resources-v1`は一モジュールだ�
 
 単段の通常Host安全性試験は、短い呼出しが終了してしまい「実行中取消を実際に観測する」という条件を満たさず不成立だった。これを合格として扱わず、条件も緩めない。別途、resource callbackでWasmに入ったことを確認してから取消・期限切れを起こす実Worker試験を追加した。
 
+修正版`be9b39c`の通常Host単段smokeは、compiled generation、初回とwarm3件の正答、Host終了後のworkspaceファイル0件、外側Jobの全子孫終了を確認した。warm中央値7.1635ms/最大7.7213msはguest込みの小標本であり、一般的な基盤P95/P99ではない。同版の実DLL fresh-state/fuel/memory/table試験も成功した。
+
+新しい取消fixtureの初回実行は準備待ちで失敗した。compile-only準備を独立させ、元の10秒のdriver起動待ちを変えずに再検査した結果、実際のWasm callback到達後の取消と250ms期限切れ、元プロセス終了とHost資源使用量0を確認した（28.38秒、外側Job全子孫終了、欠測RAM読取0）。このfixtureを既存の包括試験からも呼ぶため、実験フラグを当該試験群の間だけ明示し、その後復元する。`be9b39c`のCI `43793085096` はその設定不足で失敗しており、修正後の最新CI成功が必要である。
+
 一般のS1審査資格、通常mainへの統合、全測定表と長時間運用、Goal109の技術完了・製品採用/default化は別途証拠が必要である。復旧時間の未承認提案値を合格基準にしない。
