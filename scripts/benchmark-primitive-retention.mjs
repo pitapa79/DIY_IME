@@ -11,6 +11,7 @@ import {measureHostInput} from './host-input-scenarios.mjs';
 import {analyzeLinearCallTiming} from './analyze-retained-call-timing.mjs';
 import {analyzeRetainedLifecycle} from './analyze-retained-lifecycle.mjs';
 import {decodeTracePage} from '../editor/src/executionTrace.ts';
+import {HeldPrimitiveWorker} from './hold-owned-primitive-worker.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
@@ -94,6 +95,7 @@ let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
+  runtimeBuildSourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_BUILD_SOURCE_SHA ?? null,
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
@@ -268,6 +270,48 @@ try {
     await correct('ka');report.safety.push({check:'plan-session-replacement-and-old-key-fence',passed:true});
 
     let observedCancelled=0;
+    const beforeControlled=await until(async()=>{
+      const status=await host.call({method:'status'});
+      return status.retainedWorker.ready&&!status.retainedWorker.activeInput?status:null;
+    });
+    statuses.push(beforeControlled);
+    const controlledPid=beforeControlled.retainedWorker.processIds[0];assert(controlledPid>0);
+    const controlledPython=process.env.DIY_PRIMITIVE_PYTHON;assert(controlledPython);
+    const control=new HeldPrimitiveWorker({python:controlledPython,pid:controlledPid,
+      workspace:join(root,'workers'),digest:report.binaries.worker});
+    const proof={scope:'actual Host/IPC input against a controlled suspended Worker; not guest-running proof',
+      pid:controlledPid,passed:false};
+    report.controlledCancellation=proof;
+    try {
+      proof.held=await control.started;
+      const key=await submit('0'.repeat(256));assert(!key.admissionRejected);
+      proof.key=key;
+      const active=await until(async()=>{
+        const status=await host.call({method:'status'});
+        const snapshot=await read(key);
+        assert(!ended(snapshot),'held Worker input completed before controlled cancellation');
+        return status.retainedWorker.activeInput&&snapshot.physical.running>0?{status,snapshot}:null;
+      });
+      proof.observedActive=true;proof.activePhysical=active.snapshot.physical;
+      await host.call({method:'cancelRun',key});
+      // Wait for the helper to close its dead-process/thread references before
+      // requiring Host ACL/profile reclamation. Extra observer handles can
+      // otherwise obstruct that reclamation and change the experiment.
+      proof.ending=await control.expectOriginalExit();
+      const snapshot=await until(async()=>{const value=await read(key);return ended(value)?value:null;});
+      assert.equal(snapshot.result.reason,'cancelled');
+      proof.outcome=snapshot.result.reason;proof.finalPhysical=snapshot.physical;
+      observedCancelled++;
+      await correct('ka');
+      const restored=await until(async()=>{const status=await host.call({method:'status'});return status.retainedWorker.ready?status:null;});
+      statuses.push(restored);
+      assert(restored.retainedWorker.generation>beforeControlled.retainedWorker.generation);
+      assert.equal(restored.retainedWorker.physicalJobs,beforeControlled.retainedWorker.physicalJobs);
+      assert.equal(restored.workerProcesses,beforeControlled.workerProcesses);
+      assert.equal(restored.physical.physicalJobs,beforeControlled.physical.physicalJobs);
+      proof.freshGeneration=restored.retainedWorker.generation;proof.passed=true;
+      report.safety.push({check:'controlled-active-host-input-cancel-original-exit-and-recovery',passed:true});
+    } finally {proof.helperCompletion=await control.close();}
     for(let trial=0;trial<3;trial++) {
       const key=await submit('0'.repeat(256));assert(!key.admissionRejected);
       const observation=await until(async()=>{
