@@ -67,3 +67,25 @@ Clippy passed; this is a build-environment failure, not a functional test.
 A separate owned compressed compiler-temp directory and lossless compression
 of the private dependency cache are used for the next build. Failed trials
 and evidence are retained; no trace-loss assertion is relaxed.
+
+The audit build then passed release Clippy, all28 focused runtime tests and
+production builds using the owned compiler-temp directory. Its raw/mixed
+20-stage pacing trial passed all15 bursts with dropped0, correct latest inputs
+and an empty final workspace. That single pass did not explain the earlier loss.
+
+The compiled20-stage cold-paced trial at644f799 failed in its second20ms burst
+with one missing event. Latest results were correct at8387.6315ms and1096.8667ms.
+The bounded audit identified recorderBusy=1, with probe/reservation/clock/queue/
+Native/unfinished counters all0. All7 inputs had run-accepted events, so this
+instance was a contended notification after admission. The next fix queues
+detailed non-payload Core notifications on a recorder miss too, preserving
+their call identity and original measured time. A deterministic held-mutex
+test covers this path. All69 runtime tests and release all-target Clippy passed
+after this change; production build and actual Host validation are pending.
+The private recorderBusy counter now counts contention observations, including
+successfully queued notifications. It is no longer an exclusive loss count;
+the public dropped count still records actual missing events.
+
+Hash-bound reports, logs, Job accounting, successes and failures are summarized
+in [local evidence](evidence/host-trace-local-20261116.json). The source of the
+first2080866 loss remains unproven; do not label it the same cause automatically.

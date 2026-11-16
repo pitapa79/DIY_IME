@@ -1025,7 +1025,14 @@ impl TraceTicket {
             Ok(s) => s,
             Err(_) => {
                 signals.audit.recorder_busy.fetch_add(1, Ordering::Relaxed);
-                signals.lose(event, self.run);
+                if registry.detailed.load(Ordering::Acquire) && worker.is_none() {
+                    // Core/deferred notifications may also arrive off the
+                    // recorder's current thread. Preserve their measurement
+                    // through the same bounded path, not a blocking retry.
+                    self.queue_host(event, node, job);
+                } else {
+                    signals.lose(event, self.run);
+                }
                 return;
             }
         };
@@ -1286,6 +1293,38 @@ mod tests {
                 (TraceKind::HostResponsePublished, "30000")
             ]
         );
+    }
+    #[test]
+    fn contended_detailed_core_notification_is_queued_with_its_call_identity() {
+        let (clock, s) = setup();
+        s.start_detailed().unwrap();
+        let t = s.accept(&key(9001)).unwrap();
+        let signals = t.signals.upgrade().unwrap();
+        let guard = s.state.lock().unwrap();
+        clock.advance_to(Duration::from_millis(10)).unwrap();
+        let (done, observed) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            t.emit(
+                TraceKind::NodeStarted,
+                Some((0, "fixture.node", 1)),
+                Some(991),
+            );
+            let _ = done.send(());
+        });
+        let result = observed.recv_timeout(Duration::from_secs(2));
+        drop(guard);
+        producer.join().unwrap();
+        result.expect("Core notification blocked on the recorder");
+        clock.advance_to(Duration::from_millis(100)).unwrap();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 2);
+        let event = &page.events[1];
+        assert_eq!(event.event, TraceKind::NodeStarted);
+        assert_eq!(event.at_us, "10000");
+        assert_eq!(event.node.as_deref(), Some("1:1"));
+        assert_eq!(event.call, Some(1));
+        assert_eq!(signals.audit.recorder_busy.load(Ordering::Relaxed), 1);
     }
     fn send_host_stamp(s: &TraceSession, run: u64, stamp: Stamp, event: TraceKind) {
         let routes = s.host_route.read().unwrap();

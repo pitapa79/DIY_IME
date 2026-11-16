@@ -1,0 +1,277 @@
+{
+  "scope": "Experimental Host trace evidence; all pages validated by unchanged Editor decoder; failures preserved",
+  "semanticOverheadAvailable": false,
+  "cases": [
+    {
+      "name": "s1-trace117-rawpaced-v1-separate-20-mixed-paced",
+      "sourceCommit": "20808661fe326067ca81f3c103a441ff1a9dab8e",
+      "binaries": {
+        "host": "6ed890ad1de80aa93ff245274594b14f66c811b682fe552fe265d32ca7966326",
+        "manager": "e3fe9553b341d6d891b35d2dc7761851ce2a35bfe3f12cc40a4b151ccdb25a9e",
+        "worker": "c44ef8739e4f3e4ecfb4240c1d5525d4da8a0fb213c76f95650a55332e249827",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": false,
+      "failure": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n1 !== 0\n",
+      "audit": null,
+      "latest": [
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 35.633800000010524
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 28.132400000002235
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 31.517699999996694
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 37.55350000000908
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 43.05919999998878
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 33.71839999999793
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 31.92710000000079
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 33.50939999999537
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 34.457399999999325
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 35.341700000004494
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 1292.5708000000013
+        }
+      ],
+      "workspaceAfterHostExit": null,
+      "job": {
+        "cpuMs": 57296.875,
+        "peakJobCommitBytes": 445173760,
+        "ownedProcessCount": 83,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-rawpaced-v1-separate-20-mixed-paced.json",
+          "sha256": "4349e797f976a1d402f7b866c83ddcc6396550bc3ecd113be740b9ecdb2b2b8b"
+        },
+        {
+          "name": "s1-trace117-rawpaced-v1-separate-20-mixed-paced.log",
+          "sha256": "0c6dbab6a0d71832b64c5677d425831c8336d1af9552edd51facd681f688b82d"
+        },
+        {
+          "name": "s1-trace117-rawpaced-v1-separate-20-mixed-paced.job.json",
+          "sha256": "096fbd0bc0a7ec635aca5da783fd0409a76c66ea241581b48c7f395aeb250afd"
+        }
+      ]
+    },
+    {
+      "name": "s1-trace117-rawpaced-audit-v1-separate-20-mixed-paced",
+      "sourceCommit": "644f799d09aaa4da3f3953e743f4aaffa1f96f23",
+      "binaries": {
+        "host": "db7e5816390b116ae2ee44a4aba0e59e593d8a39ac4663609fbcea0d03d3e982",
+        "manager": "f83559df90bca2553415470330fd60582f49215dd003f67554edd3a23879c0f9",
+        "worker": "f2ff95f21f66280f0c6be86ea2fd6ebfd62823115b49053d8fb4b60521bbf8b0",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": true,
+      "failure": null,
+      "audit": null,
+      "latest": [
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 34.041299999997136
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 47.031199999997625
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 31.319200000012643
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 33.56700000001001
+        },
+        {
+          "intervalMs": null,
+          "outcome": "correct",
+          "responseMs": 33.9487000000081
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 33.906099999992875
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 32.55939999999828
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 53.93099999999686
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 32.31399999999849
+        },
+        {
+          "intervalMs": 100,
+          "outcome": "correct",
+          "responseMs": 31.992299999998068
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 44.57620000001043
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2749.821800000005
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 2164.733800000002
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 1528.7203000000009
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 3900.6468000000023
+        }
+      ],
+      "workspaceAfterHostExit": [],
+      "job": {
+        "cpuMs": 68015.625,
+        "peakJobCommitBytes": 461107200,
+        "ownedProcessCount": 95,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-rawpaced-audit-v1-separate-20-mixed-paced.json",
+          "sha256": "d6edec5571a4f14b75541e2286d33e8a01273a063246c2eef0e27485f8c8625c"
+        },
+        {
+          "name": "s1-trace117-rawpaced-audit-v1-separate-20-mixed-paced.log",
+          "sha256": "94537dd3de5036a15ed857c2e542715e459b3cc3486e5a9bd1670e0f3311f531"
+        },
+        {
+          "name": "s1-trace117-rawpaced-audit-v1-separate-20-mixed-paced.job.json",
+          "sha256": "8fe573514983a3a4a744bf40565293499f7c399f6f4d995dd889c908c66fdb3a"
+        }
+      ]
+    },
+    {
+      "name": "s1-trace117-compiled-coldpaced2-v1-separate-20-identity-cold-paced",
+      "sourceCommit": "644f799d09aaa4da3f3953e743f4aaffa1f96f23",
+      "binaries": {
+        "host": "db7e5816390b116ae2ee44a4aba0e59e593d8a39ac4663609fbcea0d03d3e982",
+        "manager": "f83559df90bca2553415470330fd60582f49215dd003f67554edd3a23879c0f9",
+        "worker": "f2ff95f21f66280f0c6be86ea2fd6ebfd62823115b49053d8fb4b60521bbf8b0",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "completed": false,
+      "failure": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n1 !== 0\n",
+      "audit": [
+        "host-trace-loss-audit total=1 probeBusy=0 reservationFull=0 clockUnavailable=0 recorderBusy=1 hostQueueFull=0 invalidNative=0 unfinished=0"
+      ],
+      "latest": [
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 8387.6315
+        },
+        {
+          "intervalMs": 20,
+          "outcome": "correct",
+          "responseMs": 1096.8667000000023
+        }
+      ],
+      "workspaceAfterHostExit": null,
+      "job": {
+        "cpuMs": 14421.875,
+        "peakJobCommitBytes": 350978048,
+        "ownedProcessCount": 63,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-trace117-compiled-coldpaced2-v1-separate-20-identity-cold-paced.json",
+          "sha256": "6f4e25e108da435bedb4ac0277fd44e64c3bae6e1c7c86402c9a4758a632b121"
+        },
+        {
+          "name": "s1-trace117-compiled-coldpaced2-v1-separate-20-identity-cold-paced.log",
+          "sha256": "9a1cac8c55613b3a5f3c7322cffe3229ab9542baf882d59b2e477ae79f9867dd"
+        },
+        {
+          "name": "s1-trace117-compiled-coldpaced2-v1-separate-20-identity-cold-paced.job.json",
+          "sha256": "a9aedf2333dbc696f2b3a971b924ccc4f923fbb27fc9da0e0020468b88b52039"
+        }
+      ]
+    }
+  ]
+}
