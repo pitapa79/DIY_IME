@@ -169,7 +169,9 @@ try {
     assert.equal(snapshot.current,true);
     assert.equal(snapshot.result.delivery,'failed','unavailable parallel route must not deliver successful S0 output');
     assert(snapshot.result.causes.some(cause=>cause.diagnostic.error.code==='retained-startup'));
-    assert(snapshot.result.ports.every(port=>port.value.status!=='data'));
+    const stagePorts=snapshot.result.ports.filter(port=>ids.includes(port.endpoint.node));
+    assert.equal(stagePorts.length,count);
+    assert(stagePorts.every(port=>port.value.status==='error'));
     const status=await host.call({method:'status'});statuses.push(status);
     assert.equal(status.retainedWorker.decodedReplies,0);
     assert.equal(status.retainedWorker.compiledGenerations,0);
