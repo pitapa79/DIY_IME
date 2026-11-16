@@ -2,6 +2,7 @@
 // not OS exit receipts or permission/quota decisions. No missing interval is 0.
 const pairs={
   startupGate:['attempt-started','startup-permit-acquired'],
+  preparationGate:['preparation-permit-waiting','preparation-permit-acquired'],
   codePreparation:['code-preparation-started','code-preparation-finished'],
   profileCreate:['profile-create-started','profile-create-finished'],
   codeAccess:['code-access-started','code-access-finished'],

@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        segment: [prepared, runtime-cache, neutral, code-mapping, primitive-comparison, primitive-safety, primitive-recovery, primitive-timing]
+        segment: [prepared, runtime-cache, neutral, code-mapping, primitive-comparison, primitive-safety, primitive-recovery, primitive-timing, primitive-startup]
     defaults:
       run:
         shell: pwsh
@@ -163,13 +163,13 @@ jobs:
           node --test scripts/analyze-retained-call-timing.test.mjs scripts/analyze-retained-lifecycle.test.mjs scripts/host-input-intervals.test.mjs
           exit $LASTEXITCODE
       - name: Reviewed primitive retention comparison
-        if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing'
+        if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup'
         run: |
           $suite = '${{ matrix.segment }}'.Replace('primitive-', '')
           python scripts/run-primitive-retention-evaluation.py target/windows-app "target/primitive-$suite-evidence" $suite
           exit $LASTEXITCODE
       - name: Preserve primitive evidence including failures
-        if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing')
+        if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: primitive-evidence-${{ github.sha }}-${{ matrix.segment }}

@@ -11,7 +11,7 @@ import sys
 parser = argparse.ArgumentParser()
 parser.add_argument('bundle', type=Path)
 parser.add_argument('output', type=Path)
-parser.add_argument('suite', choices=['comparison', 'safety', 'recovery', 'timing'])
+parser.add_argument('suite', choices=['comparison', 'safety', 'recovery', 'timing', 'startup'])
 args = parser.parse_args()
 repo = Path(__file__).resolve().parent.parent
 bundle = args.bundle.resolve(strict=True)
@@ -31,6 +31,7 @@ env.update({'DIY_EXPERIMENT_'+k: '1' for k in controls})
 env['DIY_PRIMITIVE_PYTHON'] = sys.executable
 cases = []
 timing_controls = []
+startup_limits = []
 if args.suite == 'comparison':
     for count in [1, 4]:
         cases.extend((mode, count, 3, 'identity', 'warm') for mode in ['0', 'separate', 'grouped'])
@@ -48,7 +49,7 @@ elif args.suite == 'recovery':
             for cadence, samples in [('warm', 30), ('paced', 5)]:
                 cases.extend(('separate', count, samples, shape, cadence) for _ in range(4))
     cases.extend(('separate', 20, 1, 'identity', 'safety') for _ in range(4))
-else:
+elif args.suite == 'timing':
     def timing_cases(count, samples, shape, cadence, compiled_modes=(False, True)):
         for compiled in compiled_modes:
             for measured in [False, True, True, False]:
@@ -63,6 +64,18 @@ else:
         cases.append(('separate', 20, 1, 'identity', 'safety'))
         timing_controls.append((compiled, True))
     assert len(cases) == len(timing_controls) == 46
+else:
+    for count in [1, 4, 20]:
+        for limit in [1, 2, 4]:
+            cases.append(('separate', count, 1, 'identity', 'cold'))
+            startup_limits.append(limit)
+    for limit in [1, 2, 4]:
+        cases.append(('separate', 20, 5, 'identity', 'cold-paced'))
+        startup_limits.append(limit)
+    for limit in [2, 4]:
+        cases.append(('separate', 20, 1, 'identity', 'safety'))
+        startup_limits.append(limit)
+    assert len(cases) == len(startup_limits) == 14
 
 manifest = {'source': os.environ.get('GITHUB_SHA'), 'suite': args.suite,
             'syntheticOnly': True, 'cases': [], 'complete': False}
@@ -83,16 +96,18 @@ try:
         env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
         env['DIY_EXPERIMENT_PREPARED_JIT'] = 'all' if mode == '0' else '0'
         compiled, measured = timing_controls[index] if args.suite == 'timing' else (
-            args.suite == 'recovery' and index % 4 in [1, 2], False)
+            args.suite == 'startup' or args.suite == 'recovery' and index % 4 in [1, 2], args.suite == 'startup')
+        startup_limit = startup_limits[index] if args.suite == 'startup' else 1
+        env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = str(startup_limit)
         env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if compiled else '0'
         env['DIY_EXPERIMENT_RETAINED_TIMING'] = '1' if measured else '0'
-        env['DIY_PRIMITIVE_COMPARE_TIMING'] = '1' if args.suite == 'timing' else '0'
+        env['DIY_PRIMITIVE_COMPARE_TIMING'] = '1' if args.suite in ['timing', 'startup'] else '0'
         env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(output/(name+'.json'))
         command = [sys.executable, 'scripts/measure-primitive-retention-job.py', '--command',
                    str(output/(name+'.job.json')), node, 'scripts/benchmark-primitive-retention.mjs',
                    *map(str, binaries), str(official), str(count), str(samples), shape, cadence]
         case = dict(name=name, mode=mode, count=count, samples=samples, shape=shape, cadence=cadence,
-                    retainedCompiled=compiled, retainedTiming=measured)
+                    retainedCompiled=compiled, retainedTiming=measured, startupParallelism=startup_limit)
         manifest['cases'].append(case)
         save()
         print(name, flush=True)

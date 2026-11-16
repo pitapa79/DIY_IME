@@ -568,6 +568,14 @@ impl Native {
         // replacement process never overlap and use this same charged slot.
         let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         shared.record_phase("reservation-acquired");
+        shared.record_phase("preparation-permit-waiting");
+        let preparation_permit = shared
+            .startup_gate
+            .as_ref()
+            .map(|gate| gate.prepare(&cancel))
+            .transpose()?
+            .flatten();
+        shared.record_phase("preparation-permit-acquired");
         shared.record_phase("code-preparation-started");
         let compiled = if shared.startup_gate.is_some()
             && nodes.len() == 1
@@ -595,6 +603,21 @@ impl Native {
         };
         let used_compiled = compiled.is_some();
         shared.record_phase("code-preparation-finished");
+        // The preparation process has settled, its captured output is owned,
+        // and the same physical pin remains charged through replacement exit.
+        // Release scheduling only; never return execution ownership here.
+        drop(preparation_permit);
+        if !used_compiled
+            && shared
+                .startup_gate
+                .as_ref()
+                .is_some_and(|gate| gate.requires_compiled())
+        {
+            return Err(fail(
+                "retained-startup",
+                "parallel startup requires captured compiled code",
+            ));
+        }
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
         let (client, request) = RetainedClient::channel(

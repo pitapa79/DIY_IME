@@ -3,13 +3,46 @@ use super::*;
 use std::sync::{Condvar, Mutex};
 
 /// Startup scheduling only. Never transfers a process, SID, input or authority.
-#[derive(Default)]
 pub(super) struct StartupGate {
-    busy: Mutex<bool>,
+    busy: Mutex<usize>,
     wake: Condvar,
+    limit: usize,
+    preparation: Option<Arc<StartupGate>>,
 }
 pub(super) struct StartupPermit(Arc<StartupGate>);
+impl Default for StartupGate {
+    fn default() -> Self {
+        Self {
+            busy: Mutex::new(0),
+            wake: Condvar::new(),
+            limit: 1,
+            preparation: None,
+        }
+    }
+}
 impl StartupGate {
+    fn bounded(limit: usize) -> Result<Self, CoreError> {
+        if !matches!(limit, 1 | 2 | 4) {
+            return Err(fail("retained-startup", "unsupported startup concurrency"));
+        }
+        Ok(Self {
+            limit,
+            preparation: (limit > 1).then(|| Arc::new(Self::default())),
+            ..Self::default()
+        })
+    }
+    pub(super) fn requires_compiled(&self) -> bool {
+        self.limit > 1
+    }
+    pub(super) fn prepare(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<StartupPermit>, CoreError> {
+        self.preparation
+            .as_ref()
+            .map(|gate| gate.acquire(cancel))
+            .transpose()
+    }
     pub(super) fn acquire(
         self: &Arc<Self>,
         cancel: &CancellationToken,
@@ -22,8 +55,8 @@ impl StartupGate {
             if cancel.is_cancelled() {
                 return Err(fail("worker-cancelled", "startup cancelled"));
             }
-            if !*busy {
-                *busy = true;
+            if *busy < self.limit {
+                *busy += 1;
                 return Ok(StartupPermit(self.clone()));
             }
             busy = self
@@ -36,7 +69,8 @@ impl StartupGate {
 }
 impl Drop for StartupPermit {
     fn drop(&mut self) {
-        *self.0.busy.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        let mut busy = self.0.busy.lock().unwrap_or_else(|p| p.into_inner());
+        *busy = busy.checked_sub(1).expect("owned startup permit");
         self.0.wake.notify_all();
     }
 }
@@ -50,6 +84,34 @@ pub(in crate::isolated_worker) struct Owners {
 }
 
 impl Owners {
+    fn startup_limit_value(value: Option<&std::ffi::OsStr>) -> Result<usize, CoreError> {
+        match value {
+            None => Ok(1),
+            Some(value) if value == "1" => Ok(1),
+            Some(value) if value == "2" => Ok(2),
+            Some(value) if value == "4" => Ok(4),
+            _ => Err(fail(
+                "retained-startup",
+                "invalid explicit startup concurrency",
+            )),
+        }
+    }
+
+    fn validate_startup_mode(
+        limit: usize,
+        group_size: Option<usize>,
+        compiled: bool,
+        singleton_groups: bool,
+    ) -> Result<(), CoreError> {
+        if limit > 1 && (group_size != Some(1) || !compiled || !singleton_groups) {
+            return Err(fail(
+                "retained-startup",
+                "parallel startup requires compiled separate evaluation",
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::isolated_worker) fn evaluation_group_size() -> Result<Option<usize>, CoreError> {
         match std::env::var_os("DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION").as_deref() {
             None => Ok(None),
@@ -93,7 +155,17 @@ impl Owners {
         };
         // Avoid launching twenty full-module compilers simultaneously on a
         // small-memory machine. Warm execution remains independent per group.
-        let startup_gate = Arc::new(StartupGate::default());
+        let startup_limit = Self::startup_limit_value(
+            std::env::var_os("DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM").as_deref(),
+        )?;
+        Self::validate_startup_mode(
+            startup_limit,
+            Self::evaluation_group_size()?,
+            std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
+                == Some(std::ffi::OsStr::new("1")),
+            groups.iter().all(|group| group.len() == 1),
+        )?;
+        let startup_gate = Arc::new(StartupGate::bounded(startup_limit)?);
         // Twenty idle coordinators must not fill the Core's existing sixteen
         // request permits with simultaneous liveness probes. Keep every check
         // fresh, with one outstanding probe for this evaluation cohort.
@@ -214,6 +286,63 @@ mod tests {
     use std::sync::{atomic::AtomicUsize, mpsc};
 
     #[test]
+    fn parallel_startup_is_explicit_finite_and_compiled_separate_only() {
+        use std::ffi::OsStr;
+        assert_eq!(Owners::startup_limit_value(None).unwrap(), 1);
+        for limit in [1, 2, 4] {
+            assert_eq!(
+                Owners::startup_limit_value(Some(OsStr::new(&limit.to_string()))).unwrap(),
+                limit
+            );
+            assert_eq!(
+                StartupGate::bounded(limit).unwrap().requires_compiled(),
+                limit > 1
+            );
+            Owners::validate_startup_mode(limit, Some(1), true, true).unwrap();
+        }
+        for invalid in ["", "0", "3", "8", "02", " 2", "all"] {
+            assert!(Owners::startup_limit_value(Some(OsStr::new(invalid))).is_err());
+        }
+        for limit in [0, 3, 8, usize::MAX] {
+            assert!(StartupGate::bounded(limit).is_err());
+        }
+        for limit in [2, 4] {
+            assert!(Owners::validate_startup_mode(limit, Some(4), true, true).is_err());
+            assert!(Owners::validate_startup_mode(limit, None, true, true).is_err());
+            assert!(Owners::validate_startup_mode(limit, Some(1), false, true).is_err());
+            assert!(Owners::validate_startup_mode(limit, Some(1), true, false).is_err());
+        }
+        Owners::validate_startup_mode(1, Some(4), false, false).unwrap();
+    }
+
+    #[test]
+    fn parallel_startup_owns_distinct_permits_and_cancellable_serial_preparation() {
+        let gate = Arc::new(StartupGate::bounded(2).unwrap());
+        let first = gate.acquire(&CancellationToken::default()).unwrap();
+        let second = gate.acquire(&CancellationToken::default()).unwrap();
+        let prepare = gate.prepare(&CancellationToken::default()).unwrap();
+        let cancel = CancellationToken::default();
+        cancel.cancel();
+        assert!(gate.acquire(&cancel).is_err());
+        assert!(gate.prepare(&cancel).is_err());
+        assert_eq!(*gate.busy.lock().unwrap(), 2);
+        assert_eq!(*gate.preparation.as_ref().unwrap().busy.lock().unwrap(), 1);
+        drop(prepare);
+        assert_eq!(
+            *gate.busy.lock().unwrap(),
+            2,
+            "preparation is scheduling, not a startup refund"
+        );
+        drop(gate.prepare(&CancellationToken::default()).unwrap());
+        drop(second);
+        let successor = gate.acquire(&CancellationToken::default()).unwrap();
+        assert_eq!(*gate.busy.lock().unwrap(), 2);
+        drop(first);
+        drop(successor);
+        assert_eq!(*gate.busy.lock().unwrap(), 0);
+    }
+
+    #[test]
     fn startup_waiter_cancels_without_consuming_or_releasing_another_permit() {
         let gate = Arc::new(StartupGate::default());
         let held = gate.acquire(&CancellationToken::default()).unwrap();
@@ -228,35 +357,37 @@ mod tests {
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
         cancel.cancel();
         assert_eq!(thread.join().unwrap(), "worker-cancelled");
-        assert!(*gate.busy.lock().unwrap());
+        assert_eq!(*gate.busy.lock().unwrap(), 1);
         drop(held);
-        assert!(!*gate.busy.lock().unwrap());
+        assert_eq!(*gate.busy.lock().unwrap(), 0);
         drop(gate.acquire(&CancellationToken::default()).unwrap());
     }
 
     #[test]
     fn startup_concurrency_is_bounded_and_all_waiters_make_progress() {
-        let gate = Arc::new(StartupGate::default());
-        let active = Arc::new(AtomicUsize::new(0));
-        let completed = Arc::new(AtomicUsize::new(0));
-        let mut threads = Vec::new();
-        for _ in 0..8 {
-            let (gate, active, completed) = (gate.clone(), active.clone(), completed.clone());
-            threads.push(std::thread::spawn(move || {
-                for _ in 0..4 {
-                    let permit = gate.acquire(&CancellationToken::default()).unwrap();
-                    assert_eq!(active.fetch_add(1, Ordering::AcqRel), 0);
-                    std::thread::yield_now();
-                    assert_eq!(active.fetch_sub(1, Ordering::AcqRel), 1);
-                    completed.fetch_add(1, Ordering::AcqRel);
-                    drop(permit);
-                }
-            }));
+        for limit in [1, 2, 4] {
+            let gate = Arc::new(StartupGate::bounded(limit).unwrap());
+            let active = Arc::new(AtomicUsize::new(0));
+            let completed = Arc::new(AtomicUsize::new(0));
+            let mut threads = Vec::new();
+            for _ in 0..8 {
+                let (gate, active, completed) = (gate.clone(), active.clone(), completed.clone());
+                threads.push(std::thread::spawn(move || {
+                    for _ in 0..4 {
+                        let permit = gate.acquire(&CancellationToken::default()).unwrap();
+                        assert!(active.fetch_add(1, Ordering::AcqRel) < limit);
+                        std::thread::yield_now();
+                        assert!(active.fetch_sub(1, Ordering::AcqRel) <= limit);
+                        completed.fetch_add(1, Ordering::AcqRel);
+                        drop(permit);
+                    }
+                }));
+            }
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert_eq!(completed.load(Ordering::Acquire), 32);
+            assert_eq!(*gate.busy.lock().unwrap(), 0);
         }
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        assert_eq!(completed.load(Ordering::Acquire), 32);
-        assert!(!*gate.busy.lock().unwrap());
     }
 }
