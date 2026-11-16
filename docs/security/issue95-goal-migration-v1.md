@@ -1,6 +1,6 @@
 # Issue #95のGoal A/B移行案 v1.0
 
-状態: **#106の仕様PRでレビューする移行案。未実施**。開始main `336442b4cb63c8411b67c90736e38af5f6599395`、2026-11-16。
+状態: **#106の移行計画 v1.0**。承認・実施状況と保全した旧本文の参照先は[#106](https://github.com/pitapa79/DIY_IME/issues/106)と[#95](https://github.com/pitapa79/DIY_IME/issues/95)に記録する。開始main `336442b4cb63c8411b67c90736e38af5f6599395`、2026-11-16。
 
 正本候補は[安全性クラス別仕様](wasm-execution-classes-v1.md)。本書は既存の[#95](https://github.com/pitapa79/DIY_IME/issues/95)の本文・完了状態や、実行中のGoalを変更しない。承認と仕様PRのmainマージ後に移行する。#103/#105のコード取り込み、既定有効化、Node側の変更は別タスクである。
 
