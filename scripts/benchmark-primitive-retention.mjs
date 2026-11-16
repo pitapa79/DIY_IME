@@ -16,8 +16,8 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed'].includes(shape) && ['warm','paced','safety','cold','cold-paced'].includes(cadence));
-const cold=cadence==='cold' || cadence==='cold-paced';
+assert(['identity','mixed'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal'].includes(cadence));
+const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
@@ -158,7 +158,24 @@ try {
     assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
     return analysis;
   }
-  if(paced) {
+  if(cadence==='startup-refusal') {
+    assert.equal(mode,'separate');
+    assert(['2','4'].includes(process.env.DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM));
+    assert.equal(process.env.DIY_EXPERIMENT_COMPILED_JIT,'0');
+    const key=await submit('ka');
+    assert(!key.admissionRejected);
+    const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+    report.refusalSnapshot=snapshot;
+    assert.equal(snapshot.current,true);
+    assert.equal(snapshot.result.delivery,'failed','unavailable parallel route must not deliver successful S0 output');
+    assert(snapshot.result.causes.some(cause=>cause.diagnostic.error.code==='retained-startup'));
+    assert(snapshot.result.ports.every(port=>port.value.status!=='data'));
+    const status=await host.call({method:'status'});statuses.push(status);
+    assert.equal(status.retainedWorker.decodedReplies,0);
+    assert.equal(status.retainedWorker.compiledGenerations,0);
+    assert.equal(status.workerProcesses,0);
+    report.startupRefusalVerified=true;
+  } else if(paced) {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
     report.pacedRounds=[];
     report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,

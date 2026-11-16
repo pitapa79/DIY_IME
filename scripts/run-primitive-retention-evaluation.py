@@ -75,7 +75,10 @@ else:
     for limit in [2, 4]:
         cases.append(('separate', 20, 1, 'identity', 'safety'))
         startup_limits.append(limit)
-    assert len(cases) == len(startup_limits) == 14
+    for limit in [2, 4]:
+        cases.append(('separate', 1, 1, 'identity', 'startup-refusal'))
+        startup_limits.append(limit)
+    assert len(cases) == len(startup_limits) == 16
 
 manifest = {'source': os.environ.get('GITHUB_SHA'), 'suite': args.suite,
             'syntheticOnly': True, 'cases': [], 'complete': False}
@@ -101,6 +104,10 @@ try:
         env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = str(startup_limit)
         env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if compiled else '0'
         env['DIY_EXPERIMENT_RETAINED_TIMING'] = '1' if measured else '0'
+        if cadence == 'startup-refusal':
+            env['DIY_EXPERIMENT_COMPILED_JIT'] = '0'
+        else:
+            env['DIY_EXPERIMENT_COMPILED_JIT'] = '1'
         env['DIY_PRIMITIVE_COMPARE_TIMING'] = '1' if args.suite in ['timing', 'startup'] else '0'
         env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(output/(name+'.json'))
         command = [sys.executable, 'scripts/measure-primitive-retention-job.py', '--command',

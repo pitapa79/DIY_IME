@@ -30,11 +30,19 @@ No input, assigned Worker, mutable Store/Instance or package-native blob is reus
 
 The comparison suite covers same-binary startup settings 1/2/4, cold graphs
 of 1/4/20 stages, cold-paced 20-stage input, and existing 20-stage safety for
-settings 2/4. Every original CI segment remains required. Diagnostic loss,
+settings 2/4, plus refusal with the compiler producer disabled at settings 2/4.
+The latter requires a failed delivery with the retained-startup cause, zero
+decoded guest replies and zero Workers, so ordinary S0 fallback cannot hide failure.
+Every original CI segment remains required. Diagnostic loss,
 incorrect latest input, raw fallback, timeout and cleanup failures remain
 failures; preserve partial evidence rather than repeating until success.
 
-Validation and performance results are pending. The private API clock still
+Initial release all-target Clippy, production/library builds and four gate
+tests passed. Self-review then found that the coordinator's existing S0 fallback
+could conceal a refused preparation. The follow-up gates that fallback in
+parallel mode and adds the actual Host refusal test. Its full build and actual
+Host validation are pending; no speedup or final safety success is claimed.
+The private API clock still
 includes guest SDK/ABI work, so its residual is not semantic Node Execution
 Overhead. General qualification, main integration, semantic profiling, the
 full context/graph/lifecycle/long-run matrix and Goal109 completion remain open.
