@@ -27,7 +27,21 @@ impl Command {
         }
         let _ = self.done.send(());
     }
-    fn legacy(self) {
+    fn legacy(self, shared: &Shared) {
+        // The parallel comparison must not conceal startup/preparation failure
+        // by executing the input through the ordinary S0 fallback. No input is
+        // retried here; the original owner has already settled where required.
+        if shared
+            .startup_gate
+            .as_ref()
+            .is_some_and(|gate| gate.requires_compiled())
+        {
+            self.fail(fail(
+                "retained-startup",
+                "parallel retained route unavailable",
+            ));
+            return;
+        }
         let completion = self.completion.clone();
         if let Err(error) = self
             .node
@@ -568,6 +582,14 @@ impl Native {
         // replacement process never overlap and use this same charged slot.
         let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         shared.record_phase("reservation-acquired");
+        shared.record_phase("preparation-permit-waiting");
+        let preparation_permit = shared
+            .startup_gate
+            .as_ref()
+            .map(|gate| gate.prepare(&cancel))
+            .transpose()?
+            .flatten();
+        shared.record_phase("preparation-permit-acquired");
         shared.record_phase("code-preparation-started");
         let compiled = if shared.startup_gate.is_some()
             && nodes.len() == 1
@@ -595,6 +617,21 @@ impl Native {
         };
         let used_compiled = compiled.is_some();
         shared.record_phase("code-preparation-finished");
+        // The preparation process has settled, its captured output is owned,
+        // and the same physical pin remains charged through replacement exit.
+        // Release scheduling only; never return execution ownership here.
+        drop(preparation_permit);
+        if !used_compiled
+            && shared
+                .startup_gate
+                .as_ref()
+                .is_some_and(|gate| gate.requires_compiled())
+        {
+            return Err(fail(
+                "retained-startup",
+                "parallel startup requires captured compiled code",
+            ));
+        }
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
         let (client, request) = RetainedClient::channel(
@@ -840,14 +877,14 @@ fn coordinate(
             continue;
         }
         if command.stage != 0 {
-            command.legacy();
+            command.legacy(&shared);
             continue;
         }
         if native.is_none() {
             native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared).ok();
         }
         let Some(owner) = native.as_mut() else {
-            command.legacy();
+            command.legacy(&shared);
             continue;
         };
         if owner
@@ -858,7 +895,7 @@ fn coordinate(
             .is_err()
         {
             drop(native.take());
-            command.legacy();
+            command.legacy(&shared);
             continue;
         }
         if owner.startup_permit.is_some() {
@@ -900,7 +937,7 @@ fn coordinate(
             ) {
                 pending = Some(command);
             } else {
-                command.legacy();
+                command.legacy(&shared);
             }
             continue;
         }
@@ -1059,7 +1096,7 @@ fn coordinate(
                         .get_run(&key)
                         .is_ok_and(|s| s.current && s.state != RunPhase::Terminal)
                     {
-                        command.legacy();
+                        command.legacy(&shared);
                     } else {
                         pending = Some(command);
                         if shared.completed(&key) {
@@ -1088,7 +1125,7 @@ fn coordinate(
             command.fail(error);
         }
         if let Some(command) = fallback {
-            command.legacy();
+            command.legacy(&shared);
         }
     }
     drop(native);
