@@ -624,6 +624,7 @@ impl Runner {
             value["retainedWorker"]["groupSizes"] = json!(owner.group_sizes());
             value["retainedWorker"]["processIds"] = json!(owner.process_ids());
             value["retainedWorker"]["startupFailures"] = json!(owner.startup_failures());
+            value["retainedWorker"]["compiledGenerations"] = json!(owner.compiled_generations());
         }
         Ok(value)
     }

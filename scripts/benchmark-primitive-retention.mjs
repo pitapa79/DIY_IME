@@ -81,7 +81,7 @@ let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,
-  requestedControls:Object.fromEntries(['REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
+  requestedControls:Object.fromEntries(['RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
@@ -108,6 +108,10 @@ try {
     assert.equal(new Set(ready.retainedWorker.processIds).size,sizes.length);
     assert.equal(ready.retainedWorker.physicalJobs,sizes.length);assert.equal(ready.workerProcesses,sizes.length);
     report.lifetimeReady=ready;report.prepareThroughReadinessMs=performance.now()-preparation;
+    if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1') {
+      assert.equal(mode,'separate');
+      assert.equal(ready.retainedWorker.compiledGenerations,ready.retainedWorker.generation,'compiled replacement route must actually be selected');
+    }
   }
   async function submit(text) {
     ++revision;if(revision>1)await host.call({method:'invalidateInput',expectedPlanVersion:version,revision});
@@ -120,7 +124,9 @@ try {
     report.pacedRounds=[];
     report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,
       finishRound:async(intervalMs,attempts)=>{
-        report.pacedRounds.push({intervalMs,attempts,status:await host.call({method:'status'})});
+        const status=await host.call({method:'status'});
+        report.pacedRounds.push({intervalMs,attempts,status});
+        if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation,'replacement silently used raw compilation');
         assert.equal(attempts.at(-1).outcome,'correct','latest input must complete correctly');
       }});
     for(const scenario of report.pacing) {

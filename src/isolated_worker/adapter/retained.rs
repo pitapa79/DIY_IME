@@ -53,6 +53,7 @@ struct Shared {
     startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
+    compiled_generations: AtomicU64,
 }
 struct ActiveInput {
     key: RunKey,
@@ -264,6 +265,7 @@ impl Owner {
             startup_gate,
             control_probe,
             startup_failures: AtomicU64::new(0),
+            compiled_generations: AtomicU64::new(0),
         });
         let worker_shared = shared.clone();
         let links: Vec<_> = ids
@@ -311,6 +313,9 @@ impl Owner {
     }
     pub(super) fn startup_failures(&self) -> u64 {
         self.shared.startup_failures.load(Ordering::Acquire)
+    }
+    pub(super) fn compiled_generations(&self) -> u64 {
+        self.shared.compiled_generations.load(Ordering::Acquire)
     }
     pub(in crate::isolated_worker) fn physical_jobs(&self) -> u64 {
         self.shared.physical.load(Ordering::Acquire)
@@ -519,6 +524,31 @@ impl Native {
                 })
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
+        let compiled = if shared.startup_gate.is_some()
+            && nodes.len() == 1
+            && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            // Source selection is this captured Node's own factory. Preparing
+            // code runs no input/Instance and settles the original compiler
+            // before granting a new retained process access to its output.
+            match modules[0].prepared_jit_image(&cancel) {
+                WorkerImage::PreparedCompiled(files, len, digest) => {
+                    files.check_healthy()?;
+                    Some(RetainedCompiledCode {
+                        files,
+                        len,
+                        digest,
+                        source: modules[0].0.identity.rsplit(':').next().unwrap().to_owned(),
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let used_compiled = compiled.is_some();
         let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
@@ -547,11 +577,21 @@ impl Native {
         let thread = std::thread::Builder::new()
             .name("diyime-retained-native-owner".into())
             .spawn(move || {
-                artifact.retained_lifetime(&modules, request, &control, cleanup_pin, process_id)
+                artifact.retained_lifetime(
+                    &modules,
+                    compiled,
+                    request,
+                    &control,
+                    cleanup_pin,
+                    process_id,
+                )
             })
             .map_err(|_| fail("worker-thread", "retained native owner unavailable"))?;
         shared.physical.fetch_add(1, Ordering::AcqRel);
         shared.generation.fetch_add(1, Ordering::AcqRel);
+        if used_compiled {
+            shared.compiled_generations.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(Self {
             client: Some(client),
             cancel,
@@ -576,10 +616,20 @@ impl Drop for Native {
     }
 }
 
+/// Only constructed above from this source's settled compile-only process.
+/// Arc retains locked code and its finite budget through original cleanup.
+struct RetainedCompiledCode {
+    files: Arc<CodeFiles>,
+    len: usize,
+    digest: String,
+    source: String,
+}
+
 impl WasmArtifact {
     fn retained_lifetime(
         &self,
         modules: &[WasmArtifact],
+        compiled: Option<RetainedCompiledCode>,
         request: RetainedWorkerRequest,
         control: &RunControl,
         _cleanup_pin: RetainedReservation,
@@ -588,15 +638,24 @@ impl WasmArtifact {
         let mut profile =
             Profile::new().map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?;
         let runtime = self.runtime_code_files()?;
-        let module_files = modules
-            .iter()
-            .map(WasmArtifact::module_code_files)
-            .collect::<Result<Vec<_>, CoreError>>()?;
+        let module_files = if let Some(code) = &compiled {
+            code.files.check_healthy()?;
+            vec![code.files.clone()]
+        } else {
+            modules
+                .iter()
+                .map(WasmArtifact::module_code_files)
+                .collect::<Result<Vec<_>, CoreError>>()?
+        };
         let mut runtime_lease = runtime.lease(&profile)?;
         let mut module_leases = Vec::new();
         let receipt = (|| {
             let mut args: Vec<OsString> = vec![
-                "--retained-resources-v1".into(),
+                if compiled.is_some() {
+                    "--retained-compiled-resources-v1".into()
+                } else {
+                    "--retained-resources-v1".into()
+                },
                 runtime.cache.path().join("wasmtime.dll").into_os_string(),
                 "4096".into(),
                 self.0.policy.fuel_per_call.unwrap().to_string().into(),
@@ -604,8 +663,15 @@ impl WasmArtifact {
             ];
             for (artifact, files) in modules.iter().zip(&module_files) {
                 module_leases.push(files.lease(&profile)?);
-                args.push(files.cache.path().join("node.wasm").into_os_string());
-                args.push(artifact.0.module.len().to_string().into());
+                if let Some(code) = &compiled {
+                    args.push(files.cache.path().join("node.cwasm").into_os_string());
+                    args.push(code.len.to_string().into());
+                    args.push(code.digest.clone().into());
+                    args.push(code.source.clone().into());
+                } else {
+                    args.push(files.cache.path().join("node.wasm").into_os_string());
+                    args.push(artifact.0.module.len().to_string().into());
+                }
             }
             let job = Job::with_memory_limit(self.0.policy.process_memory_bytes)
                 .map_err(|_| fail("worker-isolation", "Worker Job unavailable"))?;

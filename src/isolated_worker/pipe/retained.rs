@@ -208,12 +208,11 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     control: &RunControl,
     observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
-    if args
-        .first()
-        .is_none_or(|arg| arg != "--retained-resources-v1")
-        || control
-            .walltime
-            .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
+    if args.first().is_none_or(|arg| {
+        arg != "--retained-resources-v1" && arg != "--retained-compiled-resources-v1"
+    }) || control
+        .walltime
+        .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
         || control.termination_grace > Duration::from_secs(5)
         || !request
             .reservation
