@@ -4,18 +4,21 @@ import {spawn, spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
 import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync, readdirSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {tmpdir,cpus,totalmem,release,platform,arch,availableParallelism} from 'node:os';
 import {join, resolve, dirname} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {measureHostInput} from './host-input-scenarios.mjs';
 import {analyzeLinearCallTiming} from './analyze-retained-call-timing.mjs';
+import {analyzeRetainedLifecycle} from './analyze-retained-lifecycle.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed'].includes(shape) && ['warm','paced','safety'].includes(cadence));
+assert(['identity','mixed'].includes(shape) && ['warm','paced','safety','cold','cold-paced'].includes(cadence));
+const cold=cadence==='cold' || cadence==='cold-paced';
+const paced=cadence==='paced' || cadence==='cold-paced';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const tracePaced=timing || process.env.DIY_PRIMITIVE_COMPARE_TIMING==='1';
@@ -83,7 +86,12 @@ function verify(s,wanted) {
 let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
-  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,
+  sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
+  measurementStartedUtc:new Date().toISOString(),
+  machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
+    availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
+  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,readinessBarrierUsed:mode!=='0' && !cold,
+  ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
@@ -103,7 +111,7 @@ try {
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
   let version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
-  if(mode!=='0') {
+  if(mode!=='0' && !cold) {
     const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;assert.equal(s.phase,'ready','evaluation Session was retired during startup');assert.equal(s.sessionEpoch,activated.sessionEpoch,'evaluation Session changed during startup');assert.equal(s.retainedWorker.startupFailures ?? 0,0,'retained startup failed before all groups became ready');return s.retainedWorker.ready?s:null;});
     assert.equal(ready.retainedWorker.experimental,true);
     const sizes=mode==='separate'?ids.map(()=>1):Array.from({length:Math.ceil(count/4)},(_,i)=>Math.min(4,count-i*4));
@@ -123,9 +131,25 @@ try {
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
   async function collectTrace() {
+    // Freeze after all input callbacks have settled. Paginating a live trace
+    // takes its mutex and can itself cause diagnostic try_lock contention.
+    // Stop also drains the worker inbox before we inspect its final loss count.
+    const {trace:stopped}=await host.call({method:'traceStop'});
+    const collection={recordingId:stopped.recordingId ?? null,dropped:stopped.dropped,eventCount:0};
+    (report.traceCollections ??= []).push(collection);
+    assert.equal(stopped.recording,false);
     let after='0',events=[];
-    for(;;){const {trace}=await host.call({method:'traceRead',after,limit:256});assert.equal(trace.dropped,0);events.push(...trace.events);if(!trace.events.length)break;after=trace.events.at(-1).sequence;}
-    await host.call({method:'traceStop'});
+    for(;;){
+      const {trace}=await host.call({method:'traceRead',after,limit:256});
+      assert.equal(trace.recording,false);
+      collection.dropped=Math.max(collection.dropped,trace.dropped);
+      events.push(...trace.events);
+      collection.eventCount=events.length;
+      if(!trace.events.length)break;
+      after=trace.events.at(-1).sequence;
+    }
+    if(collection.dropped)collection.partialEvents=events;
+    assert.equal(collection.dropped,0,'frozen trace has missing events');
     return events;
   }
   function analyze(keys,events,status) {
@@ -134,16 +158,20 @@ try {
     assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
     return analysis;
   }
-  if(cadence==='paced') {
+  if(paced) {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
     report.pacedRounds=[];
     report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,
+      intervals:cold ? [20,100,null] : [null,100,20],
       beginRound:tracePaced ? async()=>{await host.call({method:'traceStartDetailed'});} : undefined,
       finishRound:async(intervalMs,attempts)=>{
         const status=await host.call({method:'status'});
+        // Preserve correct/failed/latest outcomes even if diagnostics fail.
+        const round={intervalMs,attempts,status};
+        report.pacedRounds.push(round);
         const events=tracePaced ? await collectTrace() : undefined;
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
-        report.pacedRounds.push({intervalMs,attempts,status,...(events?{events}:{}),...(paired?{sameCall:paired}:{})});
+        Object.assign(round,...(events?[{events}]:[]),...(paired?[{sameCall:paired}]:[]));
         if(paired)assert.equal(paired.rows.filter(row=>row.key.runId===attempts.at(-1).key.runId && row.status==='paired').length,count,'latest correct input needs a complete same-call measurement');
         if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation,'replacement silently used raw compilation');
         assert.equal(attempts.at(-1).outcome,'correct','latest input must complete correctly');
@@ -173,10 +201,18 @@ try {
         report.sameCall.push({sample,...paired});
         assert.equal(paired.paired,count,'correct linear run needs every actual Native measurement');
       }
-      if(mode!=='0'){assert.equal(status.retainedWorker.decodedReplies,(sample+1)*count);assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);}
+      if(sample===0)report.firstResultStatus=status;
+      if(mode!=='0') {
+        assert.equal(status.retainedWorker.decodedReplies,(sample+1)*count);
+        if(!cold)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
+        if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation);
+      }
     }
-    report.warmResultMs=summarize(records.slice(1).map(r=>r.resultMs));
-    if(timing)report.warmNodeOverheadMs=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeOverheadMs)));
+    report[cold?'followupResultMs':'warmResultMs']=summarize(records.slice(1).map(r=>r.resultMs));
+    if(cold)report.followupIsGuaranteedWarm=false;
+    if(timing) {
+      report[cold?'followupResidualMs':'warmResidualMs']=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeResidualMs)));
+    }
   }
   if(cadence==='safety') {
     assert.notEqual(mode,'0','retention safety requires an explicit retained route');
@@ -276,6 +312,8 @@ try {
   report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
+  if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
+    ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.beforeClose]);
   try {if(manager)await manager.close();if(host)await host.close();}
   finally {
     writeFileSync(reportPath,JSON.stringify(report));

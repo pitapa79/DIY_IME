@@ -627,7 +627,7 @@ impl Runner {
             value["retainedWorker"]["compiledGenerations"] = json!(owner.compiled_generations());
             let samples = owner.call_samples();
             if !samples.is_empty() {
-                value["retainedWorker"]["callSamples"] = json!(samples);
+                value["retainedWorker"]["callSamples"] = Value::Array(samples);
             }
         }
         Ok(value)

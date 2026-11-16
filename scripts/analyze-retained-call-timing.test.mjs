@@ -15,13 +15,16 @@ function fixture() {
     },
   }]}}]}}};
 }
-test('derive each Node overhead from its own call, keeping callback wait in framework time',()=>{
+test('pair the API residual per call without presenting it as separated semantic overhead',()=>{
   const result=analyzeLinearCallTiming(fixture());
   assert.equal(result.correlationError,null);
   assert.equal(result.paired,1);
-  assert.equal(result.rows[0].guestExclusiveMs,1.5);
-  assert.equal(result.rows[0].nodeOverheadMs,2.5);
-  assert.equal(result.rows[0].parentFrameworkMs,1.5);
+  assert.equal(result.rows[0].guestApiWithoutResourceWaitMs,1.5);
+  assert.equal(result.rows[0].nodeResidualMs,2.5);
+  assert.equal(result.rows[0].parentResidualMs,1.5);
+  assert.equal(result.rows[0].semanticWorkMs,null);
+  assert.equal(result.rows[0].frameworkOverheadMs,null);
+  assert.equal(result.goalOverheadAvailable,false);
 });
 test('missing, duplicate or different delivery metadata never becomes a zero-duration sample',()=>{
   for(const kind of ['absent','duplicate','wrong-delivery']) {
@@ -31,7 +34,7 @@ test('missing, duplicate or different delivery metadata never becomes a zero-dur
     if(kind==='wrong-delivery')samples[0].deliveryGeneration='3';
     const result=analyzeLinearCallTiming(value);
     assert.equal(result.paired,0);assert.equal(result.missing,1);
-    assert.equal(result.rows[0].nodeOverheadMs,undefined);
+    assert.equal(result.rows[0].nodeResidualMs,undefined);
   }
 });
 test('invalid duration relationships and unsupported correlation are reported explicitly',()=>{
@@ -42,4 +45,10 @@ test('invalid duration relationships and unsupported correlation are reported ex
   assert(analyzeLinearCallTiming(other).correlationError);
   const wrong=fixture();wrong.events[1].nodeKind='another-node';
   assert(analyzeLinearCallTiming(wrong).correlationError);
+});
+test('a discarded Node is not a completed overhead sample even if Native returned metadata',()=>{
+  const value=fixture();value.events[2].event='node-discarded';
+  const result=analyzeLinearCallTiming(value);
+  assert.equal(result.nonSuccess,1);assert.equal(result.paired,0);
+  assert.equal(result.rows[0].nodeResidualMs,undefined);
 });

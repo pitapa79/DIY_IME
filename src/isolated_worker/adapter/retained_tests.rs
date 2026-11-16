@@ -169,8 +169,22 @@ fn retained_metrics_are_native_call_bound_optional_and_not_guest_authority() {
 #[test]
 fn retained_call_samples_are_bounded_charged_and_refuse_exhausted_budget() {
     use crate::isolated_worker::retained_metrics::{Sample, Samples};
-    let host = fixture_host("timing-budget");
-    let samples = Samples::new(&host).unwrap();
+    let origin = std::time::Instant::now();
+    let too_small = fixture_host("timing-budget-small");
+    assert!(Samples::new(&too_small, origin).is_err());
+    assert_eq!(too_small.usage(), ResourceUsage::default());
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../tests/contracts/execution_control.json"
+    ))
+    .unwrap();
+    let mut policy = contract["resourceProfiles"]["bounded"].clone();
+    policy["maxRetainedBytes"] = json!(1048576);
+    let host = ExecutionHost::new(
+        "timing-budget-sufficient",
+        ResourcePolicy::from_value(policy).unwrap(),
+    )
+    .unwrap();
+    let samples = Samples::new(&host, origin).unwrap();
     assert!(host.usage().retained_bytes >= 16 * 8192);
     for run in 1..=17 {
         let key = fixture_key(run);
@@ -192,6 +206,27 @@ fn retained_call_samples_are_bounded_charged_and_refuse_exhausted_budget() {
     assert_eq!(snapshot["samples"].as_array().unwrap().len(), 16);
     assert_eq!(snapshot["samples"][0]["runId"], "2");
     assert!(snapshot["samples"][0]["native"].is_null());
+    samples.begin_attempt();
+    for _ in 0..193 {
+        samples.phase("fixture-phase", Some(17), Some(fixture_key(17).run_id));
+    }
+    let phases = samples.snapshot();
+    assert_eq!(phases["phaseDropped"], 1);
+    assert_eq!(phases["phases"].as_array().unwrap().len(), 192);
+    assert!(
+        phases["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["attempt"] == "1")
+    );
+    let at: Vec<u64> = phases["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["atNs"].as_str().unwrap().parse().unwrap())
+        .collect();
+    assert!(at.windows(2).all(|pair| pair[0] <= pair[1]));
     let remaining = host.policy().max_retained_bytes - host.usage().retained_bytes;
     let other = host
         .try_reserve(ResourceUsage {
@@ -199,7 +234,9 @@ fn retained_call_samples_are_bounded_charged_and_refuse_exhausted_budget() {
             ..ResourceUsage::default()
         })
         .unwrap();
-    assert!(Samples::new(&host).is_err());
+    assert!(Samples::new(&host, origin).is_err());
+    drop(phases);
+    drop(snapshot);
     drop(other);
     drop(samples);
     assert_eq!(host.usage(), ResourceUsage::default());

@@ -4,8 +4,8 @@
 export function analyzeLinearCallTiming({keys, events, status, ids, kinds}) {
   const admitted=keys.filter(key=>key?.runId);
   const accepted=events.filter(event=>event.event==='run-accepted');
-  const result={scope:'same-call linear benchmark; wall time, not CPU',expected:admitted.length*ids.length,
-    correlationError:null,executed:0,notExecuted:0,paired:0,missing:0,inconsistent:0,rows:[],ringDrops:[]};
+  const result={scope:'same-call linear benchmark; guest API wall span, NOT semantic Node work',goalOverheadAvailable:false,expected:admitted.length*ids.length,
+    correlationError:null,executed:0,notExecuted:0,paired:0,missing:0,inconsistent:0,nonSuccess:0,rows:[],ringDrops:[]};
   if(accepted.length!==admitted.length || admitted.some(key=>key.sessionEpoch!==status.sessionEpoch)) {
     result.correlationError='trace admission count or Session scope mismatch';
     return result;
@@ -23,7 +23,7 @@ export function analyzeLinearCallTiming({keys, events, status, ids, kinds}) {
     }
     for(let index=0;index<ids.length;index++) {
       const nodeId=ids[index],start=started[index];
-      const row={key,nodeId,kind:kinds[index],status:'not-executed'};
+      const row={key,nodeId,kind:kinds[index],status:'not-executed',semanticWorkMs:null,frameworkOverheadMs:null};
       if(!start) {result.notExecuted++;result.rows.push(row);continue;}
       result.executed++;
       const finish=runEvents.find(event=>event.node===start.node &&
@@ -33,6 +33,11 @@ export function analyzeLinearCallTiming({keys, events, status, ids, kinds}) {
         sample.planVersion===key.planVersion && sample.deliveryGeneration===key.deliveryGeneration &&
         (sample.inputRevision ?? null)===(key.inputRevision ?? null)));
       row.traceNode=start.node;
+      if(finish && !['node-resolved','node-no-output'].includes(finish.event)) {
+        row.status='non-success';row.terminalEvent=finish.event;
+        row.partialNative=matches.length===1 ? matches[0].native : null;
+        result.nonSuccess++;result.rows.push(row);continue;
+      }
       if(matches.length!==1 || !finish || !matches[0].native) {
         row.status='missing';row.reason=matches.length>1?'duplicate Native rows':
           !finish?'unfinished Node trace':!matches.length?'Native row absent':'Native metadata absent';
@@ -48,15 +53,15 @@ export function analyzeLinearCallTiming({keys, events, status, ids, kinds}) {
         row.status='inconsistent';row.native=native;row.parentCallNs=sample.parentCallNs;
         row.nodeNs=nodeNs;result.inconsistent++;result.rows.push(row);continue;
       }
-      const guestExclusiveNs=native.guestCallNs-native.guestCallbackNs;
+      const guestApiWithoutResourceWaitNs=native.guestCallNs-native.guestCallbackNs;
       Object.assign(row,{status:'paired',generation:sample.generation,processId:sample.processId,
-        nodeMs:nodeNs/1e6,guestExclusiveMs:guestExclusiveNs/1e6,
-        guestInclusiveMs:native.guestCallNs/1e6,guestCallbackMs:native.guestCallbackNs/1e6,
+        nodeMs:nodeNs/1e6,guestApiWithoutResourceWaitMs:guestApiWithoutResourceWaitNs/1e6,
+        guestApiMs:native.guestCallNs/1e6,guestCallbackMs:native.guestCallbackNs/1e6,
         resourceWaitMs:native.resourceWaitNs/1e6,resourceReads:native.resourceReads,
         nativeInvocationMs:native.invocationNs/1e6,parentCallMs:sample.parentCallNs/1e6,
-        nodeOverheadMs:(nodeNs-guestExclusiveNs)/1e6,
-        nativeFrameworkMs:(native.invocationNs-guestExclusiveNs)/1e6,
-        parentFrameworkMs:(sample.parentCallNs-guestExclusiveNs)/1e6});
+        nodeResidualMs:(nodeNs-guestApiWithoutResourceWaitNs)/1e6,
+        nativeResidualMs:(native.invocationNs-guestApiWithoutResourceWaitNs)/1e6,
+        parentResidualMs:(sample.parentCallNs-guestApiWithoutResourceWaitNs)/1e6});
       result.paired++;result.rows.push(row);
     }
   }

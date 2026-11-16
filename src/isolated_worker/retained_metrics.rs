@@ -4,6 +4,7 @@ use std::{cell::Cell, collections::VecDeque, io, sync::Mutex, time::Instant};
 
 pub(super) const WIRE_SIZE: usize = 52;
 const SAMPLE_CAPACITY: usize = 16;
+const PHASE_CAPACITY: usize = 192;
 
 #[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,26 +23,44 @@ pub(super) struct Sample {
 struct Ring {
     samples: VecDeque<Sample>,
     dropped: u64,
+    phases: VecDeque<PhaseEvent>,
+    phase_dropped: u64,
+    attempt: Option<u64>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhaseEvent {
+    attempt: Option<String>,
+    at_ns: Option<String>,
+    process_id: Option<u64>,
+    run_id: Option<crate::execution_control::DecimalId>,
+    phase: &'static str,
 }
 pub(super) struct Samples {
     ring: Mutex<Ring>,
+    origin: Instant,
     _budget: crate::execution_control::ResourceLease,
 }
 impl Samples {
     pub(super) fn new(
         host: &crate::execution_control::ExecutionHost,
+        origin: Instant,
     ) -> Result<Self, crate::node::CoreError> {
         // Fixed-size control records only: no guest strings, result or input.
         // Conservatively cover the ring and bounded status/serialization copies.
         let budget = host.try_reserve(crate::execution_control::ResourceUsage {
-            retained_bytes: (SAMPLE_CAPACITY * 8192) as u64,
+            retained_bytes: (SAMPLE_CAPACITY * 8192 + PHASE_CAPACITY * 1024) as u64,
             ..crate::execution_control::ResourceUsage::default()
         })?;
         Ok(Self {
             ring: Mutex::new(Ring {
                 samples: VecDeque::with_capacity(SAMPLE_CAPACITY),
                 dropped: 0,
+                phases: VecDeque::with_capacity(PHASE_CAPACITY),
+                phase_dropped: 0,
+                attempt: Some(0),
             }),
+            origin,
             _budget: budget,
         })
     }
@@ -55,7 +74,36 @@ impl Samples {
     }
     pub(super) fn snapshot(&self) -> serde_json::Value {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        serde_json::json!({"capacity":SAMPLE_CAPACITY,"dropped":ring.dropped,"samples":ring.samples})
+        serde_json::json!({"capacity":SAMPLE_CAPACITY,"dropped":ring.dropped,"samples":ring.samples,
+            "phaseCapacity":PHASE_CAPACITY,"phaseDropped":ring.phase_dropped,"phases":ring.phases,
+            "attemptExhausted":ring.attempt.is_none(),"clockScope":"evaluation-cohort elapsed nanoseconds"})
+    }
+    pub(super) fn begin_attempt(&self) {
+        let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        ring.attempt = ring.attempt.and_then(|value| value.checked_add(1));
+    }
+    pub(super) fn phase(
+        &self,
+        phase: &'static str,
+        process_id: Option<u64>,
+        run_id: Option<crate::execution_control::DecimalId>,
+    ) {
+        let at_ns = u64::try_from(self.origin.elapsed().as_nanos())
+            .ok()
+            .map(|n| n.to_string());
+        let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        if ring.phases.len() == PHASE_CAPACITY {
+            ring.phases.pop_front();
+            ring.phase_dropped = ring.phase_dropped.saturating_add(1);
+        }
+        let attempt = ring.attempt.filter(|n| *n != 0).map(|n| n.to_string());
+        ring.phases.push_back(PhaseEvent {
+            attempt,
+            at_ns,
+            process_id,
+            run_id,
+            phase,
+        });
     }
 }
 

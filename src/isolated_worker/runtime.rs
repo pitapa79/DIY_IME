@@ -744,6 +744,15 @@ impl<'a> Runtime<'a> {
         result
     }
     fn call(&mut self, name: &CStr, args: &[Val], result_kind: Option<u8>) -> Result<u64, String> {
+        self.call_timed(name, args, result_kind, None)
+    }
+    fn call_timed(
+        &mut self,
+        name: &CStr,
+        args: &[Val],
+        result_kind: Option<u8>,
+        metrics: Option<&super::retained_metrics::Capture>,
+    ) -> Result<u64, String> {
         // SAFETY: export verified the function discriminant.
         let function = unsafe { self.export(name, 0)?.function };
         let mut result = Val::default();
@@ -754,6 +763,9 @@ impl<'a> Runtime<'a> {
                 self.api
                     .check((self.api.fuel_set)(self.context, fuel), ptr::null_mut())?;
             }
+            // The timed guest interval excludes export lookup, fuel setup,
+            // Native result checking/unrooting and all ABI copies.
+            let guest_timing = metrics.map(super::retained_metrics::Capture::guest_span);
             let error = (self.api.call)(
                 self.context,
                 &function,
@@ -763,6 +775,7 @@ impl<'a> Runtime<'a> {
                 usize::from(result_kind.is_some()),
                 &mut trap,
             );
+            drop(guest_timing);
             self.api.check(error, trap)?;
             let valid = result_kind.is_none_or(|kind| kind == result.kind);
             // SAFETY: read only the field selected by the checked result kind.
@@ -832,9 +845,7 @@ impl<'a> Runtime<'a> {
         let call_phase = self
             .diagnostics
             .map(|d| d.span(WorkerTracePhase::GuestCall));
-        let guest_timing = metrics.map(super::retained_metrics::Capture::guest_span);
-        let reply = self.call(c"diyime_call", &[Val::i32(pointer), arg], Some(1))?;
-        drop(guest_timing);
+        let reply = self.call_timed(c"diyime_call", &[Val::i32(pointer), arg], Some(1), metrics)?;
         drop(call_phase);
         let _reply = self
             .diagnostics

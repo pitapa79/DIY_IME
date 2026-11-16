@@ -1,0 +1,280 @@
+{
+  "scope": "Experimental private S1 diagnostic; NOT semantic Node overhead; partial and failed trials preserved",
+  "goalOverheadAvailable": false,
+  "cases": [
+    {
+      "name": "s1-timing113-paced-on-v1-separate-20-mixed-paced",
+      "completed": true,
+      "failure": null,
+      "binaries": {
+        "host": "70b76eb8a04c4e2195cf7cb42667409dd39e45e971766eada7f721fd35299050",
+        "manager": "a1de57d825f3cf63e4041f81cd2dc91dd7a05579e1c53f9471407ca2047f9e50",
+        "worker": "fd4e5bf1c8e15a5090dd73cbb10d57e46925ec5856492d4984cb3cf3030ba29f",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "requestedControls": {
+        "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "readinessBarrierUsed": true,
+      "machine": null,
+      "prepareThroughFirstResultMs": null,
+      "followupResultMs": null,
+      "workspaceAfterHostExit": [],
+      "job": {
+        "cpuMs": 41921.875,
+        "peakJobCommitBytes": 415764480,
+        "ownedProcessCount": 91,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-timing113-paced-on-v1-separate-20-mixed-paced.json",
+          "bytes": 10967703,
+          "sha256": "194117dffc44693619510cb40c65ed348a3ba288631b764fe1e11c46b298cb40"
+        },
+        {
+          "name": "s1-timing113-paced-on-v1-separate-20-mixed-paced.job.json",
+          "bytes": 1874050,
+          "sha256": "905d9e1680271b04a02931bd377219fccb753cd972dc8fc849a3e73f75090663"
+        },
+        {
+          "name": "s1-timing113-paced-on-v1-separate-20-mixed-paced.log",
+          "bytes": 396,
+          "sha256": "51c8f5b6555070ae32ad74e3d3d636fc1ab92c2b00c5abd891fb37ddfd8b65c9"
+        }
+      ]
+    },
+    {
+      "name": "s1-timing113-paced-off-v1-separate-20-mixed-paced",
+      "completed": false,
+      "failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n2 !== 0\n",
+      "binaries": {
+        "host": "70b76eb8a04c4e2195cf7cb42667409dd39e45e971766eada7f721fd35299050",
+        "manager": "a1de57d825f3cf63e4041f81cd2dc91dd7a05579e1c53f9471407ca2047f9e50",
+        "worker": "fd4e5bf1c8e15a5090dd73cbb10d57e46925ec5856492d4984cb3cf3030ba29f",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "requestedControls": {
+        "DIY_EXPERIMENT_RETAINED_TIMING": "0",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "readinessBarrierUsed": true,
+      "machine": null,
+      "prepareThroughFirstResultMs": null,
+      "followupResultMs": null,
+      "workspaceAfterHostExit": null,
+      "job": {
+        "cpuMs": 24421.875,
+        "peakJobCommitBytes": 360751104,
+        "ownedProcessCount": 99,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-timing113-paced-off-v1-separate-20-mixed-paced.json",
+          "bytes": 1932745,
+          "sha256": "60858eba873cceeb14a187745e722b8f100e1e11662f693a418c994f764520f3"
+        },
+        {
+          "name": "s1-timing113-paced-off-v1-separate-20-mixed-paced.job.json",
+          "bytes": 1557245,
+          "sha256": "36ab9b1e941d406f2e4657918f244b8929e7d3fa19be82fc8668de5941129ff8"
+        },
+        {
+          "name": "s1-timing113-paced-off-v1-separate-20-mixed-paced.log",
+          "bytes": 1354,
+          "sha256": "529f5541f0ad19fbe70f1895ebfb9c81c2f57f1149aa6ff8f2bd472db55b9277"
+        }
+      ]
+    },
+    {
+      "name": "s1-timing113-cold-on-v1-separate-20-identity-cold",
+      "completed": true,
+      "failure": null,
+      "binaries": {
+        "host": "70b76eb8a04c4e2195cf7cb42667409dd39e45e971766eada7f721fd35299050",
+        "manager": "a1de57d825f3cf63e4041f81cd2dc91dd7a05579e1c53f9471407ca2047f9e50",
+        "worker": "fd4e5bf1c8e15a5090dd73cbb10d57e46925ec5856492d4984cb3cf3030ba29f",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "requestedControls": {
+        "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "readinessBarrierUsed": false,
+      "machine": {
+        "osPlatform": "win32",
+        "osRelease": "10.0.19045",
+        "architecture": "x64",
+        "logicalCpus": 4,
+        "availableParallelism": 4,
+        "cpuModels": [
+          "Intel(R) Core(TM) i5-7300U CPU @ 2.60GHz"
+        ],
+        "totalPhysicalMemoryBytes": 4179914752
+      },
+      "prepareThroughFirstResultMs": 26376.9242,
+      "followupResultMs": {
+        "count": 1,
+        "p50": 127.86730000000534,
+        "p95": 127.86730000000534,
+        "p99": 127.86730000000534,
+        "max": 127.86730000000534
+      },
+      "workspaceAfterHostExit": [],
+      "job": {
+        "cpuMs": 14343.75,
+        "peakJobCommitBytes": 337117184,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-timing113-cold-on-v1-separate-20-identity-cold.json",
+          "bytes": 308084,
+          "sha256": "5e9c5e298b5e6eeb0a41be604ef62fb7f137ef5b82976bb2cc0b04311a323d0c"
+        },
+        {
+          "name": "s1-timing113-cold-on-v1-separate-20-identity-cold.job.json",
+          "bytes": 826320,
+          "sha256": "12d36ab0229e472030005e359823e9fc40d1e5f77ce9d0e57cd120f541418540"
+        },
+        {
+          "name": "s1-timing113-cold-on-v1-separate-20-identity-cold.log",
+          "bytes": 397,
+          "sha256": "6de98d9d1d496da7d84f7198f1e47b4b91bbe840834f3ef6db3c39c43653f4f8"
+        }
+      ]
+    },
+    {
+      "name": "s1-timing113-coldpaced-on-v1-separate-20-identity-cold-paced",
+      "completed": false,
+      "failure": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n2 !== 0\n",
+      "binaries": {
+        "host": "70b76eb8a04c4e2195cf7cb42667409dd39e45e971766eada7f721fd35299050",
+        "manager": "a1de57d825f3cf63e4041f81cd2dc91dd7a05579e1c53f9471407ca2047f9e50",
+        "worker": "fd4e5bf1c8e15a5090dd73cbb10d57e46925ec5856492d4984cb3cf3030ba29f",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+      "requestedControls": {
+        "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "readinessBarrierUsed": false,
+      "machine": {
+        "osPlatform": "win32",
+        "osRelease": "10.0.19045",
+        "architecture": "x64",
+        "logicalCpus": 4,
+        "availableParallelism": 4,
+        "cpuModels": [
+          "Intel(R) Core(TM) i5-7300U CPU @ 2.60GHz"
+        ],
+        "totalPhysicalMemoryBytes": 4179914752
+      },
+      "prepareThroughFirstResultMs": null,
+      "followupResultMs": null,
+      "workspaceAfterHostExit": null,
+      "job": {
+        "cpuMs": 16796.875,
+        "peakJobCommitBytes": 335073280,
+        "ownedProcessCount": 61,
+        "activeAtObservation": 0,
+        "driverExitCode": 1,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "files": [
+        {
+          "name": "s1-timing113-coldpaced-on-v1-separate-20-identity-cold-paced.json",
+          "bytes": 221075,
+          "sha256": "c236ac0c1446fa4401b18d32176f9ae86cb90fff87e48149a3c3443afee2f01c"
+        },
+        {
+          "name": "s1-timing113-coldpaced-on-v1-separate-20-identity-cold-paced.job.json",
+          "bytes": 758596,
+          "sha256": "bcf22e708f2509868aa790dd0a0eaafeb14fb936cc36944683d41fdc3f64531c"
+        },
+        {
+          "name": "s1-timing113-coldpaced-on-v1-separate-20-identity-cold-paced.log",
+          "bytes": 1349,
+          "sha256": "0936efbd2c9d02bc3866a8c393a462ef4a838bad68befc1403d39f3a59eba95e"
+        }
+      ]
+    }
+  ]
+}
