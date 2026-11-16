@@ -37,12 +37,15 @@ impl Fixture {
         Self::start_with_counter_resources(policy, false)
     }
     fn start_with_counter_resources(policy: DriverPolicy, counter_resources: bool) -> Self {
+        Self::start_variant(policy, counter_resources, false)
+    }
+    fn start_variant(policy: DriverPolicy, counter_resources: bool, captured: bool) -> Self {
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained driver fixture asset"))
         };
         let worker = required("DIY_RANGE_WORKER_BINARY");
         let dll = required("DIY_RANGE_RUNTIME_DLL");
-        let sdk = required("DIY_RESOURCE_SDK_CONSUMER_WASM");
+        let sdk = (!captured).then(|| required("DIY_RESOURCE_SDK_CONSUMER_WASM"));
         let host = fixture_host("retained-driver");
         let gate = ExecutionGate::default();
         let key = fixture_key(1);
@@ -75,13 +78,17 @@ impl Fixture {
                     module_slot: 1,
                     scope: fixture_scope(&gate, &target, 1, control.cancel.clone(), source.clone()),
                 },
-            ],
+            ]
+            .into_iter()
+            .take(if captured { 1 } else { 2 })
+            .collect(),
             &control.cancel,
         )
         .unwrap();
         let calls = policy.max_calls;
+        let stages = if captured { vec![0] } else { vec![0, 1] };
         let (client, request) =
-            RetainedClient::channel(host.clone(), pin.clone(), vec![0, 1], policy).unwrap();
+            RetainedClient::channel(host.clone(), pin.clone(), stages, policy).unwrap();
         let cleanup_pin = pin.clone();
         let owner_host = host.clone();
         let unconfirmed = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -90,14 +97,20 @@ impl Fixture {
         let owner = thread::spawn(move || {
             let result = (|| -> Result<ExitReceipt, String> {
                 let cleanup_pin = cleanup_pin;
-                let mut profile = Profile::new()?;
+                let mut profile = PreparationProfile {
+                    profile: Profile::new()?,
+                    strict: captured,
+                };
                 let job = Job::with_memory_limit(Some(512 * 1024 * 1024))?;
                 let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile)?;
                 let program = cache.copy(&worker, "worker.exe")?;
                 let runtime_path = cache.copy(&dll, "wasmtime.dll")?;
                 let state = runtime::state_fixture(&dll);
                 let module0 = cache.write("counter.wasm", &state)?;
-                let sdk = std::fs::read(sdk).map_err(|e| e.to_string())?;
+                let sdk = sdk.map_or_else(
+                    || Ok(Vec::new()),
+                    |path| std::fs::read(path).map_err(|e| e.to_string()),
+                )?;
                 let module1 = cache.write("consumer.wasm", &sdk)?;
                 let staged_assets = [
                     program.clone(),
@@ -106,7 +119,7 @@ impl Fixture {
                     module1.clone(),
                 ];
                 cache.allow_read_execute(&profile)?;
-                let args = vec![
+                let mut args = vec![
                     "--retained-resources-v1".into(),
                     runtime_path.into_os_string(),
                     calls.to_string().into(),
@@ -117,6 +130,46 @@ impl Fixture {
                     module1.into_os_string(),
                     sdk.len().to_string().into(),
                 ];
+                let compiled_artifact = if captured {
+                    let mut policy = WorkerPolicy::bounded_probe();
+                    policy.fuel_per_call = Some(5_000_000_000);
+                    policy.wasm_memory_bytes = Some(134_217_728);
+                    policy.process_memory_bytes = Some(512 * 1024 * 1024);
+                    policy.walltime = Some(Duration::from_secs(30));
+                    Some(
+                        WasmArtifact::capture(
+                            Path::new(env!("CARGO_MANIFEST_DIR")),
+                            &worker,
+                            &dll,
+                            state.clone(),
+                            policy,
+                        )
+                        .map_err(|e| e.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                let compiled = compiled_artifact.as_ref().map(|artifact| {
+                    artifact.prepared_jit_image_owned(&control.cancel, Some(cleanup_pin.clone()))
+                });
+                let mut compiled_lease = None;
+                if let Some(image) = &compiled {
+                    let WorkerImage::PreparedCompiled(files, length, digest) = image else {
+                        return Err("real captured fixture must use its own compiler".into());
+                    };
+                    files.check_healthy().map_err(|e| e.to_string())?;
+                    let mut lease = files.lease(&profile).map_err(|e| e.to_string())?;
+                    lease.strict_cleanup = true;
+                    compiled_lease = Some(lease);
+                    args.truncate(5);
+                    args[0] = "--retained-compiled-resources-v1".into();
+                    args.extend([
+                        files.cache.path().join("node.cwasm").into_os_string(),
+                        length.to_string().into(),
+                        digest.clone().into(),
+                        sha256(&state).map_err(|e| e.to_string())?.into(),
+                    ]);
+                }
                 let result = {
                     match execute_retained(
                         &profile, &job, &cache, &program, &args, request, &control,
@@ -149,6 +202,12 @@ impl Fixture {
                         }
                     }
                 };
+                if let Some(mut lease) = compiled_lease.take() {
+                    while lease.release().is_err() {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                drop(compiled_lease);
                 cache.revoke_read_execute(&profile)?;
                 profile.delete()?;
                 // The real process has ended, but Windows scanners may still
@@ -444,12 +503,22 @@ fn real_retained_driver_faults() {
 #[test]
 #[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
 fn real_retained_driver_inflight_cancel_and_deadline() {
+    check_inflight_cancel_and_deadline(false);
+}
+
+#[test]
+#[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
+fn real_captured_retained_driver_inflight_cancel_and_deadline() {
+    check_inflight_cancel_and_deadline(true);
+}
+
+fn check_inflight_cancel_and_deadline(captured: bool) {
     for deadline in [false, true] {
         let mut p = policy();
         if deadline {
             p.input_timeout = Duration::from_millis(250);
         }
-        let mut fixture = Fixture::start_with_counter_resources(p, true);
+        let mut fixture = Fixture::start_variant(p, true, captured);
         fixture
             .client
             .as_mut()

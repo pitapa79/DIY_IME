@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawn, spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
-import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync, readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve, dirname} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -235,7 +235,21 @@ try {
   // bounded control records as surviving processes or weakening their expiry.
   const ownedFields=['activeRuns','physicalJobs','queuedJobs','queuedInputBytes','reservedResultBytes'];
   report.afterClose=await until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && ownedFields.every(k=>s.physical[k]===0)?s:null;});
-  await host.close();host=undefined;report.completed=true;
+  await host.close();host=undefined;
+  function remainingWorkspaceFiles(folder) {
+    let entries;
+    try {entries=readdirSync(folder,{withFileTypes:true});}
+    catch(error){if(error.code==='ENOENT')return [];throw error;}
+    return entries.flatMap(entry=>{
+      const path=join(folder,entry.name);
+      return entry.isDirectory() && !entry.isSymbolicLink() ? remainingWorkspaceFiles(path) : [path];
+    });
+  }
+  // Inspect BEFORE test-directory removal: that removal must not hide an
+  // execution/code-cache leak after the original Host and Workers have exited.
+  report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
+  assert.deepEqual(report.workspaceAfterHostExit,[],'Host must reclaim workspace assets itself');
+  report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
   try {if(manager)await manager.close();if(host)await host.close();}

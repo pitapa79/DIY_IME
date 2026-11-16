@@ -524,6 +524,9 @@ impl Native {
                 })
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
+        // Reserve BEFORE any compiler process starts. Preparation and the
+        // replacement process never overlap and use this same charged slot.
+        let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         let compiled = if shared.startup_gate.is_some()
             && nodes.len() == 1
             && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
@@ -533,7 +536,7 @@ impl Native {
             // Source selection is this captured Node's own factory. Preparing
             // code runs no input/Instance and settles the original compiler
             // before granting a new retained process access to its output.
-            match modules[0].prepared_jit_image(&cancel) {
+            match modules[0].prepared_jit_image_owned(&cancel, Some(pin.clone())) {
                 WorkerImage::PreparedCompiled(files, len, digest) => {
                     files.check_healthy()?;
                     Some(RetainedCompiledCode {
@@ -549,7 +552,6 @@ impl Native {
             None
         };
         let used_compiled = compiled.is_some();
-        let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
         let (client, request) = RetainedClient::channel(
@@ -635,8 +637,11 @@ impl WasmArtifact {
         _cleanup_pin: RetainedReservation,
         process_id: Arc<AtomicU64>,
     ) -> Result<Option<ExitReceipt>, CoreError> {
-        let mut profile =
-            Profile::new().map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?;
+        let mut profile = PreparationProfile {
+            profile: Profile::new()
+                .map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?,
+            strict: compiled.is_some(),
+        };
         let runtime = self.runtime_code_files()?;
         let module_files = if let Some(code) = &compiled {
             code.files.check_healthy()?;
