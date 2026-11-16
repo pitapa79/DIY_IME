@@ -1,4 +1,4 @@
-# Bounded detailed Host trace receipt (#117, in progress)
+# Bounded detailed Host trace receipt (#117)
 
 Parent #109. Start main `057a0e28d88103269db1e6d1268af5fd5ac88710`.
 Explicit dependency PR116 `723aa7d0546a1bdff7833c0c5fb5da0b0a9eefeb`;
@@ -39,9 +39,10 @@ their Worker-local spans remain a separate clock. No input/output text, length,
 hash, config, path, URL, secret or raw external key is added to serialized data.
 No trace JSON fields, Graph/Packet/SDK, permission or safety guarantees change.
 
-The revised implementation passed fmt, release all-target Clippy, 28 focused
-runtime tests and the three production executable builds. JS analysis/cadence
-tests passed (8). Actual normal Host validation and final Windows CI are pending.
+At the initial revised-code checkpoint, fmt, release all-target Clippy, 28 focused
+runtime tests and the three production executable builds passed. JS analysis/cadence
+tests passed (8). Actual normal Host validation and final Windows CI were pending
+at that checkpoint; later evidence is recorded below and in PR118.
 An initial prototype passed 25 focused tests but allowed
 nonmonotonic timestamp pages; it was rejected during consumer compatibility
 inspection. The revised ordering/reservation implementation must pass the
@@ -112,6 +113,30 @@ prepared/code-mapping/comparison/safety/recovery passed; neutral failed in the
 separate launcher ownership check and runtime-cache was still running at last
 observation. The launcher test correction is separate Issue119/PR120 from
 current main, with no independent experimental dependency merges.
+
+## Main ownership-fix integration checkpoint
+
+Verified main94931a1d8584587ca835e07870f821a6a0f96f72 contains the complete
+validated119 implementation and matches the successful final CI tree
+832fa8f7bd8dd8401eae0c19bd6d3c3067aea0c6. The original merge returned502 after
+updating main; PR120 metadata stayed open and a guarded retry returned405.
+The already-landed PR record was closed with the exact Git ancestry/tree proof,
+and Issue119 completed. This does not claim the PR API reported merged.
+
+The shallow local history was deepened to verify the common ancestor before
+merging main into this branch at77132ae621a56e85d402aa4689dd6d46ee504e24.
+The only conflict was the old CIM ancestry diagnostic block; the exact main
+Job-based check replaces it. All original app/authority/ending assertions stay.
+No Rust, Cargo/lock or Editor execution files changed in this integration.
+Combined-branch actual Windows ownership tests passed4 in2.366s and Node
+protocol1 in1.242s; syntax/AST/diff checks passed. The same runtime code remains
+the33b8c47 implementation already measured above.
+
+The full combined nine-segment Windows regression is required for this PR;
+current source/check status and merge evidence are tracked in
+[PR118](https://github.com/pitapa79/DIY_IME/pull/118). Successful trace repair
+does not qualify arbitrary Nodes, resolve the remaining response problems,
+complete the broad Goal109 matrix, or authorize product/default adoption.
 
 Hash-bound reports, logs, Job accounting, successes and failures are summarized
 in [local evidence](evidence/host-trace-local-20261116.json). The source of the
