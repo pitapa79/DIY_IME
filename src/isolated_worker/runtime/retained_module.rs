@@ -7,6 +7,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"DIYRET01";
+const TIMED_MAGIC: &[u8; 8] = b"DIYRET02";
 const MAX_MODULES: usize = 4;
 const MAX_MODULE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
@@ -62,6 +63,23 @@ impl<'a> Compiled<'a> {
         Ok(Self { code, limits })
     }
     fn invoke(&mut self, input: &[u8], reader: &mut dyn ResourceReader) -> Result<Vec<u8>, String> {
+        self.invoke_measured(input, reader, false)
+            .map(|(reply, _)| reply)
+    }
+    fn invoke_measured(
+        &mut self,
+        input: &[u8],
+        reader: &mut dyn ResourceReader,
+        timed: bool,
+    ) -> Result<(Vec<u8>, Option<super::super::retained_metrics::Metrics>), String> {
+        let capture = timed.then(super::super::retained_metrics::Capture::new);
+        let mut timed_reader;
+        let reader = if let Some(capture) = &capture {
+            timed_reader = super::super::retained_metrics::TimedReader { reader, capture };
+            &mut timed_reader as &mut dyn ResourceReader
+        } else {
+            reader
+        };
         let mut call = Runtime {
             api: self.code.api,
             engine: self.code.engine,
@@ -76,13 +94,18 @@ impl<'a> Compiled<'a> {
         };
         call.install_store(&self.limits)?;
         let mut call = resource_import::attach(call, reader, false)?;
-        let reply = call.invoke(input)?;
+        let reply = call.invoke_timed(input, capture.as_ref())?;
         if call.resource.as_ref().is_some_and(|bridge| bridge.failed()) {
             return Err("retained resource callback failed".into());
         }
         // Store and callback are destroyed before the caller can write RESULT.
         drop(call);
-        Ok(reply)
+        Ok((
+            reply,
+            capture
+                .as_ref()
+                .and_then(super::super::retained_metrics::Capture::finish),
+        ))
     }
 }
 
@@ -93,7 +116,7 @@ fn positive(value: &std::ffi::OsStr, cap: u64) -> Result<u64, String> {
         .filter(|value| *value > 0 && *value <= cap)
         .ok_or("invalid retained limit".into())
 }
-fn next(input: &mut impl Read, expected: u64, modules: usize) -> io::Result<Option<u32>> {
+fn next(input: &mut impl Read, expected: u64, modules: usize) -> io::Result<Option<(u32, bool)>> {
     let mut magic = [0; 8];
     if input.read(&mut magic[..1])? == 0 {
         return Ok(None);
@@ -104,16 +127,19 @@ fn next(input: &mut impl Read, expected: u64, modules: usize) -> io::Result<Opti
     let mut slot = [0; 4];
     input.read_exact(&mut slot)?;
     let slot = u32::from_le_bytes(slot);
-    if &magic != MAGIC || u64::from_le_bytes(sequence) != expected || slot as usize >= modules {
+    if (&magic != MAGIC && &magic != TIMED_MAGIC)
+        || u64::from_le_bytes(sequence) != expected
+        || slot as usize >= modules
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid retained call",
         ));
     }
-    Ok(Some(slot))
+    Ok(Some((slot, &magic == TIMED_MAGIC)))
 }
-fn acknowledge(output: &mut impl Write, sequence: u64, slot: u32) -> io::Result<()> {
-    output.write_all(MAGIC)?;
+fn acknowledge(output: &mut impl Write, sequence: u64, slot: u32, timed: bool) -> io::Result<()> {
+    output.write_all(if timed { TIMED_MAGIC } else { MAGIC })?;
     output.write_all(&sequence.to_le_bytes())?;
     output.write_all(&slot.to_le_bytes())?;
     output.flush()
@@ -193,18 +219,26 @@ fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
         .and_then(|()| output.flush())
         .map_err(|_| "retained readiness failed")?;
     for sequence in 1..=calls {
-        let Some(slot) =
+        let Some((slot, timed)) =
             next(&mut input, sequence, modules.len()).map_err(|_| "retained header rejected")?
         else {
             return Ok(());
         };
-        acknowledge(&mut output, sequence, slot).map_err(|_| "retained acknowledgement failed")?;
+        acknowledge(&mut output, sequence, slot, timed)
+            .map_err(|_| "retained acknowledgement failed")?;
         let (mut client, request) =
             Client::start(&mut input, &mut output).map_err(|_| "retained call start failed")?;
-        let reply = modules[slot as usize].invoke(&request, &mut client)?;
-        client
-            .finish_retained(&reply)
-            .map_err(|_| "retained reply failed")?;
+        let (reply, metrics) = if timed {
+            modules[slot as usize].invoke_measured(&request, &mut client, true)?
+        } else {
+            (modules[slot as usize].invoke(&request, &mut client)?, None)
+        };
+        if let Some(metrics) = metrics {
+            client.finish_retained_measured(&reply, metrics.encode(sequence, slot))
+        } else {
+            client.finish_retained(&reply)
+        }
+        .map_err(|_| "retained reply failed")?;
     }
     // Give Parent time to publish the final valid reply. Budget exhaustion is
     // not an early EOF/exit that can race that publication. No further call runs.
@@ -236,6 +270,10 @@ pub(in crate::isolated_worker) fn state_fixture(dll: &Path) -> Vec<u8> {
         (func (export "diyime_alloc") (param i32) (result i32) i32.const 1024)
         (func (export "diyime_release_reply"))
         (func (export "diyime_call") (param i32 i32) (result i64)
+            local.get 0 i32.load8_u i32.const 64 i32.eq
+            if
+                i32.const 1 i64.const 0 i32.const 1 i32.const 8192 call $read drop
+            end
             local.get 0 i32.load8_u i32.const 33 i32.eq
             if
                 i32.const 1 i64.const 0 i32.const 1 i32.const 8192 call $read drop
@@ -414,8 +452,11 @@ mod tests {
     #[test]
     fn native_sequence_slot_and_every_partial_header_are_checked() {
         let mut header = Vec::new();
-        acknowledge(&mut header, 1, 0).unwrap();
-        assert_eq!(next(&mut Cursor::new(&header), 1, 1).unwrap(), Some(0));
+        acknowledge(&mut header, 1, 0, false).unwrap();
+        assert_eq!(
+            next(&mut Cursor::new(&header), 1, 1).unwrap(),
+            Some((0, false))
+        );
         assert!(next(&mut Cursor::new(&header), 2, 1).is_err());
         assert!(next(&mut Cursor::new(&header), 1, 0).is_err());
         assert_eq!(next(&mut Cursor::new([]), 1, 1).unwrap(), None);

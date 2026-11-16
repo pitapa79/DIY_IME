@@ -54,6 +54,7 @@ struct Shared {
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
     compiled_generations: AtomicU64,
+    samples: Option<crate::isolated_worker::retained_metrics::Samples>,
 }
 struct ActiveInput {
     key: RunKey,
@@ -250,6 +251,16 @@ impl Owner {
             return Ok(None);
         }
         let (send, receive) = mpsc::sync_channel(1);
+        let samples = if evaluation
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_TIMING").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            Some(crate::isolated_worker::retained_metrics::Samples::new(
+                &host,
+            )?)
+        } else {
+            None
+        };
         let shared = Arc::new(Shared {
             send,
             stop: CancellationToken::default(),
@@ -266,6 +277,7 @@ impl Owner {
             control_probe,
             startup_failures: AtomicU64::new(0),
             compiled_generations: AtomicU64::new(0),
+            samples,
         });
         let worker_shared = shared.clone();
         let links: Vec<_> = ids
@@ -316,6 +328,13 @@ impl Owner {
     }
     pub(super) fn compiled_generations(&self) -> u64 {
         self.shared.compiled_generations.load(Ordering::Acquire)
+    }
+    pub(super) fn call_samples(&self) -> Option<Value> {
+        self.shared.samples.as_ref().map(|samples| {
+            json!({
+                "nodeIds":self.shared.ids,"calls":samples.snapshot()
+            })
+        })
     }
     pub(in crate::isolated_worker) fn physical_jobs(&self) -> u64 {
         self.shared.physical.load(Ordering::Acquire)
@@ -895,7 +914,35 @@ fn coordinate(
                     let bytes = serde_json::to_vec(&request)
                         .map_err(|_| fail("worker-request", "request serialization failed"))?;
                     drop(request_phase);
-                    let data = input.as_mut().unwrap().call(bytes, scope)?;
+                    let measured = shared.samples.is_some();
+                    let call_started = measured.then(std::time::Instant::now);
+                    let reply = input
+                        .as_mut()
+                        .unwrap()
+                        .call_measured(bytes, scope, measured);
+                    if let Some(samples) = &shared.samples {
+                        samples.push(crate::isolated_worker::retained_metrics::Sample {
+                            run_id: key.run_id,
+                            plan_version: key.plan_version,
+                            input_revision: key.input_revision,
+                            delivery_generation: key.delivery_generation,
+                            stage: completed,
+                            generation: shared.generation.load(Ordering::Acquire),
+                            process_id: match shared.process_id.load(Ordering::Acquire) {
+                                0 => None,
+                                pid => Some(pid),
+                            },
+                            parent_call_ns: call_started
+                                .and_then(|start| u64::try_from(start.elapsed().as_nanos()).ok()),
+                            outcome: if reply.is_ok() { "success" } else { "error" },
+                            native: reply
+                                .as_ref()
+                                .ok()
+                                .and_then(|(_, m)| m.as_ref())
+                                .and_then(|m| m.value),
+                        });
+                    }
+                    let (data, _measurement) = reply?;
                     shared.replies.fetch_add(1, Ordering::AcqRel);
                     let outputs = wire::retained_outputs(data, &command.node.definition)?;
                     input.as_mut().unwrap().publish_stage(|| {

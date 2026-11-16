@@ -800,6 +800,13 @@ impl<'a> Runtime<'a> {
         Ok(unsafe { data.add(offset) })
     }
     fn invoke(&mut self, input: &[u8]) -> Result<Vec<u8>, String> {
+        self.invoke_timed(input, None)
+    }
+    fn invoke_timed(
+        &mut self,
+        input: &[u8],
+        metrics: Option<&super::retained_metrics::Capture>,
+    ) -> Result<Vec<u8>, String> {
         let setup_phase = self
             .diagnostics
             .map(|d| d.span(WorkerTracePhase::GuestSetup));
@@ -825,7 +832,9 @@ impl<'a> Runtime<'a> {
         let call_phase = self
             .diagnostics
             .map(|d| d.span(WorkerTracePhase::GuestCall));
+        let guest_timing = metrics.map(super::retained_metrics::Capture::guest_span);
         let reply = self.call(c"diyime_call", &[Val::i32(pointer), arg], Some(1))?;
+        drop(guest_timing);
         drop(call_phase);
         let _reply = self
             .diagnostics

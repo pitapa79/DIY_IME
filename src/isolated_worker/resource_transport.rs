@@ -12,6 +12,27 @@ const DATA: u8 = 2;
 const RESULT: u8 = 3;
 const CHUNK: u8 = 4;
 const ACK: u8 = 5;
+const METRICS: u8 = 6;
+pub(super) const METRICS_CALL_BUDGET: u64 = 256;
+
+struct MetricsReceiver {
+    sequence: u64,
+    slot: u32,
+    seen: bool,
+    value: Option<super::retained_metrics::Metrics>,
+}
+struct Response<'a> {
+    max_reply: usize,
+    metrics: Option<&'a mut MetricsReceiver>,
+}
+impl From<usize> for Response<'_> {
+    fn from(max_reply: usize) -> Self {
+        Self {
+            max_reply,
+            metrics: None,
+        }
+    }
+}
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid bounded resource frame")
@@ -84,6 +105,22 @@ impl<R: Read, W: Write> Client<R, W> {
     }
     /// Only the native retained loop may keep this connection across calls.
     pub(super) fn finish_retained(mut self, reply: &[u8]) -> io::Result<()> {
+        self.write_reply(reply)
+    }
+    pub(super) fn finish_retained_measured(
+        mut self,
+        reply: &[u8],
+        metrics: [u8; super::retained_metrics::WIRE_SIZE],
+    ) -> io::Result<()> {
+        // Native owns this frame. Guest bytes remain inside RESULT framing and
+        // cannot supply or replace these call-bound counters.
+        if self.failed || reply.len() > MAX_INPUT {
+            return Err(invalid());
+        }
+        self.output.write_all(&[METRICS])?;
+        self.output
+            .write_all(&(metrics.len() as u32).to_le_bytes())?;
+        self.output.write_all(&metrics)?;
         self.write_reply(reply)
     }
     fn write_reply(&mut self, reply: &[u8]) -> io::Result<()> {
@@ -165,7 +202,15 @@ pub(super) fn serve(
     request: &[u8],
     session: &mut ResourceRangeSession,
 ) -> io::Result<Vec<u8>> {
-    serve_mode(output, input, request, session, None, true, MAX_INPUT)
+    serve_mode(
+        output,
+        input,
+        request,
+        session,
+        None,
+        true,
+        MAX_INPUT.into(),
+    )
 }
 pub(super) fn serve_build(
     output: impl Read,
@@ -181,7 +226,7 @@ pub(super) fn serve_build(
         session,
         Some(capture),
         true,
-        MAX_INPUT,
+        MAX_INPUT.into(),
     )
 }
 pub(super) fn serve_retained(
@@ -198,8 +243,36 @@ pub(super) fn serve_retained(
         session,
         None,
         false,
-        max_reply.min(MAX_INPUT),
+        max_reply.min(MAX_INPUT).into(),
     )
+}
+pub(super) fn serve_retained_measured(
+    output: impl Read,
+    input: impl Write,
+    request: &[u8],
+    session: &mut ResourceRangeSession,
+    max_reply: usize,
+    context: (u64, u32),
+) -> io::Result<(Vec<u8>, Option<super::retained_metrics::Metrics>)> {
+    let mut metrics = MetricsReceiver {
+        sequence: context.0,
+        slot: context.1,
+        seen: false,
+        value: None,
+    };
+    let reply = serve_mode(
+        output,
+        input,
+        request,
+        session,
+        None,
+        false,
+        Response {
+            max_reply: max_reply.min(MAX_INPUT),
+            metrics: Some(&mut metrics),
+        },
+    )?;
+    Ok((reply, metrics.value))
 }
 fn serve_mode(
     mut output: impl Read,
@@ -208,7 +281,7 @@ fn serve_mode(
     session: &mut ResourceRangeSession,
     mut capture: Option<&mut ArtifactCapture>,
     require_eof: bool,
-    max_reply: usize,
+    mut response: Response<'_>,
 ) -> io::Result<Vec<u8>> {
     session.check_current().map_err(|_| invalid())?;
     if request.len() > MAX_INPUT {
@@ -229,6 +302,23 @@ fn serve_mode(
     loop {
         session.check_current().map_err(|_| invalid())?;
         match number::<1>(&mut output)?[0] {
+            METRICS if response.metrics.is_some() => {
+                let receiver = response.metrics.as_deref_mut().ok_or_else(invalid)?;
+                if receiver.seen {
+                    return Err(invalid());
+                }
+                receiver.seen = true;
+                let size = length(&mut output, super::retained_metrics::WIRE_SIZE)?;
+                let mut bytes = [0; super::retained_metrics::WIRE_SIZE];
+                output.read_exact(&mut bytes[..size])?;
+                // Invalid bounded diagnostics are missing, never zero and never
+                // authority. A valid RESULT still follows the usual checks.
+                receiver.value = super::retained_metrics::Metrics::decode(
+                    &bytes[..size],
+                    receiver.sequence,
+                    receiver.slot,
+                );
+            }
             CHUNK => {
                 let offset = u64::from_le_bytes(number(&mut output)?);
                 let length = length(&mut output, MAX_READ)?;
@@ -269,7 +359,7 @@ fn serve_mode(
                 input.flush()?;
             }
             RESULT => {
-                let length = length(&mut output, max_reply)?;
+                let length = length(&mut output, response.max_reply)?;
                 let mut reply = vec![0; length];
                 output.read_exact(&mut reply)?;
                 session.check_current().map_err(|_| invalid())?;

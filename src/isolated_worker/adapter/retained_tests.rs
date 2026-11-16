@@ -82,6 +82,129 @@ pub(super) fn fixture_scope(
     .unwrap()
 }
 #[test]
+fn retained_metrics_are_native_call_bound_optional_and_not_guest_authority() {
+    use crate::isolated_worker::retained_metrics::Metrics;
+    use std::io::Cursor;
+    let gate = ExecutionGate::default();
+    let key = fixture_key(1);
+    let target = GrantTarget::new(
+        "timing-fixture".into(),
+        &key.session_epoch,
+        key.plan_version,
+        "node".into(),
+    );
+    gate.approve(target.clone());
+    let metrics = Metrics {
+        invocation_ns: 100,
+        guest_call_ns: 80,
+        guest_callback_ns: 20,
+        resource_wait_ns: 20,
+        resource_reads: 1,
+    };
+    let metadata = metrics.encode(7, 0);
+    for case in [
+        "valid",
+        "missing",
+        "wrong-call",
+        "invalid-length",
+        "duplicate",
+        "unsolicited",
+        "revoked",
+    ] {
+        let mut output = resource_transport::MAGIC.to_vec();
+        if case != "missing" {
+            let mut bytes = metadata.to_vec();
+            if case == "wrong-call" {
+                bytes[0] = 8;
+            }
+            if case == "invalid-length" {
+                bytes.pop();
+            }
+            for _ in 0..if case == "duplicate" { 2 } else { 1 } {
+                output.push(6);
+                output.extend((bytes.len() as u32).to_le_bytes());
+                output.extend_from_slice(&bytes);
+            }
+        }
+        // A guest can return bytes resembling a metadata frame. They remain
+        // opaque RESULT bytes; only the preceding Native frame is interpreted.
+        let guest_reply = metadata.to_vec();
+        output.push(3);
+        output.extend((guest_reply.len() as u32).to_le_bytes());
+        output.extend_from_slice(&guest_reply);
+        let mut scope = fixture_empty(&gate, &target, 2, CancellationToken::default());
+        if case == "revoked" {
+            gate.revoke(&target);
+        }
+        if case == "unsolicited" {
+            assert!(
+                resource_transport::serve_retained(
+                    Cursor::new(output),
+                    Vec::new(),
+                    b"{}",
+                    &mut scope,
+                    1024
+                )
+                .is_err()
+            );
+            continue;
+        }
+        let result = resource_transport::serve_retained_measured(
+            Cursor::new(output),
+            Vec::new(),
+            b"{}",
+            &mut scope,
+            1024,
+            (7, 0),
+        );
+        if matches!(case, "duplicate" | "revoked") {
+            assert!(result.is_err());
+        } else {
+            let (reply, captured) = result.unwrap();
+            assert_eq!(reply, guest_reply);
+            assert_eq!(captured, (case == "valid").then_some(metrics));
+        }
+    }
+}
+#[test]
+fn retained_call_samples_are_bounded_charged_and_refuse_exhausted_budget() {
+    use crate::isolated_worker::retained_metrics::{Sample, Samples};
+    let host = fixture_host("timing-budget");
+    let samples = Samples::new(&host).unwrap();
+    assert!(host.usage().retained_bytes >= 16 * 8192);
+    for run in 1..=17 {
+        let key = fixture_key(run);
+        samples.push(Sample {
+            run_id: key.run_id,
+            plan_version: key.plan_version,
+            input_revision: None,
+            delivery_generation: key.delivery_generation,
+            stage: 0,
+            generation: 1,
+            process_id: None,
+            parent_call_ns: None,
+            outcome: "error",
+            native: None,
+        });
+    }
+    let snapshot = samples.snapshot();
+    assert_eq!(snapshot["dropped"], 1);
+    assert_eq!(snapshot["samples"].as_array().unwrap().len(), 16);
+    assert_eq!(snapshot["samples"][0]["runId"], "2");
+    assert!(snapshot["samples"][0]["native"].is_null());
+    let remaining = host.policy().max_retained_bytes - host.usage().retained_bytes;
+    let other = host
+        .try_reserve(ResourceUsage {
+            retained_bytes: remaining,
+            ..ResourceUsage::default()
+        })
+        .unwrap();
+    assert!(Samples::new(&host).is_err());
+    drop(other);
+    drop(samples);
+    assert_eq!(host.usage(), ResourceUsage::default());
+}
+#[test]
 fn execution_only_scope_needs_a_grant_and_cannot_read_any_resource() {
     let gate = ExecutionGate::default();
     let key = fixture_key(1);

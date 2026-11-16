@@ -165,6 +165,12 @@ impl Owners {
     pub(in crate::isolated_worker) fn compiled_generations(&self) -> u64 {
         self.owners.iter().map(|o| o.compiled_generations()).sum()
     }
+    pub(in crate::isolated_worker) fn call_samples(&self) -> Vec<Value> {
+        self.owners
+            .iter()
+            .filter_map(|o| o.call_samples())
+            .collect()
+    }
 }
 
 impl Drop for Owners {

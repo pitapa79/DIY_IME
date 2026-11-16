@@ -55,10 +55,17 @@ struct Call {
     binding: usize,
     input: Vec<u8>,
     scope: ResourceRangeSession,
-    reply: mpsc::SyncSender<Result<(Value, ResourceRangeSession, usize), CoreError>>,
+    reply: mpsc::SyncSender<CallReply>,
+    measured: bool,
+    metrics_budget: Option<ResourceLease>,
     _budget: ResourceLease,
     _input_budget: ResourceLease,
 }
+pub(in crate::isolated_worker) struct CallMeasurement {
+    pub(in crate::isolated_worker) value: Option<crate::isolated_worker::retained_metrics::Metrics>,
+    _budget: ResourceLease,
+}
+type CallReply = Result<(Value, ResourceRangeSession, usize, Option<CallMeasurement>), CoreError>;
 // None closes the driver; storing the bounded call inline avoids a heap
 // allocation per stage merely to send a distinct stop variant.
 type Command = Option<Call>;
@@ -254,7 +261,7 @@ impl RetainedClient {
                     let Some(mut call) = command else {
                         return Ok(Vec::new());
                     };
-                    let reply = (|| -> Result<(Value, usize), CoreError> {
+                    let reply = (|| -> Result<(Value, usize, Option<crate::isolated_worker::retained_metrics::Metrics>), CoreError> {
                         check_active(&driver_shared)?;
                         if driver_shared
                             .active
@@ -270,7 +277,7 @@ impl RetainedClient {
                         }
                         let slot = driver_pin.authorize_binding(call.binding, &mut call.scope)?;
                         sequence += 1;
-                        let mut header = b"DIYRET01".to_vec();
+                        let mut header = if call.measured { b"DIYRET02" } else { b"DIYRET01" }.to_vec();
                         header.extend(sequence.to_le_bytes());
                         header.extend(slot.to_le_bytes());
                         input
@@ -285,26 +292,33 @@ impl RetainedClient {
                             return Err(error("retained-transport"));
                         }
                         check_active(&driver_shared)?;
-                        let bytes = resource_transport::serve_retained(
-                            &mut output,
-                            &mut input,
-                            &call.input,
-                            &mut call.scope,
-                            driver_policy.max_reply_bytes as usize,
-                        )
-                        .map_err(|_| error("retained-transport"))?;
+                        let (bytes, metrics) = if call.measured {
+                            resource_transport::serve_retained_measured(
+                                &mut output, &mut input, &call.input, &mut call.scope,
+                                driver_policy.max_reply_bytes as usize, (sequence, slot),
+                            )
+                        } else {
+                            resource_transport::serve_retained(
+                                &mut output, &mut input, &call.input, &mut call.scope,
+                                driver_policy.max_reply_bytes as usize,
+                            ).map(|bytes| (bytes, None))
+                        }.map_err(|_| error("retained-transport"))?;
                         check_active(&driver_shared)?;
                         driver_pin.authorize_binding(call.binding, &mut call.scope)?;
-                        Ok((retained_reply(&bytes)??, bytes.len()))
+                        Ok((retained_reply(&bytes)??, bytes.len(), metrics))
                     })();
                     // These parent-side serialized bytes are no longer used.
                     // Release their actual charge before waking the next stage.
                     drop(call.input);
                     drop(call._input_budget);
                     match reply {
-                        Ok((data, size)) => {
+                        Ok((data, size, metrics)) => {
+                            let measurement = call.metrics_budget.map(|budget| CallMeasurement {
+                                value: metrics,
+                                _budget: budget,
+                            });
                             call.reply
-                                .send(Ok((data, call.scope, size)))
+                                .send(Ok((data, call.scope, size, measurement)))
                                 .map_err(|_| "retained reply abandoned")?;
                         }
                         Err(failure) => {
@@ -495,8 +509,17 @@ impl RetainedInput<'_> {
     pub fn call(
         &mut self,
         input: Vec<u8>,
-        mut scope: ResourceRangeSession,
+        scope: ResourceRangeSession,
     ) -> Result<Value, CoreError> {
+        self.call_measured(input, scope, false)
+            .map(|(data, _)| data)
+    }
+    pub(in crate::isolated_worker) fn call_measured(
+        &mut self,
+        input: Vec<u8>,
+        mut scope: ResourceRangeSession,
+        measured: bool,
+    ) -> Result<(Value, Option<CallMeasurement>), CoreError> {
         let result = (|| {
             check_active(&self.client.shared)?;
             if input.is_empty() || input.len() > resource_transport::MAX_INPUT {
@@ -517,6 +540,14 @@ impl RetainedInput<'_> {
                 .filter(|v| *v <= self.client.policy.max_input_bytes)
                 .ok_or_else(|| error("retained-input-limit"))?;
             let call_deadline = scope.absolute_deadline().min(self.deadline);
+            let metrics_budget = if measured {
+                Some(self.client.host.try_reserve(ResourceUsage {
+                    retained_bytes: resource_transport::METRICS_CALL_BUDGET,
+                    ..ResourceUsage::default()
+                })?)
+            } else {
+                None
+            };
             let input_budget = self.client.host.try_reserve(ResourceUsage {
                 queued_input_bytes: input.len() as u64,
                 ..ResourceUsage::default()
@@ -539,11 +570,13 @@ impl RetainedInput<'_> {
                     input,
                     scope,
                     reply,
+                    measured,
+                    metrics_budget,
                     _budget: self.budget.clone(),
                     _input_budget: input_budget,
                 }))
                 .map_err(|_| error("retained-busy"))?;
-            let (data, scope, size) = receive
+            let (data, scope, size, measurement) = receive
                 .recv_timeout(call_deadline.saturating_duration_since(Instant::now()))
                 .map_err(|failure| {
                     error(match failure {
@@ -570,7 +603,7 @@ impl RetainedInput<'_> {
             {
                 active.call_deadline = None;
             }
-            Ok(data)
+            Ok((data, measurement))
         })();
         if let Err(failure) = &result {
             self.client.stop(if self.cancel.is_cancelled() {

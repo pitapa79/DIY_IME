@@ -8,6 +8,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve, dirname} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {measureHostInput} from './host-input-scenarios.mjs';
+import {analyzeLinearCallTiming} from './analyze-retained-call-timing.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
@@ -16,6 +17,8 @@ const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
 assert(['identity','mixed'].includes(shape) && ['warm','paced','safety'].includes(cadence));
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
+const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
+const tracePaced=timing || process.env.DIY_PRIMITIVE_COMPARE_TIMING==='1';
 assert(['0','separate','grouped'].includes(mode));
 const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
 assert(reportPath, 'explicit report path required');
@@ -80,8 +83,8 @@ function verify(s,wanted) {
 let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
-  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,
-  requestedControls:Object.fromEntries(['RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
+  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,
+  requestedControls:Object.fromEntries(['RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
@@ -119,13 +122,29 @@ try {
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
+  async function collectTrace() {
+    let after='0',events=[];
+    for(;;){const {trace}=await host.call({method:'traceRead',after,limit:256});assert.equal(trace.dropped,0);events.push(...trace.events);if(!trace.events.length)break;after=trace.events.at(-1).sequence;}
+    await host.call({method:'traceStop'});
+    return events;
+  }
+  function analyze(keys,events,status) {
+    const analysis=analyzeLinearCallTiming({keys,events,status,ids,kinds:ids.map((_,i)=>kindAt(i))});
+    assert.equal(analysis.correlationError,null);
+    assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
+    return analysis;
+  }
   if(cadence==='paced') {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
     report.pacedRounds=[];
     report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,
+      beginRound:tracePaced ? async()=>{await host.call({method:'traceStartDetailed'});} : undefined,
       finishRound:async(intervalMs,attempts)=>{
         const status=await host.call({method:'status'});
-        report.pacedRounds.push({intervalMs,attempts,status});
+        const events=tracePaced ? await collectTrace() : undefined;
+        const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
+        report.pacedRounds.push({intervalMs,attempts,status,...(events?{events}:{}),...(paired?{sameCall:paired}:{})});
+        if(paired)assert.equal(paired.rows.filter(row=>row.key.runId===attempts.at(-1).key.runId && row.status==='paired').length,count,'latest correct input needs a complete same-call measurement');
         if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation,'replacement silently used raw compilation');
         assert.equal(attempts.at(-1).outcome,'correct','latest input must complete correctly');
       }});
@@ -137,6 +156,7 @@ try {
       assert.equal(scenario.byCase['6'].correct,samples);
     }
   } else {
+    if(timing)report.sameCall=[];
     for(let sample=0;sample<=samples;sample++) {
       if(sample)await delay(100);
       await host.call({method:'traceStartDetailed'});
@@ -145,14 +165,18 @@ try {
       const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
       const resultMs=performance.now()-started;verify(snapshot,expected(text));
       if(sample===0)report.prepareThroughFirstResultMs=performance.now()-preparation;
-      let after='0',events=[];
-      for(;;){const {trace}=await host.call({method:'traceRead',after,limit:256});assert.equal(trace.dropped,0);events.push(...trace.events);if(!trace.events.length)break;after=trace.events.at(-1).sequence;}
-      await host.call({method:'traceStop'});
+      const events=await collectTrace();
       traces.push({sample,key,events});records.push({sample,resultMs});
       const status=await host.call({method:'status'});statuses.push(status);
+      if(timing) {
+        const paired=analyze([key],events,status);
+        report.sameCall.push({sample,...paired});
+        assert.equal(paired.paired,count,'correct linear run needs every actual Native measurement');
+      }
       if(mode!=='0'){assert.equal(status.retainedWorker.decodedReplies,(sample+1)*count);assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);}
     }
     report.warmResultMs=summarize(records.slice(1).map(r=>r.resultMs));
+    if(timing)report.warmNodeOverheadMs=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeOverheadMs)));
   }
   if(cadence==='safety') {
     assert.notEqual(mode,'0','retention safety requires an explicit retained route');

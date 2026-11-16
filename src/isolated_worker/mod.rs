@@ -844,6 +844,8 @@ mod pipe;
 #[cfg(target_arch = "x86_64")]
 mod resource_transport;
 #[cfg(target_arch = "x86_64")]
+mod retained_metrics;
+#[cfg(target_arch = "x86_64")]
 pub use pipe::{
     DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedInput, RetainedReservation,
     RetainedWorkerRequest, execute_retained,
