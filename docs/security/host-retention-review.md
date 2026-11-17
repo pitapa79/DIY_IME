@@ -76,6 +76,7 @@ Actual-import parser tests cover forbidden capabilities and malformed bounds.
 The actual Windows checker uses verified package import, explicit consent/Core,
 normal Host and AppContainer with two genuinely different executable fixture
 builds and official identity in the same graph. It checks S0, S1 single/4/20 stages,
+with the Any-output official identity terminal to preserve port contracts,
 plus cancellation/protection/revocation/plan-Session replacement/fault/reopen and
 original final cleanup. Cases run once under the existing300s owned Job/330s
 observation bound; failures, partial reports, binary/module/source hashes and

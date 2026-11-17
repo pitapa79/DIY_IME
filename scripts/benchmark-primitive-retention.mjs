@@ -43,9 +43,10 @@ const kinds=thirdparty ? ['fixture.wasm.chain','fixture.wasm.chain-alt','demo.id
 const ids=Array.from({length:count},(_,i)=>`stage${i}`);
 // The passthrough advertises an `any` output root. It may be terminal,
 // but cannot feed a text-only input. Preserve the published contracts.
-const kindAt=i=>thirdparty ? kinds[i%3] : shape==='identity' ? kinds[0] : i===0 ? kinds[0]
+// demo.identity advertises Any output; keep it terminal before text-only fixtures.
+const kindAt=i=>thirdparty ? (count>=3 && i===count-1 ? kinds[2] : kinds[i%2]) : shape==='identity' ? kinds[0] : i===0 ? kinds[0]
   : i===count-1 && count>=4 ? kinds[3] : kinds[1+(i-1)%2];
-const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1,...(thirdparty&&i%3!==2?{config:{mode:'forward'}}:{})}))],
+const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1,...(thirdparty&&kindAt(i)!==kinds[2]?{config:{mode:'forward'}}:{})}))],
   edges:ids.map((id,i)=>({from:{node:i ? ids[i-1] : 'input',port:'out'},to:{node:id,port:'in'}}))};
 const target={node:ids.at(-1),port:'out'};
 const contract=JSON.parse(readFileSync(new URL('../tests/contracts/execution_control.json',import.meta.url),'utf8'));
