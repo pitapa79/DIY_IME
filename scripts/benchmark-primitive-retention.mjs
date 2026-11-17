@@ -94,6 +94,7 @@ let manager,host,revision=0,sequence=0;
 const records=[],traces=[],statuses=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
+  runtimeBuildSourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_BUILD_SOURCE_SHA ?? null,
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},

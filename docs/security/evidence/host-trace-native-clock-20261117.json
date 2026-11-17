@@ -1,0 +1,77 @@
+{
+  "issue": 117,
+  "goal": 109,
+  "parentHead": "00019b9fc2e3b45494581b5e19387d42f7975a49",
+  "selectedScope": "detailed trace on checked x86-64 cmpxchg16b; basic and unavailable-CPU paths retain legacy probe",
+  "tests": {
+    "runtimePassed": 82,
+    "docTestsPassed": 2,
+    "releaseClippyAllRuntimeTargetsPassed": true,
+    "fmtPassed": true
+  },
+  "countedPressure": {
+    "attempts": 16000,
+    "successes": 15997,
+    "explicitContentionFailures": 3,
+    "repeatedUntilGreen": false,
+    "notHostPerformance": true
+  },
+  "counterDomains": {
+    "timestampBits": 64,
+    "sequenceBits": 64,
+    "producerCasAttempts": 8,
+    "maxOutstanding": 20000,
+    "stopFenceAttempts": 20001
+  },
+  "safetyReview": [
+    "Runtime CPU check before construction;16byte alignment; atomic-only shared access; owner outlives borrowed raw pointer.",
+    "Stop invokes sealing once while owning recorder mutex and enabled recording; repeated public stop never toggles the fence twice.",
+    "No exclusive ownership spans the trusted clock read; source timestamp chosen from real observations within overlapping capture interval.",
+    "No consumer timestamp correction, fake sequence event, new public field, authority, default or larger diagnostic budget."
+  ],
+  "normalHostVerified": false,
+  "combinedSourceCiPassed": false,
+  "files": [
+    {
+      "path": "DIY_IME-trace-host/crates/runtime/src/execution_control/trace.rs",
+      "bytes": 81769,
+      "sha256": "28a122fc368069ed414fcbb22d38b57ef7fd57ce7f755ccf6f38dcf9ee86ca50"
+    },
+    {
+      "path": "DIY_IME-trace-host/crates/runtime/src/execution_control/trace/stamp_clock.rs",
+      "bytes": 10101,
+      "sha256": "0f594dc501b432c065d550da04106a53a273adb4559b6b87d07b4ce9cd66883d"
+    },
+    {
+      "path": "trace117-native-clock-all-runtime-v1.log",
+      "bytes": 10174,
+      "sha256": "4487ced65411ccb9b8bd4337ec1fb00b04b49fda7a81a4cc960ca15fb0a1518e"
+    },
+    {
+      "path": "trace117-native-clock-clippy-v1.log",
+      "bytes": 201,
+      "sha256": "99724348b773440570cdb276d3da880c1d26627dcc39601cb023d7b8b273440b"
+    },
+    {
+      "path": "trace117-native-clock-counted-pressure-v1.log",
+      "bytes": 326,
+      "sha256": "6fc7e517bfe1ba72f2c008fe202e5112e49eef6d4b7b49dfe04b0aaebfbb4c84"
+    },
+    {
+      "path": "trace117-native-clock-test-binary-v1-sha256.json",
+      "bytes": 263,
+      "sha256": "92db642074dea23f3cef4ba8d668c34e7eff6f0faae1898f77ccb0fb26d9795e"
+    },
+    {
+      "path": "ci43989833460-app-cleanup-job.log",
+      "bytes": 247962,
+      "sha256": "0148eacf21f80dc9e46d83e3c5384467e61e58742e632a7139c80f5b3d5914c1"
+    }
+  ],
+  "remaining": [
+    "New production executable build with separate build/harness provenance",
+    "Original cold-paced/mixed/safety conditions and actual unchanged Editor decoder",
+    "Exact-source Windows CI and final review",
+    "General qualifications/S1main/semantic profiling/full matrix/practical latest-input response"
+  ]
+}

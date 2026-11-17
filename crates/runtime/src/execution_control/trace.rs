@@ -1,4 +1,6 @@
 //! Opt-in, session-owned metadata diagnostics. Never execution authority.
+#[cfg(target_arch = "x86_64")]
+mod stamp_clock;
 use super::{ExecutionClock, RunKey, SessionEpoch};
 use crate::node::CoreError;
 use serde::Serialize;
@@ -161,13 +163,15 @@ struct WorkerBundle {
     instance: u32,
     intervals: Box<[QueuedWorkerInterval]>,
 }
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     sequence: u64,
     at_us: u64,
 }
 struct RecordSignals {
     origin: Duration,
+    #[cfg(target_arch = "x86_64")]
+    native_clock: Option<stamp_clock::NativeClock>,
     probe: AtomicBool,
     closed: AtomicBool,
     issued: AtomicU64,
@@ -203,6 +207,8 @@ impl RecordSignals {
         completed.extend((0..MAX_EVENTS).map(|_| AtomicU64::new(0)));
         Ok(Self {
             origin,
+            #[cfg(target_arch = "x86_64")]
+            native_clock: None,
             probe: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             issued: AtomicU64::new(0),
@@ -225,8 +231,52 @@ impl RecordSignals {
             self.first_run.fetch_min(run, Ordering::AcqRel);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    fn with_native_clock(mut self) -> Self {
+        self.native_clock = stamp_clock::NativeClock::new();
+        self
+    }
     fn capture(&self, clock: &ExecutionClock) -> Option<Stamp> {
         self.advance(16);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(native) = &self.native_clock {
+            if self.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            // No ownership/serialization flag is held across the clock read.
+            let observed = match clock
+                .now()
+                .ok()
+                .and_then(|now| u64::try_from(now.saturating_sub(self.origin).as_micros()).ok())
+            {
+                Some(at) => at,
+                None => {
+                    self.audit.clock_unavailable.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            };
+            return match native.reserve(observed, &self.visible) {
+                Ok(stamp) => {
+                    // A producer can be preempted here; never overwrite a newer
+                    // producer's issued count. Stop reads the sealed pair too.
+                    self.issued.fetch_max(stamp.sequence, Ordering::AcqRel);
+                    Some(stamp)
+                }
+                Err(stamp_clock::Failure::Full) => {
+                    self.audit.reservation_full.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                Err(stamp_clock::Failure::Contended) => {
+                    self.audit.probe_busy.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                Err(
+                    stamp_clock::Failure::Closed
+                    | stamp_clock::Failure::Exhausted
+                    | stamp_clock::Failure::SealContended,
+                ) => None,
+            };
+        }
         // Clock read and integer reservation only: no allocation, OS wait,
         // yield, recorder serialization or unbounded retry on a producer.
         let mut acquired = false;
@@ -294,9 +344,22 @@ impl RecordSignals {
                 .fetch_max(run, Ordering::AcqRel);
         }
     }
-    fn freeze(&self) {
+    fn close_reservations(&self) -> u64 {
         self.closed.store(true, Ordering::Release);
-        let end = self.issued.load(Ordering::Acquire);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(native) = &self.native_clock {
+            let end = native.seal().unwrap_or_else(|_| {
+                self.lost.fetch_add(1, Ordering::Relaxed);
+                self.audit.unfinished.fetch_add(1, Ordering::Relaxed);
+                native.last_sequence()
+            });
+            self.issued.fetch_max(end, Ordering::AcqRel);
+            return end;
+        }
+        self.issued.load(Ordering::Acquire)
+    }
+    fn freeze(&self) {
+        let end = self.close_reservations();
         let begin = self.visible.load(Ordering::Acquire);
         for sequence in begin.saturating_add(1)..=end {
             if self.completed[(sequence % MAX_EVENTS as u64) as usize].load(Ordering::Acquire)
@@ -646,7 +709,14 @@ impl TraceSession {
     fn start_mode(&self, detailed: bool) -> Result<(), CoreError> {
         let id = super::epoch::generate()?.as_str().to_owned();
         let origin = self.clock.now()?;
-        let signals = Arc::new(RecordSignals::new(origin)?);
+        let signals = RecordSignals::new(origin)?;
+        #[cfg(target_arch = "x86_64")]
+        let signals = if detailed {
+            signals.with_native_clock()
+        } else {
+            signals
+        };
+        let signals = Arc::new(signals);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let generation = self
             .generation
@@ -1740,9 +1810,9 @@ mod tests {
         assert_eq!(signals.completed.len(), MAX_EVENTS);
     }
     #[test]
-    fn busy_clock_probe_drops_metadata_without_waiting_or_reserving_a_gap() {
+    fn basic_fallback_busy_clock_probe_drops_metadata_without_waiting_or_reserving_a_gap() {
         let (_, s) = setup();
-        s.start_detailed().unwrap();
+        s.start().unwrap();
         let t = s.accept(&key(9001)).unwrap();
         let signals = t.signals.upgrade().unwrap();
         signals.probe.store(true, Ordering::Release);
@@ -1804,6 +1874,33 @@ mod tests {
         let next = s.read(0, 256).unwrap();
         assert_eq!(next.dropped, 0);
         assert_eq!(next.events.len(), 2);
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_detailed_clock_does_not_depend_on_the_legacy_probe_owner() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let ticket = s.accept(&key(9001)).unwrap();
+        let signals = ticket.signals.upgrade().unwrap();
+        if signals.native_clock.is_none() {
+            return;
+        }
+        signals.probe.store(true, Ordering::Release);
+        let (done, observed) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            ticket.emit(TraceKind::HostRequestStarted, None, None);
+            let _ = done.send(());
+        });
+        let result = observed.recv_timeout(Duration::from_secs(2));
+        signals.probe.store(false, Ordering::Release);
+        producer.join().unwrap();
+        result.expect("native detailed capture waited on the legacy probe");
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[1].event, TraceKind::HostRequestStarted);
+        assert_eq!(signals.audit.probe_busy.load(Ordering::Relaxed), 0);
     }
     fn native_intervals() -> Box<[QueuedWorkerInterval]> {
         vec![
