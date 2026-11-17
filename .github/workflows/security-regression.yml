@@ -176,6 +176,27 @@ jobs:
           $suite = '${{ matrix.segment }}'.Replace('primitive-', '')
           python scripts/run-primitive-retention-evaluation.py target/windows-app "target/primitive-$suite-evidence" $suite
           exit $LASTEXITCODE
+      - name: Checkout verified pre-delivery-change baseline
+        if: matrix.segment == 'primitive-timing'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: c2760ad15011c9c508f24ce17a15c7578d13b528
+          path: target/private-sample-baseline
+          persist-credentials: false
+      - name: Same-runner private sample delivery ABBA
+        if: matrix.segment == 'primitive-timing'
+        run: |
+          python scripts/compare-private-sample-delivery.py target/windows-app target/private-sample-baseline target/private-sample-delivery-evidence
+          exit $LASTEXITCODE
+      - name: Preserve private sample delivery comparisons including failures
+        if: always() && matrix.segment == 'primitive-timing'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: private-sample-delivery-${{ github.sha }}
+          path: target/private-sample-delivery-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
       - name: Preserve primitive evidence including failures
         if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
