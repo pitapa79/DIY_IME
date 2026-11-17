@@ -57,8 +57,8 @@ Both modified actual-Host scripts pass Node syntax checks; the collector passes
 Python syntax validation; Rust fmt also passed. These script checks do not prove the new native Host
 behavior or its performance.
 
-Native old/new and timing OFF/ON comparisons, complete final-source Rust and
-Windows CI remain pending. Preserve old runtime30ee1caf66b9db82ab9b100c1007d00a164d394c
+Historical native comparisons are preserved below. Complete final-source Rust
+and Windows CI remain pending. Preserve old runtime30ee1caf66b9db82ab9b100c1007d00a164d394c
 and the isolated comparison build0996064b932f768b70a822ea7acea5628a324f82
 separately. Only execution_host.rs differs under src between those builds;
 Manager/Worker/DLL/module are fixed. Both precede queue fix128, so they do not
@@ -76,21 +76,36 @@ max49990.656ms remain major response issues. The local volume was constrained;
 lossless compression of closed evidence overlapped the first cold trial, after
 all eight warm trials. Do not describe this as an otherwise idle environment.
 
-The timing CI segment additionally checks out the exact verified baseline
-c2760ad15011c9c508f24ce17a15c7578d13b528, including queue fix128. The comparison
-collector verifies that all tracked Rust/Cargo sources match the current source
-except execution_host.rs, verifies the current bundle's source and executable
-hashes, and compiles only the old Host using the same release profile and source/
-registry path remapping used for the distribution. It uses the current bundle's
-Manager, Worker, DLL, Node runtime and official module for both Hosts. OFF and ON
-each use old/new/new/old warm30, followed by four ON cold-paced5 trials. Each runs
-once in its actual owned300s Job with330s outer observation, unchanged existing
-correctness/trace/cleanup checks and identical diagnostic verification traffic.
-The baseline executable, build log, exact sources/flags/hashes, all raw results,
-failures and per-Job CPU/RAM/ending evidence are retained as CI artifacts. New
-ordinary replies must contain no callSamples; both explicit ON status routes
-must retain them. A failed case stops without retries. This additional comparison
-is pending; it does not replace any existing required CI segment or safety test.
+The timing CI segment now builds its matched control from the exact current
+Rust/Cargo sources with private-sample-replies-baseline. That Cargo feature
+restores only the previous private-sample retrieval on ordinary experimental
+owner replies. Distribution builds omit it; fixed/default replies, sample
+capture, authorization, limits and physical ownership are unchanged. Using the
+same current source avoids confusing later Rust improvements with the delivery
+change, and avoids permanently restricting future changes to one Rust file.
+The collector records source/feature/binary provenance, checks source hashes
+before and after compilation, and verifies the current bundle. Both builds use
+the same release profile/source and registry path remapping. Manager, Worker,
+DLL, Node runtime and module are identical current bundle files for both Hosts.
+
+OFF and ON each use old/new/new/old warm30, followed by four ON cold-paced5
+trials, once each in the original300s owned Job/330s outer observation bound.
+All correctness/trace/cleanup checks and diagnostic traffic remain identical.
+Control executable, build log, sources/flags/hashes, raw results and failures,
+and per-Job CPU/RAM/ending evidence remain CI artifacts. New ordinary replies
+must omit callSamples; both explicit ON status routes must retain them. A failed
+case stops without retry. This matched-control revision requires fresh native
+CI and replaces no existing segment or safety gate.
+
+Historical CI44082259984 compared baselinec2760ad15011c9c508f24ce17a15c7578d13b528
+with candidate8a4803cd464e09715b6406b4ba436f37f8d3fa48. All nine segments and the
+aggregate passed, including twelve once-only native comparisons. Whole20-node
+warm ON medians were old32.320/33.348ms versus new17.607/17.663ms; OFF was around
+17.5-17.6ms. New cold20ms latest medians16.523/17.146ms had maxima674.283/708.336ms,
+with five latest samples per cadence per trial. Full artifact14328903005 SHA256:
+977a699c50a917db9324db1da7e816edfb8edf3af8afb1d6f00f6aea04af0e76.
+These results do not verify later source or the matched-control revision.
+
 Do not infer semantic Node cost from guest SDK/API spans, subtract independent
 percentiles, or divide a 20-stage response into a per-node percentile. A smaller
 reply alone is not a performance pass, S1 qualification or Goal109 completion.

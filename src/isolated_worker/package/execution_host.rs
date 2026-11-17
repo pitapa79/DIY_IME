@@ -597,6 +597,9 @@ impl Runner {
         &self,
         include_private_samples: bool,
     ) -> Result<Value, CoreError> {
+        // Matched comparison build only; distribution builds omit this feature.
+        let include_private_samples =
+            include_private_samples || cfg!(feature = "private-sample-replies-baseline");
         let protected = self.controls.manual.load(Ordering::Acquire);
         let worker_processes = self
             .session

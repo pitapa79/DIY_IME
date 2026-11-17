@@ -1,4 +1,4 @@
-"""Actual Windows ABBA evidence against the verified pre-change Host source.
+"""Actual Windows ABBA evidence using a matched reply-behavior control build.
 
 Both builds include queue repair128. No source patching, authority/default change,
 synthetic Host, weakened gates, retries or independent percentile subtraction.
@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-BASELINE = 'c2760ad15011c9c508f24ce17a15c7578d13b528'
+BASELINE_FEATURE = 'private-sample-replies-baseline'
 
 
 def sha(path):
@@ -35,17 +35,13 @@ def read(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('bundle', type=Path)
-    parser.add_argument('baseline', type=Path)
     parser.add_argument('output', type=Path)
     args = parser.parse_args()
     assert sys.platform == 'win32', 'Actual Windows Worker/Job required'
     repo = Path(__file__).resolve().parent.parent
     bundle = args.bundle.resolve(strict=True)
-    baseline = args.baseline.resolve(strict=True)
     output = args.output.resolve()
     assert output.is_relative_to(repo/'target') and not output.exists()
-    assert git(baseline, 'rev-parse', 'HEAD') == BASELINE
-    assert not git(baseline, 'status', '--porcelain')
     current = git(repo, 'rev-parse', 'HEAD')
     pin = read(bundle/'bundle-manifest.json')
     assert pin['sourceCommit'] == current
@@ -54,20 +50,18 @@ def main():
         return {p: sha(folder/p) for p in git(folder, 'ls-files').splitlines()
                 if p.endswith('.rs') or Path(p).name in ('Cargo.toml', 'Cargo.lock')}
 
-    old_sources, new_sources = rust_sources(baseline), rust_sources(repo)
-    assert old_sources.keys() == new_sources.keys()
-    assert [p for p in old_sources if old_sources[p] != new_sources[p]] == [
-        'src/isolated_worker/package/execution_host.rs'], 'Baseline must isolate Host sample delivery'
+    sources = rust_sources(repo)
     used = ['bin/diy-ime2-external-host.exe', 'bin/diy-ime2-node-manager.exe',
             'bin/diy-ime2-wasm-worker.exe', 'runtime/wasmtime.dll',
             'runtime/node.exe', 'official/official.wasm']
     pinned_files = {entry['path']: entry['sha256'] for entry in pin['files']}
     assert all(sha(bundle/p) == pinned_files[p] for p in used)
     output.mkdir(parents=True, exist_ok=False)
-    manifest = {'issue': 127, 'parentGoal': 109, 'source': current, 'baselineSource': BASELINE,
-                'baselineRustSourcesSha256': old_sources, 'currentRustSourcesSha256': new_sources,
+    manifest = {'issue': 127, 'parentGoal': 109, 'source': current, 'baselineSource': current,
+                'buildFeatures': {'old': [BASELINE_FEATURE], 'new': []}, 'sourceRustSha256': sources,
+                'comparisonDefinition': 'old=matched current source with previous ordinary reply sample behavior; new=default current distribution build',
                 'bundleFilesSha256': {p: pinned_files[p] for p in used},
-                'componentSources': {'oldHost': BASELINE, 'newHost': current,
+                'componentSources': {'oldHost': current, 'newHost': current,
                                      'manager': current, 'worker': current},
                 'harnessFilesSha256': {p: sha(repo/p) for p in [
                     'scripts/compare-private-sample-delivery.py', 'scripts/benchmark-primitive-retention.mjs',
@@ -85,29 +79,31 @@ def main():
     try:
         env = os.environ.copy()
         cargo_home = Path(env.get('CARGO_HOME') or str(Path.home()/'.cargo'))
-        flags = ['--remap-path-prefix='+str(baseline)+'=source',
+        flags = ['--remap-path-prefix='+str(repo)+'=source',
                  '--remap-path-prefix='+str(cargo_home/'registry')+'=registry']
         env.pop('RUSTFLAGS', None)
         env['CARGO_ENCODED_RUSTFLAGS'] = chr(31).join(flags)
         target = repo/'target/private-sample-baseline-build'
         env['CARGO_TARGET_DIR'] = str(target)
         env['CARGO_INCREMENTAL'] = '0'
-        command = ['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'diy-ime2-external-host']
+        command = ['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'diy-ime2-external-host',
+                   '--features', BASELINE_FEATURE]
         manifest['baselineBuild'] = {'command': command, 'rustflags': flags,
                                     'rustc': subprocess.check_output(['rustc', '-Vv'], text=True)}
         save()
         build_started = time.monotonic()
         with (output/'baseline-build.log').open('x', encoding='utf-8') as log:
-            result = subprocess.run(command, cwd=baseline, env=env, stdout=log, stderr=log)
+            result = subprocess.run(command, cwd=repo, env=env, stdout=log, stderr=log)
         manifest['baselineBuild']['exitCode'] = result.returncode
         manifest['baselineBuild']['seconds'] = time.monotonic()-build_started
         save()
         assert result.returncode == 0, 'Baseline compilation failed; no native comparison ran'
-        assert rust_sources(baseline) == old_sources and rust_sources(repo) == new_sources
+        assert rust_sources(repo) == sources
         old_host = output/'baseline-host.exe'
         shutil.copyfile(target/'release/diy-ime2-external-host.exe', old_host)
         assert sha(old_host) == sha(target/'release/diy-ime2-external-host.exe')
         manifest['baselineHostSha256'] = sha(old_host)
+        assert manifest['baselineHostSha256'] != pinned_files[used[0]], 'Control must be a distinct executable'
         hosts = {'old': old_host, 'new': bundle/'bin/diy-ime2-external-host.exe'}
         native_env = {k: v for k, v in os.environ.items() if not k.startswith('DIY_EXPERIMENT_')}
         native_env.update({'DIY_PRIMITIVE_SAMPLE_DELIVERY_OBSERVE': '1', 'DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK': '0',
@@ -130,7 +126,7 @@ def main():
             name = f'{index:02}-{version}-timing{int(timing)}-{cadence}'
             report, job = output/(name+'.json'), output/(name+'.job.json')
             native_env['DIY_EXPERIMENT_RETAINED_TIMING'] = str(int(timing))
-            native_env['DIY_MEASUREMENT_BUILD_SOURCE_SHA'] = BASELINE if version == 'old' else current
+            native_env['DIY_MEASUREMENT_BUILD_SOURCE_SHA'] = current
             native_env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(report)
             command = list(map(str, [sys.executable, 'scripts/measure-primitive-retention-job.py', '--command', job,
                 bundle/'runtime/node.exe', 'scripts/benchmark-primitive-retention.mjs', hosts[version],
@@ -150,7 +146,7 @@ def main():
             data, owned = read(report), read(job)
             assert data['completed'] and data['sourceCommit'] == current and data['sampleDeliveryObserve']
             assert data['binaries']['host'] == sha(hosts[version])
-            assert data['runtimeBuildSourceCommit'] == (BASELINE if version == 'old' else current)
+            assert data['runtimeBuildSourceCommit'] == current
             assert data['workspaceAfterHostExit'] == [] and owned['allDescendantsExited']
             assert not owned['timedOut'] and owned['missingProcessMemoryReads'] == 0 and owned['driverExitCode'] == 0
             assert data['traceCollections'] and all(t['dropped'] == 0 for t in data['traceCollections'])
