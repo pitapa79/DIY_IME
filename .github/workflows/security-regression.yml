@@ -107,6 +107,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test_hold_owned_primitive_worker.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/private-app-cleanup.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test scripts/owned-launcher-job.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-windows-distribution.mjs (Join-Path $env:GITHUB_WORKSPACE 'target/windows-app')

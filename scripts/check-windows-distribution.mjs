@@ -1,7 +1,8 @@
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {OwnedLauncherJob} from './owned-launcher-job.mjs';
-import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
+import {removePrivateAppFixture} from './private-app-cleanup.mjs';
+import {readFileSync,mkdtempSync} from 'node:fs';
 import {resolve,join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -112,4 +113,4 @@ try{
  await ownedCrash.close();ownedCrash=undefined;
  console.log(JSON.stringify({kind:'launcher-crash-job-proof',observedMembers:observed.members.length,originalHandleSignalled:true,emptyBeforeJobClose:true,pidAncestryUsed:false}));
  console.log(JSON.stringify({kind:'built-windows-application',files:manifest.files.length,firstBootMs,restartMs,runMs,officialPackages:48,definitions:52,explicitConsent:true,partialConsentRefused:true,savedReopen:true,unicodeTieUnknownEmpty:true,noPathToolchain:true,trueClose:true,launcherCrashChildrenEnded:true}));
-}finally{clearInterval(beat);if(ownedCrash)await ownedCrash.close();if(child){try{await stop();}catch{child.kill();await closed;}}if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-app-smoke-')))throw Error('unsafe cleanup');rmSync(root,{recursive:true});}
+}finally{clearInterval(beat);if(ownedCrash)await ownedCrash.close();if(child){try{await stop();}catch{child.kill();await closed;}}if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-app-smoke-')))throw Error('unsafe cleanup');removePrivateAppFixture(root);}

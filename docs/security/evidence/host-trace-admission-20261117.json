@@ -1,0 +1,86 @@
+{
+  "issue": 117,
+  "goal": 109,
+  "parentHead": "7dbe06aeb17acfa452a4f8eaeb8df9aaae798def",
+  "scope": "bounded contended admission only; clock-probe loss unresolved",
+  "sourceSha256": "be2d93b670097c58b309f5ede3f19c09371b31fef0e77d5547696c899c5f0c06",
+  "runtimeTests": {
+    "passed": 75,
+    "doctestsPassed": 2,
+    "clippyAllRuntimeTargetsPassed": true,
+    "fmtPassed": true
+  },
+  "beforeFix": {
+    "passed": 0,
+    "failed": 1,
+    "reason": "contended detailed run acceptance lost its diagnostic ticket"
+  },
+  "clockPrototypeOnly": {
+    "outsideProduct": true,
+    "testsPassed": 6,
+    "concurrentAttempts": 16000,
+    "successes": 16000,
+    "explicitContentionFailures": 0,
+    "notNormalHostProof": true
+  },
+  "relatedMainFix": {
+    "issue": 123,
+    "pr": 124,
+    "merge": "1cd762e540faaaf5b69e43cd6d411ce7ac8a05af",
+    "ci": 43989833460,
+    "passed": true,
+    "tree": "97fa1a3c4893228082b4e4a119e141ba7805b70f"
+  },
+  "files": [
+    {
+      "path": "DIY_IME-trace-host/crates/runtime/src/execution_control/trace.rs",
+      "bytes": 77853,
+      "sha256": "be2d93b670097c58b309f5ede3f19c09371b31fef0e77d5547696c899c5f0c06"
+    },
+    {
+      "path": "trace117-run-acceptance-regression-before-v1.log",
+      "bytes": 1450,
+      "sha256": "b7649abf7fdb0d44fb6f7e07dd62a7995119efe3e19240a75995c8a3a523dd91"
+    },
+    {
+      "path": "trace117-queued-admission-all-runtime-v2.log",
+      "bytes": 9206,
+      "sha256": "a9b72dc6272979d45142f0e57f72036882aea1bbeb352ce2b836d8c23c963fae"
+    },
+    {
+      "path": "trace117-queued-admission-all-runtime-v3.log",
+      "bytes": 9309,
+      "sha256": "cf7da3837da1b85164a7afcefcd509acc67f9c6907da00487755a640c377ebdb"
+    },
+    {
+      "path": "trace117-queued-admission-clippy-v3.log",
+      "bytes": 380,
+      "sha256": "f9770f0d37ac45ed4459cd92ab65368172cf1c59889db7e3ff8f8676ac400a72"
+    },
+    {
+      "path": "trace-clock-reservation-prototype.rs",
+      "bytes": 6668,
+      "sha256": "f1a8531253a7f812df0089623249489690ebb286f242a25145fd03a73603c7a2"
+    },
+    {
+      "path": "trace-clock-reservation-prototype-v1-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "trace-clock-reservation-prototype-v1.log",
+      "bytes": 656,
+      "sha256": "8ca2f44d265d8fe31cce31e96641bdc2848b41acbd5c99fb3c4a4910a717a204"
+    },
+    {
+      "path": "ci43989833460-app-cleanup-job.log",
+      "bytes": 247962,
+      "sha256": "0148eacf21f80dc9e46d83e3c5384467e61e58742e632a7139c80f5b3d5914c1"
+    }
+  ],
+  "remaining": [
+    "Atomic clock strategy must be integrated and verified before claiming complete trace repair",
+    "Actual normal Host and exact combined-source CI remain required",
+    "General qualification/S1main/semantic profiling/full matrix/practical response remain unfinished"
+  ]
+}

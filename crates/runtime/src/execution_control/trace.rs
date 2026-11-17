@@ -1,4 +1,6 @@
 //! Opt-in, session-owned metadata diagnostics. Never execution authority.
+#[cfg(target_arch = "x86_64")]
+mod stamp_clock;
 use super::{ExecutionClock, RunKey, SessionEpoch};
 use crate::node::CoreError;
 use serde::Serialize;
@@ -161,13 +163,15 @@ struct WorkerBundle {
     instance: u32,
     intervals: Box<[QueuedWorkerInterval]>,
 }
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     sequence: u64,
     at_us: u64,
 }
 struct RecordSignals {
     origin: Duration,
+    #[cfg(target_arch = "x86_64")]
+    native_clock: Option<stamp_clock::NativeClock>,
     probe: AtomicBool,
     closed: AtomicBool,
     issued: AtomicU64,
@@ -203,6 +207,8 @@ impl RecordSignals {
         completed.extend((0..MAX_EVENTS).map(|_| AtomicU64::new(0)));
         Ok(Self {
             origin,
+            #[cfg(target_arch = "x86_64")]
+            native_clock: None,
             probe: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             issued: AtomicU64::new(0),
@@ -214,8 +220,63 @@ impl RecordSignals {
             audit: LossAudit::default(),
         })
     }
+    fn note_first_run(&self, run: u64) {
+        // Zero alone is invalid as a RunKey. Preserve every positive64-bit ID
+        // and handle reordered producers in at most two atomic operations.
+        if self
+            .first_run
+            .compare_exchange(0, run, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.first_run.fetch_min(run, Ordering::AcqRel);
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    fn with_native_clock(mut self) -> Self {
+        self.native_clock = stamp_clock::NativeClock::new();
+        self
+    }
     fn capture(&self, clock: &ExecutionClock) -> Option<Stamp> {
         self.advance(16);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(native) = &self.native_clock {
+            if self.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            // No ownership/serialization flag is held across the clock read.
+            let observed = match clock
+                .now()
+                .ok()
+                .and_then(|now| u64::try_from(now.saturating_sub(self.origin).as_micros()).ok())
+            {
+                Some(at) => at,
+                None => {
+                    self.audit.clock_unavailable.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            };
+            return match native.reserve(observed, &self.visible) {
+                Ok(stamp) => {
+                    // A producer can be preempted here; never overwrite a newer
+                    // producer's issued count. Stop reads the sealed pair too.
+                    self.issued.fetch_max(stamp.sequence, Ordering::AcqRel);
+                    Some(stamp)
+                }
+                Err(stamp_clock::Failure::Full) => {
+                    self.audit.reservation_full.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                Err(stamp_clock::Failure::Contended) => {
+                    self.audit.probe_busy.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                Err(
+                    stamp_clock::Failure::Closed
+                    | stamp_clock::Failure::Exhausted
+                    | stamp_clock::Failure::SealContended,
+                ) => None,
+            };
+        }
         // Clock read and integer reservation only: no allocation, OS wait,
         // yield, recorder serialization or unbounded retry on a producer.
         let mut acquired = false;
@@ -283,9 +344,22 @@ impl RecordSignals {
                 .fetch_max(run, Ordering::AcqRel);
         }
     }
-    fn freeze(&self) {
+    fn close_reservations(&self) -> u64 {
         self.closed.store(true, Ordering::Release);
-        let end = self.issued.load(Ordering::Acquire);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(native) = &self.native_clock {
+            let end = native.seal().unwrap_or_else(|_| {
+                self.lost.fetch_add(1, Ordering::Relaxed);
+                self.audit.unfinished.fetch_add(1, Ordering::Relaxed);
+                native.last_sequence()
+            });
+            self.issued.fetch_max(end, Ordering::AcqRel);
+            return end;
+        }
+        self.issued.load(Ordering::Acquire)
+    }
+    fn freeze(&self) {
+        let end = self.close_reservations();
         let begin = self.visible.load(Ordering::Acquire);
         for sequence in begin.saturating_add(1)..=end {
             if self.completed[(sequence % MAX_EVENTS as u64) as usize].load(Ordering::Acquire)
@@ -317,9 +391,17 @@ struct HostBundle {
     node: Option<(usize, Box<str>, u32)>,
     job: Option<u64>,
 }
+struct AcceptedBundle {
+    generation: u64,
+    run: u64,
+    input_revision: Option<u64>,
+    plan_version: u64,
+    stamp: Stamp,
+}
 enum ReceivedMetadata {
     Worker(WorkerBundle),
     Host(HostBundle),
+    Accepted(AcceptedBundle),
 }
 struct WorkerSink {
     sender: SyncSender<ReceivedMetadata>,
@@ -368,6 +450,68 @@ struct Recording {
     worker_inbox: Option<WorkerInbox>,
 }
 impl Recording {
+    fn accept_alias(&mut self, run: u64, input_revision: Option<u64>, version: u64) -> Option<()> {
+        if self.runs.len() >= MAX_RUNS {
+            if let Some(old) = self
+                .runs
+                .iter()
+                .filter(|(_, a)| a.ended)
+                .min_by_key(|(_, a)| a.run)
+                .map(|(k, _)| *k)
+            {
+                let old = self.runs.remove(&old).expect("selected diagnostic run");
+                self.calls -= old.calls.len();
+                self.events.retain(|_, entry| {
+                    let (e, n) = entry.as_ref();
+                    if e.run == old.run {
+                        self.bytes -= *n;
+                        self.dropped = self.dropped.saturating_add(1);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            } else {
+                self.dropped = self.dropped.saturating_add(1);
+                return None;
+            }
+        }
+        self.next_run = self.next_run.checked_add(1)?;
+        self.signals.note_first_run(run);
+        let input = if let Some(revision) = input_revision {
+            let found = self
+                .runs
+                .values()
+                .find_map(|a| a.input.filter(|(v, _)| *v == revision));
+            Some(match found {
+                Some(pair) => pair,
+                None => {
+                    self.next_input = self.next_input.checked_add(1)?;
+                    (revision, self.next_input)
+                }
+            })
+        } else {
+            None
+        };
+        let plan = if let Some(a) = self.runs.values().find(|a| a.plan.0 == version) {
+            a.plan
+        } else {
+            self.next_plan = self.next_plan.checked_add(1)?;
+            (version, self.next_plan)
+        };
+        self.runs.insert(
+            run,
+            RunAlias {
+                run: self.next_run,
+                input,
+                plan,
+                calls: BTreeMap::new(),
+                ended: false,
+                published: false,
+            },
+        );
+        Some(())
+    }
     fn byte_limit(&self) -> usize {
         MAX_BYTES
             - 4096
@@ -386,6 +530,41 @@ impl Recording {
                 break;
             };
             let bundle = match received {
+                ReceivedMetadata::Accepted(bundle) => {
+                    if !self.enabled || bundle.generation != self.generation {
+                        self.dropped = self.dropped.saturating_add(1);
+                        self.signals.complete(bundle.stamp.sequence);
+                        continue;
+                    }
+                    let Ok(now) = clock.now() else {
+                        self.dropped = self.dropped.saturating_add(1);
+                        self.signals.complete(bundle.stamp.sequence);
+                        continue;
+                    };
+                    if self
+                        .accept_alias(bundle.run, bundle.input_revision, bundle.plan_version)
+                        .is_none()
+                    {
+                        self.signals.complete(bundle.stamp.sequence);
+                        continue;
+                    }
+                    // append_event_at owns the only successful completion;
+                    // never complete an old reservation twice after tag reuse.
+                    append_event_at(
+                        self,
+                        (
+                            u64::try_from(now.saturating_sub(self.origin).as_micros())
+                                .unwrap_or(u64::MAX),
+                            bundle.stamp,
+                        ),
+                        bundle.run,
+                        TraceKind::RunAccepted,
+                        None,
+                        None,
+                        None,
+                    );
+                    continue;
+                }
                 ReceivedMetadata::Worker(bundle) => bundle,
                 ReceivedMetadata::Host(bundle) => {
                     if !self.enabled || bundle.generation != self.generation {
@@ -530,7 +709,14 @@ impl TraceSession {
     fn start_mode(&self, detailed: bool) -> Result<(), CoreError> {
         let id = super::epoch::generate()?.as_str().to_owned();
         let origin = self.clock.now()?;
-        let signals = Arc::new(RecordSignals::new(origin)?);
+        let signals = RecordSignals::new(origin)?;
+        #[cfg(target_arch = "x86_64")]
+        let signals = if detailed {
+            signals.with_native_clock()
+        } else {
+            signals
+        };
+        let signals = Arc::new(signals);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let generation = self
             .generation
@@ -662,6 +848,37 @@ impl TraceSession {
             Ok(s) => s,
             Err(_) => {
                 signals.audit.recorder_busy.fetch_add(1, Ordering::Relaxed);
+                if self.detailed.load(Ordering::Acquire) {
+                    let sink = ticket.worker_sink.as_ref().and_then(Weak::upgrade)?;
+                    let Some(stamp) = signals.capture(&self.clock) else {
+                        signals.lose(TraceKind::RunAccepted, key.run_id.get());
+                        return None;
+                    };
+                    let bundle = AcceptedBundle {
+                        generation: ticket.generation,
+                        run: key.run_id.get(),
+                        input_revision: key.input_revision,
+                        plan_version: key.plan_version.get(),
+                        stamp,
+                    };
+                    if sink
+                        .sender
+                        .try_send(ReceivedMetadata::Accepted(bundle))
+                        .is_err()
+                    {
+                        signals
+                            .audit
+                            .host_queue_full
+                            .fetch_add(1, Ordering::Relaxed);
+                        signals.lose(TraceKind::RunAccepted, key.run_id.get());
+                        signals.complete(stamp.sequence);
+                        return None;
+                    }
+                    // Allow physical-ending/publication to route before the
+                    // consumer has allocated the pending run's private alias.
+                    signals.note_first_run(key.run_id.get());
+                    return Some(ticket);
+                }
                 signals.lost.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
@@ -669,68 +886,9 @@ impl TraceSession {
         let r = state
             .as_mut()
             .filter(|r| r.enabled && r.generation == ticket.generation)?;
-        if r.runs.len() >= MAX_RUNS {
-            if let Some(old) = r
-                .runs
-                .iter()
-                .filter(|(_, a)| a.ended)
-                .min_by_key(|(_, a)| a.run)
-                .map(|(k, _)| *k)
-            {
-                let old = r.runs.remove(&old).expect("selected diagnostic run");
-                r.calls -= old.calls.len();
-                r.events.retain(|_, entry| {
-                    let (e, n) = entry.as_ref();
-                    if e.run == old.run {
-                        r.bytes -= *n;
-                        r.dropped = r.dropped.saturating_add(1);
-                        false
-                    } else {
-                        true
-                    }
-                });
-            } else {
-                r.dropped = r.dropped.saturating_add(1);
-                return None;
-            }
-        }
-        r.next_run = r.next_run.checked_add(1)?;
-        if r.next_run == 1 {
-            signals.first_run.store(key.run_id.get(), Ordering::Release);
-        }
-        let input = if let Some(revision) = key.input_revision {
-            let found = r
-                .runs
-                .values()
-                .find_map(|a| a.input.filter(|(v, _)| *v == revision));
-            Some(match found {
-                Some(pair) => pair,
-                None => {
-                    r.next_input = r.next_input.checked_add(1)?;
-                    (revision, r.next_input)
-                }
-            })
-        } else {
-            None
-        };
-        let version = key.plan_version.get();
-        let plan = if let Some(a) = r.runs.values().find(|a| a.plan.0 == version) {
-            a.plan
-        } else {
-            r.next_plan = r.next_plan.checked_add(1)?;
-            (version, r.next_plan)
-        };
-        r.runs.insert(
-            key.run_id.get(),
-            RunAlias {
-                run: r.next_run,
-                input,
-                plan,
-                calls: BTreeMap::new(),
-                ended: false,
-                published: false,
-            },
-        );
+        // Adopt earlier queued acceptance before allocating later aliases.
+        r.drain_workers(&self.clock);
+        r.accept_alias(key.run_id.get(), key.input_revision, key.plan_version.get())?;
         drop(state);
         ticket.emit(TraceKind::RunAccepted, None, None);
         Some(ticket)
@@ -1295,6 +1453,44 @@ mod tests {
         );
     }
     #[test]
+    fn contended_detailed_run_acceptance_keeps_aliases_without_waiting() {
+        let (clock, s) = setup();
+        s.start_detailed().unwrap();
+        s.accept(&key(9001)).unwrap();
+        let guard = s.state.lock().unwrap();
+        clock.advance_to(Duration::from_millis(10)).unwrap();
+        let session = s.clone();
+        let (done, observed) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let _ = done.send(session.accept(&key(9002)));
+        });
+        let result = observed.recv_timeout(Duration::from_secs(2));
+        drop(guard);
+        producer.join().unwrap();
+        let ticket = result
+            .expect("run acceptance blocked on the recorder")
+            .expect("contended detailed run acceptance lost its diagnostic ticket");
+        clock.advance_to(Duration::from_millis(20)).unwrap();
+        ticket.emit(
+            TraceKind::NodeStarted,
+            Some((0, "fixture.node", 1)),
+            Some(77),
+        );
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 3);
+        assert_eq!(page.events[1].event, TraceKind::RunAccepted);
+        assert_eq!(page.events[1].at_us, "10000");
+        assert_eq!(page.events[1].run, 2);
+        assert_eq!(page.events[2].event, TraceKind::NodeStarted);
+        assert_eq!(page.events[2].at_us, "20000");
+        assert_eq!(page.events[2].run, 2);
+        assert_eq!(page.events[2].plan, page.events[0].plan);
+        assert_eq!(page.events[2].input, page.events[0].input);
+        assert_eq!(page.events[2].call, Some(1));
+    }
+    #[test]
     fn contended_detailed_core_notification_is_queued_with_its_call_identity() {
         let (clock, s) = setup();
         s.start_detailed().unwrap();
@@ -1325,6 +1521,106 @@ mod tests {
         assert_eq!(event.node.as_deref(), Some("1:1"));
         assert_eq!(event.call, Some(1));
         assert_eq!(signals.audit.recorder_busy.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn queued_first_admission_routes_ending_and_precedes_uncontended_aliases() {
+        let (clock, s) = setup();
+        s.start_detailed().unwrap();
+        let guard = s.state.lock().unwrap();
+        clock.advance_to(Duration::from_millis(10)).unwrap();
+        s.accept(&key(9001)).unwrap();
+        clock.advance_to(Duration::from_millis(11)).unwrap();
+        s.physical_ended(&key(9001));
+        drop(guard);
+        clock.advance_to(Duration::from_millis(20)).unwrap();
+        s.accept(&key(9002)).unwrap();
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 3);
+        assert_eq!(page.events[0].event, TraceKind::RunAccepted);
+        assert_eq!(page.events[0].run, 1);
+        assert_eq!(page.events[0].at_us, "10000");
+        assert_eq!(page.events[1].event, TraceKind::PhysicalEnded);
+        assert_eq!(page.events[1].run, 1);
+        assert_eq!(page.events[1].at_us, "11000");
+        assert_eq!(page.events[2].event, TraceKind::RunAccepted);
+        assert_eq!(page.events[2].run, 2);
+        assert_eq!(page.events[2].at_us, "20000");
+        assert_eq!(page.events[0].input, page.events[2].input);
+        assert_eq!(page.events[0].plan, page.events[2].plan);
+    }
+    #[test]
+    fn queued_admission_overflow_is_explicit_and_completes_its_reservation() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let guard = s.state.lock().unwrap();
+        let first = s.accept(&key(9001)).unwrap();
+        let signals = first.signals.upgrade().unwrap();
+        for n in 1..WORKER_QUEUE_SLOTS {
+            assert!(s.accept(&key(9001 + n as u64)).is_some());
+        }
+        assert!(s.accept(&key(9001 + WORKER_QUEUE_SLOTS as u64)).is_none());
+        drop(guard);
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.events.len(), WORKER_QUEUE_SLOTS);
+        assert_eq!(page.dropped, 1);
+        assert_eq!(signals.audit.host_queue_full.load(Ordering::Relaxed), 1);
+        assert_eq!(signals.audit.unfinished.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            signals.visible.load(Ordering::Acquire),
+            WORKER_QUEUE_SLOTS as u64 + 1
+        );
+    }
+    #[test]
+    fn clear_discards_pending_admission_without_contaminating_new_recording() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let guard = s.state.lock().unwrap();
+        let old = s.accept(&key(9001)).unwrap();
+        drop(guard);
+        s.clear();
+        s.start_detailed().unwrap();
+        s.accept(&key(9002)).unwrap();
+        old.emit(TraceKind::NodeStarted, Some((0, "old.node", 1)), Some(77));
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].event, TraceKind::RunAccepted);
+        assert_eq!(page.events[0].run, 1);
+    }
+    #[test]
+    fn reordered_acceptance_does_not_hide_earlier_admitted_run_ending() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        s.accept(&key(9002)).unwrap();
+        s.accept(&key(9001)).unwrap();
+        s.physical_ended(&key(9001));
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 3);
+        assert_eq!(page.events[2].event, TraceKind::PhysicalEnded);
+        assert_eq!(page.events[2].run, 2);
+    }
+    #[test]
+    fn highest_run_id_remains_recordable_after_queued_acceptance() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let guard = s.state.lock().unwrap();
+        let last = key(u64::MAX);
+        s.accept(&last).unwrap();
+        s.physical_ended(&last);
+        drop(guard);
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[0].event, TraceKind::RunAccepted);
+        assert_eq!(page.events[1].event, TraceKind::PhysicalEnded);
+        assert_eq!(page.events[1].run, 1);
     }
     fn send_host_stamp(s: &TraceSession, run: u64, stamp: Stamp, event: TraceKind) {
         let routes = s.host_route.read().unwrap();
@@ -1514,9 +1810,9 @@ mod tests {
         assert_eq!(signals.completed.len(), MAX_EVENTS);
     }
     #[test]
-    fn busy_clock_probe_drops_metadata_without_waiting_or_reserving_a_gap() {
+    fn basic_fallback_busy_clock_probe_drops_metadata_without_waiting_or_reserving_a_gap() {
         let (_, s) = setup();
-        s.start_detailed().unwrap();
+        s.start().unwrap();
         let t = s.accept(&key(9001)).unwrap();
         let signals = t.signals.upgrade().unwrap();
         signals.probe.store(true, Ordering::Release);
@@ -1578,6 +1874,33 @@ mod tests {
         let next = s.read(0, 256).unwrap();
         assert_eq!(next.dropped, 0);
         assert_eq!(next.events.len(), 2);
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_detailed_clock_does_not_depend_on_the_legacy_probe_owner() {
+        let (_, s) = setup();
+        s.start_detailed().unwrap();
+        let ticket = s.accept(&key(9001)).unwrap();
+        let signals = ticket.signals.upgrade().unwrap();
+        if signals.native_clock.is_none() {
+            return;
+        }
+        signals.probe.store(true, Ordering::Release);
+        let (done, observed) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            ticket.emit(TraceKind::HostRequestStarted, None, None);
+            let _ = done.send(());
+        });
+        let result = observed.recv_timeout(Duration::from_secs(2));
+        signals.probe.store(false, Ordering::Release);
+        producer.join().unwrap();
+        result.expect("native detailed capture waited on the legacy probe");
+        s.stop();
+        let page = s.read(0, 256).unwrap();
+        assert_eq!(page.dropped, 0);
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[1].event, TraceKind::HostRequestStarted);
+        assert_eq!(signals.audit.probe_busy.load(Ordering::Relaxed), 0);
     }
     fn native_intervals() -> Box<[QueuedWorkerInterval]> {
         vec![

@@ -18,13 +18,39 @@ not depend on diagnostic success.
 
 The existing Editor decoder requires strictly increasing sequence cursors and
 nondecreasing Host timestamps. Appending a delayed timestamp behind newer data
-would violate that contract. A small nonblocking clock probe reserves timestamp
-and sequence together, with at most eight immediate CAS attempts and no OS
-wait/yield. It performs no allocation or recorder serialization while held.
+would violate that contract. Detailed x86-64 recordings now reserve timestamp
+and sequence in one checked native128-bit CAS, with at most eight immediate
+attempts and no OS wait/yield. Clock reads occur outside exclusive ownership,
+so a paused clock reader does not stall other producers. The timestamp selects
+the latest real trusted observation within the overlapping capture interval;
+it never invents a future tick or adjusts timestamps at the consumer. Basic
+recordings and CPUs without the checked feature retain the existing bounded
+probe. The implementation allocates no memory during reservation.
 Later events become visible only through the contiguous resolved reservation
 prefix. Missing queue deliveries resolve their reservation with an explicit
 loss. Stop freezes unfinished reservations as missing rather than waiting.
-Full reservation capacity or probe contention also reports loss.
+Full reservation capacity or exhausted CAS attempts still report loss.
+
+The native cell is16-byte aligned and runtime feature detection precedes every
+possible construction. Shared accesses use only the documented atomic intrinsic;
+no raw pointer escapes its live owner. Both timestamp and sequence keep their
+full64-bit domains. Stop runs once under the recorder mutex: it closes admission,
+changes the expected native word as a fence without issuing a fake event, then
+freezes every outstanding reservation as before. The fence word is never used
+as a timestamp after close. Stop permits at most20,001 fence attempts; the
+outstanding-reservation capacity remains20K.
+Reference: [Rust cmpxchg16b safety and ordering](https://doc.rust-lang.org/stable/core/arch/x86_64/fn.cmpxchg16b.html).
+
+The exact integrated implementation passed82runtime tests,2doc-tests, fmt and
+release all-runtime-target Clippy locally. This includes the actual native cell,
+full counter domains, paused/stale producers, finite capacity, stop fencing,
+legacy fallback and recording isolation. It is not normal Host/Windows CI proof;
+those remain required before accepting the complete repair.
+One counted integrated pressure test recorded16,000attempts,15,997successes and
+3explicit CAS-budget failures; it was not repeated until zero. The earlier
+standalone prototype's16K/zero result is a different trial. This does not prove
+normal Host zero-loss or response targets. The original strict gates remain.
+Private reports distinguish build-source and harness-source commits.
 
 Sequence storage and completion tags are finite (20,000). Additional tree/Box
 and completion-tag storage is conservatively deducted from the original 8MiB
