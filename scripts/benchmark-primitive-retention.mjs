@@ -14,6 +14,9 @@ import {decodeTracePage} from '../editor/src/executionTrace.ts';
 import {HeldPrimitiveWorker} from './hold-owned-primitive-worker.mjs';
 import {PrivateReplyEvidence} from './private-sample-delivery.mjs';
 import {wasmCodeSha256} from './wasm-host-overhead.mjs';
+import {retainedComposition,fixtureDefinition,fixtureKinds} from './retained-composition-graphs.mjs';
+import {analyzeRetainedGraphCalls,verifyGraphCallCoverage} from './analyze-retained-graph-calls.mjs';
+import {observeWarmInput,warmInputDenominators} from './host-warm-input-observation.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed|thirdparty warm|paced');
@@ -34,24 +37,32 @@ assert(reportPath, 'explicit report path required');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primitive-retention-'));
 const thirdparty=shape==='thirdparty';
+const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
+const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
+assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
+assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
+const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
 if(thirdparty) {
   assert.notEqual(wasmCodeSha256(reviewedModules[0]),wasmCodeSha256(reviewedModules[1]),'reviewed fixtures must differ in executable code');
   assert(['0','separate'].includes(mode),'S1 qualification does not grant grouped S2 approval');
 }
-const kinds=thirdparty ? ['fixture.wasm.chain','fixture.wasm.chain-alt','demo.identity'] : shape==='identity' ? ['demo.identity'] : ['text.romaji-to-hiragana','experimental.text-trim','experimental.text-case','experimental.packet-passthrough'];
+const kinds=thirdparty ? fixtureKinds : shape==='identity' ? ['demo.identity'] : ['text.romaji-to-hiragana','experimental.text-trim','experimental.text-case','experimental.packet-passthrough'];
 const ids=Array.from({length:count},(_,i)=>`stage${i}`);
 // The passthrough advertises an `any` output root. It may be terminal,
 // but cannot feed a text-only input. Preserve the published contracts.
 // demo.identity advertises Any output; keep it terminal before text-only fixtures.
-const kindAt=i=>thirdparty ? (count>=3 && i===count-1 ? kinds[2] : kinds[i%2]) : shape==='identity' ? kinds[0] : i===0 ? kinds[0]
+const kindAt=i=>thirdparty ? composition.kinds[i] : shape==='identity' ? kinds[0] : i===0 ? kinds[0]
   : i===count-1 && count>=4 ? kinds[3] : kinds[1+(i-1)%2];
-const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1,...(thirdparty&&kindAt(i)!==kinds[2]?{config:{mode:'forward'}}:{})}))],
+const graph=composition?.graph??{version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1,...(thirdparty&&kindAt(i)!==kinds[2]?{config:{mode:'forward'}}:{})}))],
   edges:ids.map((id,i)=>({from:{node:i ? ids[i-1] : 'input',port:'out'},to:{node:id,port:'in'}}))};
-const target={node:ids.at(-1),port:'out'};
+const targets=composition?.targets??[{node:ids.at(-1),port:'out'}];
+const target=targets.at(-1);
+const executedIds=composition?.executedIds??ids;
+const executedCount=executedIds.length;
 const contract=JSON.parse(readFileSync(new URL('../tests/contracts/execution_control.json',import.meta.url),'utf8'));
-const resourcePolicy={...contract.resourceProfiles.bounded,maxPhysicalJobs:22,maxQueuedJobs:32,
-  maxRetainedBytes:67108864,maxResultBytesPerRun:16384,retentionMs:60000,maxRetainedRuns:32,maxDedupeEntries:32,maxTombstones:32};
+const resourcePolicy={...contract.resourceProfiles.bounded,maxPhysicalJobs:composition?.maxPhysicalJobs??22,maxQueuedJobs:32,
+  maxRetainedBytes:67108864,maxResultBytesPerRun:matrixMode?524288:16384,retentionMs:60000,maxRetainedRuns:32,maxDedupeEntries:32,maxTombstones:32};
 const packageManager={officialRoot:official,dataRoot:join(root,'data'),workspace:join(root,'workers'),worker,runtimeDll:dll,
   policy:{processMemoryBytes:536870912,wasmMemoryBytes:134217728,fuelPerCall:50000000,walltimeMs:30000,terminationGraceMs:5}};
 const managerPath=join(root,'manager.json'), hostPath=join(root,'host.json');
@@ -98,21 +109,24 @@ const summarize=values=>{
   return {count:values.length,p50:p(.5),p95:p(.95),p99:p(.99),max:sorted.at(-1)};
 };
 const ended=s=>s.state==='terminal' && Object.values(s.physical).every(n=>n===0);
-const expected=text=>shape==='identity'||thirdparty ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
+const expected=text=>thirdparty ? composition.expected(text) : shape==='identity' ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
 function verify(s,wanted) {
   assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
-  const value=s.result.ports.find(p=>p.endpoint.node===target.node && p.endpoint.port==='out')?.value;
-  assert.equal(value?.packet?.root.text,wanted);
+  for(const target of targets) {
+    const value=s.result.ports.find(p=>p.endpoint.node===target.node&&p.endpoint.port===target.port)?.value;
+    if(composition)composition.verify(value?.packet?.root.text,wanted);
+    else assert.equal(value?.packet?.root.text,wanted,`wrong target ${target.node}.${target.port}`);
+  }
 }
 let manager,host,revision=0,sequence=0;
-const records=[],traces=[],statuses=[];
+const records=[],traces=[],statuses=[],warmAttempts=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
   runtimeBuildSourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_BUILD_SOURCE_SHA ?? null,
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
-  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
+  mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
@@ -122,14 +136,12 @@ try {
   manager=new Client(managerExe,managerPath);
   const frames=[...new Set(ids.map((_,i)=>kindAt(i)))].map(kind=>{
     const fixtureIndex=thirdparty?kinds.indexOf(kind):-1;
-    const fixture=fixtureIndex>=0&&fixtureIndex<2;
-    const module=fixture?reviewedModules[fixtureIndex]:readFileSync(join(official,'official.wasm'));
-    const port={id:'in',dataType:{id:'text-packet',version:1},language:'ja-Latn',root:'text'};
+    const fixture=fixtureIndex>=0&&fixtureIndex!==2;
+    const module=fixture?reviewedModules[fixtureIndex===3?0:fixtureIndex]:readFileSync(join(official,'official.wasm'));
     const manifest=fixture?Buffer.from(JSON.stringify({
       packageId:`test.retention-review.${fixtureIndex}`,version:'1.0.0',displayName:`Reviewed fixture ${fixtureIndex}`,
       runtime:'wasm32',guestApiVersion:1,moduleSha256:sha(module),capabilities:[],
-      node:{kind,version:1,inputs:[{port,required:true}],outputs:[{...port,id:'out'}],
-        configSchema:{type:'object'},defaultConfig:{mode:'echo'}}
+      node:fixtureDefinition(kind)
     })):readFileSync(join(official,kind+'.manifest.json'));
     const header=Buffer.alloc(24);
     header.write('DIY2NODE');header.writeUInt32LE(1,8);header.writeUInt32LE(manifest.length,12);header.writeBigUInt64LE(BigInt(module.length),16);
@@ -158,9 +170,13 @@ try {
       assert.equal(ready.retainedWorker.compiledGenerations,ready.retainedWorker.generation,'compiled replacement route must actually be selected');
     }
   }
-  async function submit(text) {
+  async function submit(text,observation) {
     ++revision;if(revision>1)await host.call({method:'invalidateInput',expectedPlanVersion:version,revision});
-    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,targets:[target],input:{revision,text,mode:'compose'}}});
+    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,targets,input:{revision,text,mode:'compose'}}});
+    if(observation) {
+      observation.admitted=typeof reply.ok==='boolean'?reply.ok:null;
+      if(!reply.ok)observation.admissionRejected=reply.error?.code??'unknown-rejection';
+    }
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
@@ -188,13 +204,21 @@ try {
     assert.equal(collection.dropped,0,'frozen trace has missing events');
     return events;
   }
+  const observedNativeHistory=[];
   function analyze(keys,events,status) {
-    const analysis=analyzeLinearCallTiming({keys,events,status,ids,kinds:ids.map((_,i)=>kindAt(i))});
+    const analysis=layout==='serial'
+      ?analyzeLinearCallTiming({keys,events,status,ids:executedIds,kinds:executedIds.map(id=>kindAt(ids.indexOf(id)))})
+      :analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds:composition.unexecutedIds,history:observedNativeHistory});
     assert.equal(analysis.correlationError,null);
     assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
+    if(layout!=='serial') {
+      const admitted=keys.filter(key=>key?.runId);
+      verifyGraphCallCoverage(analysis,admitted.at(-1)?.runId);
+      observedNativeHistory.push(status);
+    }
     return analysis;
   }
-  async function verifySampleRetrieval(status,requiredNodeIds=timing && mode!=='0'?ids:[]) {
+  async function verifySampleRetrieval(status,requiredNodeIds=timing && mode!=='0'?executedIds:[]) {
     // Outside the measured input/trace window, after all callbacks settled.
     // Explicit reads must retain the complete samples AND their loss counters.
     if(sampleDeliveryObserve) {
@@ -239,7 +263,7 @@ try {
         await verifySampleRetrieval(status);
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
         Object.assign(round,...(events?[{events}]:[]),...(paired?[{sameCall:paired}]:[]));
-        if(paired)assert.equal(paired.rows.filter(row=>row.key.runId===attempts.at(-1).key.runId && row.status==='paired').length,count,'latest correct input needs a complete same-call measurement');
+        if(paired)assert.equal(paired.rows.filter(row=>row.key.runId===attempts.at(-1).key.runId && row.status==='paired').length,executedCount,'latest correct input needs a complete same-call measurement');
         if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation,'replacement silently used raw compilation');
         assert.equal(attempts.at(-1).outcome,'correct','latest input must complete correctly');
       }});
@@ -255,10 +279,9 @@ try {
     for(let sample=0;sample<=samples;sample++) {
       if(sample)await delay(100);
       await host.call({method:'traceStartDetailed'});
-      const text=`  ka${sample}🙂漢字  `,started=performance.now(),key=await submit(text);
-      assert(!key.admissionRejected,'sequential admission rejected');
-      const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
-      const resultMs=performance.now()-started;verify(snapshot,expected(text));
+      const text=`  ka${sample}🙂漢字  `;
+      const {key,snapshot,resultMs}=await observeWarmInput({sample,attempts:warmAttempts,
+        submit:attempt=>submit(text,attempt),read,until,ended,verify,expected:expected(text)});
       if(sample===0)report.prepareThroughFirstResultMs=performance.now()-preparation;
       const events=await collectTrace();
       traces.push({sample,key,events});records.push({sample,resultMs});
@@ -267,11 +290,11 @@ try {
       if(timing) {
         const paired=analyze([key],events,status);
         report.sameCall.push({sample,...paired});
-        assert.equal(paired.paired,count,'correct linear run needs every actual Native measurement');
+        assert.equal(paired.paired,executedCount,'correct graph run needs every actual Native measurement');
       }
       if(sample===0)report.firstResultStatus=status;
       if(mode!=='0') {
-        assert.equal(status.retainedWorker.decodedReplies,(sample+1)*count);
+        assert.equal(status.retainedWorker.decodedReplies,(sample+1)*executedCount);
         if(!cold)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
         if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation);
       }
@@ -279,7 +302,7 @@ try {
     report[cold?'followupResultMs':'warmResultMs']=summarize(records.slice(1).map(r=>r.resultMs));
     if(cold)report.followupIsGuaranteedWarm=false;
     if(timing) {
-      report[cold?'followupResidualMs':'warmResidualMs']=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeResidualMs)));
+      if(layout==='serial')report[cold?'followupResidualMs':'warmResidualMs']=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeResidualMs)));
     }
   }
   if(cadence==='safety') {
@@ -427,6 +450,7 @@ try {
   report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
+  if(!paced&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.beforeClose]);
   try {if(manager)await manager.close();if(host)await host.close();}
