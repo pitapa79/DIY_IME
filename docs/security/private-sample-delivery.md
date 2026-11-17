@@ -34,6 +34,10 @@ wire-size estimates. The aggregate stores no inputs, outputs or sample contents.
 Old and new runtimes can use the same observer. An explicit private check flag
 requires ordinary replies to omit samples; it is enabled by the existing CI
 collector. No new public Host field or request is introduced.
+For controlled old/new comparisons, the private observe-only flag performs the
+same repeated explicit retrievals on both versions without rejecting the old
+reply layout. Ordinary-reply sample counts remain visible for comparison. This
+avoids attributing unequal verification traffic to the implementation change.
 
 Outside each measured input/trace window, two settled explicit status reads must
 have identical settled call samples and call drop counts. Lifetime phases may

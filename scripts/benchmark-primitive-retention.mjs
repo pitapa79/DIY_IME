@@ -25,6 +25,7 @@ const paced=cadence==='paced' || cadence==='cold-paced';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
+const sampleDeliveryObserve=sampleDeliveryCheck || process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_OBSERVE==='1';
 const tracePaced=timing || process.env.DIY_PRIMITIVE_COMPARE_TIMING==='1';
 assert(['0','separate','grouped'].includes(mode));
 const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
@@ -103,7 +104,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
-  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,sampleDeliveryCheck,readinessBarrierUsed:mode!=='0' && !cold,
+  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
@@ -177,11 +178,11 @@ try {
   async function verifySampleRetrieval(status,requiredNodeIds=timing && mode!=='0'?ids:[]) {
     // Outside the measured input/trace window, after all callbacks settled.
     // Explicit reads must retain the complete samples AND their loss counters.
-    if(sampleDeliveryCheck) {
+    if(sampleDeliveryObserve) {
       const repeated=await host.call({method:'status'});
       if(!timing || mode==='0')assert.equal(Object.hasOwn(status.retainedWorker,'callSamples'),false,'timing OFF/default must not expose private samples');
       host.replyEvidence.verifyRepeatedStatus(status,repeated,requiredNodeIds);
-      host.replyEvidence.assertExclusive();
+      if(sampleDeliveryCheck)host.replyEvidence.assertExclusive();
     }
   }
   if(cadence==='startup-refusal') {
@@ -385,8 +386,8 @@ try {
   // bounded control records as surviving processes or weakening their expiry.
   const ownedFields=['activeRuns','physicalJobs','queuedJobs','queuedInputBytes','reservedResultBytes'];
   report.afterClose=await until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && ownedFields.every(k=>s.physical[k]===0)?s:null;});
-  if(sampleDeliveryCheck) {
-    host.replyEvidence.assertExclusive();
+  if(sampleDeliveryObserve) {
+    if(sampleDeliveryCheck)host.replyEvidence.assertExclusive();
     assert(host.replyEvidence.repeatedSnapshotsChecked>0,'no settled explicit retrieval was checked');
     assert(host.replyEvidence.byMethod.getRun?.replies>0,'no ordinary result reply was checked');
   }
