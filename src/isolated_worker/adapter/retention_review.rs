@@ -308,8 +308,15 @@ mod tests {
             "../../../tests/contracts/execution_control.json"
         ))
         .unwrap();
+        // Each independently owned fixture needs its own resource domain.
+        // Revocation/close can still own the previous domain asynchronously;
+        // never reset that domain while its original owner is settling.
+        static NEXT_DOMAIN: AtomicU64 = AtomicU64::new(1);
         let host = ExecutionHost::new(
-            "retention-review-unit",
+            format!(
+                "retention-review-unit-{}",
+                NEXT_DOMAIN.fetch_add(1, Ordering::Relaxed)
+            ),
             ResourcePolicy::from_value(contract["resourceProfiles"]["noTombstones"].clone())
                 .unwrap(),
         )
