@@ -168,7 +168,7 @@ jobs:
         run: |
           cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget -- --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test scripts/analyze-retained-call-timing.test.mjs scripts/analyze-retained-lifecycle.test.mjs scripts/host-input-intervals.test.mjs scripts/host-input-observation.test.mjs
+          node --test scripts/analyze-retained-call-timing.test.mjs scripts/analyze-retained-lifecycle.test.mjs scripts/host-input-intervals.test.mjs scripts/host-input-observation.test.mjs scripts/private-sample-delivery.test.mjs
           exit $LASTEXITCODE
       - name: Reviewed primitive retention comparison
         if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup'
@@ -176,6 +176,20 @@ jobs:
           $suite = '${{ matrix.segment }}'.Replace('primitive-', '')
           python scripts/run-primitive-retention-evaluation.py target/windows-app "target/primitive-$suite-evidence" $suite
           exit $LASTEXITCODE
+      - name: Same-runner private sample delivery ABBA
+        if: matrix.segment == 'primitive-timing'
+        run: |
+          python scripts/compare-private-sample-delivery.py target/windows-app target/private-sample-delivery-evidence
+          exit $LASTEXITCODE
+      - name: Preserve private sample delivery comparisons including failures
+        if: always() && matrix.segment == 'primitive-timing'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: private-sample-delivery-${{ github.sha }}
+          path: target/private-sample-delivery-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
       - name: Preserve primitive evidence including failures
         if: always() && (matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

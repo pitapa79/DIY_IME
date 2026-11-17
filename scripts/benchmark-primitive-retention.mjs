@@ -12,6 +12,7 @@ import {analyzeLinearCallTiming} from './analyze-retained-call-timing.mjs';
 import {analyzeRetainedLifecycle} from './analyze-retained-lifecycle.mjs';
 import {decodeTracePage} from '../editor/src/executionTrace.ts';
 import {HeldPrimitiveWorker} from './hold-owned-primitive-worker.mjs';
+import {PrivateReplyEvidence} from './private-sample-delivery.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
@@ -23,6 +24,8 @@ const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refu
 const paced=cadence==='paced' || cadence==='cold-paced';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
+const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
+const sampleDeliveryObserve=sampleDeliveryCheck || process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_OBSERVE==='1';
 const tracePaced=timing || process.env.DIY_PRIMITIVE_COMPARE_TIMING==='1';
 assert(['0','separate','grouped'].includes(mode));
 const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
@@ -50,6 +53,7 @@ writeFileSync(hostPath,JSON.stringify({packageManager,resourcePolicy,permissionR
 class Client {
   constructor(exe,path) {
     this.next=0;this.pending=new Map();this.stderr=[];this.received=[];
+    this.replyEvidence=new PrivateReplyEvidence();
     this.child=spawn(exe,[path],{windowsHide:true,stdio:'pipe'});
     this.child.stderr.on('data',data=>this.stderr.push(data));
     this.ended=new Promise(done=>this.child.once('close',code=>{
@@ -59,12 +63,13 @@ class Client {
       const reply=JSON.parse(line),pending=this.pending.get(reply.id);
       if(cadence==='safety')this.received.push(reply);
       assert(pending,'unexpected protocol reply');this.pending.delete(reply.id);pending.resolve(reply);
+      this.replyEvidence.record(pending.method,line,reply);
     });
   }
   async send(operation,payload=Buffer.alloc(0)) {
     const id=String(++this.next),body=Buffer.from(JSON.stringify({id,operation})),header=Buffer.alloc(12);
     header.writeUInt32LE(body.length);header.writeBigUInt64LE(BigInt(payload.length),4);
-    const result=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject}));
+    const result=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject,method:operation.method}));
     this.child.stdin.write(Buffer.concat([header,body,payload]));return result;
   }
   async call(operation,payload) { const r=await this.send(operation,payload);assert.equal(r.ok,true,JSON.stringify(r.error));return r.data; }
@@ -99,7 +104,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
-  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,readinessBarrierUsed:mode!=='0' && !cold,
+  mode,count,samples,shape,cadence,resourcePolicy,graph,records,traces,statuses,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
@@ -116,6 +121,7 @@ try {
   await manager.call({method:'commit',reviewId:review.reviewId,allowDowngrade:false,allowSameVersionRebuild:false});
   await manager.close();manager=undefined;
   host=new Client(hostExe,hostPath);
+  report.privateReplyEvidence=host.replyEvidence;
   const preparation=performance.now(),pending=await host.call({method:'prepare',graph});
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
@@ -169,6 +175,16 @@ try {
     assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
     return analysis;
   }
+  async function verifySampleRetrieval(status,requiredNodeIds=timing && mode!=='0'?ids:[]) {
+    // Outside the measured input/trace window, after all callbacks settled.
+    // Explicit reads must retain the complete samples AND their loss counters.
+    if(sampleDeliveryObserve) {
+      const repeated=await host.call({method:'status'});
+      if(!timing || mode==='0')assert.equal(Object.hasOwn(status.retainedWorker,'callSamples'),false,'timing OFF/default must not expose private samples');
+      host.replyEvidence.verifyRepeatedStatus(status,repeated,requiredNodeIds);
+      if(sampleDeliveryCheck)host.replyEvidence.assertExclusive();
+    }
+  }
   if(cadence==='startup-refusal') {
     assert.equal(mode,'separate');
     assert(['2','4'].includes(process.env.DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM));
@@ -184,6 +200,7 @@ try {
     assert.equal(stagePorts.length,count);
     assert(stagePorts.every(port=>port.value.status==='error'));
     const status=await host.call({method:'status'});statuses.push(status);
+    await verifySampleRetrieval(status,[]);
     assert.equal(status.retainedWorker.decodedReplies,0);
     assert.equal(status.retainedWorker.compiledGenerations,0);
     assert.equal(status.workerProcesses,0);
@@ -200,6 +217,7 @@ try {
         // Preserve correct/failed/latest outcomes even if diagnostics fail.
         round.status=status;
         const events=tracePaced ? await collectTrace() : undefined;
+        await verifySampleRetrieval(status);
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
         Object.assign(round,...(events?[{events}]:[]),...(paired?[{sameCall:paired}]:[]));
         if(paired)assert.equal(paired.rows.filter(row=>row.key.runId===attempts.at(-1).key.runId && row.status==='paired').length,count,'latest correct input needs a complete same-call measurement');
@@ -226,6 +244,7 @@ try {
       const events=await collectTrace();
       traces.push({sample,key,events});records.push({sample,resultMs});
       const status=await host.call({method:'status'});statuses.push(status);
+      await verifySampleRetrieval(status);
       if(timing) {
         const paired=analyze([key],events,status);
         report.sameCall.push({sample,...paired});
@@ -367,6 +386,11 @@ try {
   // bounded control records as surviving processes or weakening their expiry.
   const ownedFields=['activeRuns','physicalJobs','queuedJobs','queuedInputBytes','reservedResultBytes'];
   report.afterClose=await until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && ownedFields.every(k=>s.physical[k]===0)?s:null;});
+  if(sampleDeliveryObserve) {
+    if(sampleDeliveryCheck)host.replyEvidence.assertExclusive();
+    assert(host.replyEvidence.repeatedSnapshotsChecked>0,'no settled explicit retrieval was checked');
+    assert(host.replyEvidence.byMethod.getRun?.replies>0,'no ordinary result reply was checked');
+  }
   await host.close();host=undefined;
   function remainingWorkspaceFiles(folder) {
     let entries;
