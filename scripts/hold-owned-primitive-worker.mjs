@@ -4,6 +4,17 @@ import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 
+const setupStages=['python-entered','native-api-ready','original-handle-opened',
+  'image-verified','original-identity-verified','suspension-started','suspension-confirmed'];
+
+export function readHoldSetupStages(stderr) {
+  // A traceback or arbitrary child text cannot become diagnostic metadata.
+  const observed=stderr.split(/\r?\n/).filter(line=>line.startsWith('DIYIME_HOLD_SETUP '))
+    .map(line=>line.slice('DIYIME_HOLD_SETUP '.length));
+  return observed.filter((stage,index)=>setupStages.includes(stage)&&
+    observed.indexOf(stage)===index).slice(0,setupStages.length);
+}
+
 export class HeldPrimitiveWorker {
   constructor({python,pid,workspace,digest}) {
     assert(Number.isSafeInteger(pid)&&pid>0);
@@ -15,18 +26,20 @@ export class HeldPrimitiveWorker {
     this.started=new Promise((resolve,reject)=>{this.resolveStarted=resolve;this.rejectStarted=reject;});
     this.started.catch(()=>{});
     this.startTimer=setTimeout(()=>{
-      this.parseError=Error('owned Worker hold setup exceeded bound');
+      const stages=readHoldSetupStages(this.stderr);
+      this.parseError=Error(`owned Worker hold setup exceeded bound; last observed stage=${stages.at(-1)??'no-helper-stage-observed'}`);
       this.rejectStarted(this.parseError);this.child.stdin.end();
     },16000);
     this.completion=new Promise(resolve=>{
       this.child.once('error',error=>{
         this.parseError=error;this.rejectStarted(error);clearTimeout(this.startTimer);
-        resolve({code:null,error,header:this.header,release:this.release});
+        resolve({code:null,error,header:this.header,release:this.release,setupStages:readHoldSetupStages(this.stderr)});
       });
       this.child.once('close',code=>{
         clearTimeout(this.startTimer);
         if(!this.header)this.rejectStarted(Error(`hold helper exited ${code}: ${this.stderr}`));
-        resolve({code,error:this.parseError,header:this.header,release:this.release,stderr:this.stderr});
+        resolve({code,error:this.parseError,header:this.header,release:this.release,stderr:this.stderr,
+          setupStages:readHoldSetupStages(this.stderr)});
       });
     });
     createInterface({input:this.child.stdout}).on('line',line=>{

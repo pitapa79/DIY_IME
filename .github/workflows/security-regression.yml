@@ -65,7 +65,10 @@ jobs:
       - name: Install Wasm test target
         run: rustup target add wasm32-unknown-unknown --toolchain 1.90.0-x86_64-pc-windows-gnu
       - name: Real v3 Wasm ownership and policy
-        run: ./scripts/check-wasm-v3.ps1
+        run: |
+          node --test scripts/hold-owned-primitive-worker.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/check-wasm-v3.ps1
       - name: Node-independent Core boundary
         run: ./scripts/check-core-boundary.ps1
       - name: Build actual Editor Hosts
