@@ -13,6 +13,7 @@ use std::{
 };
 
 mod dictionary_wire;
+mod generic_fixture;
 
 const MARKER: &[u8] = PROBE_RESULT;
 const CAP: usize = 8 * 1024 * 1024 - 4096;
@@ -51,6 +52,10 @@ fn child() {
         panic!("blocked probe must be stopped before reading input");
     }
     let dll = std::env::current_dir().unwrap().join("wasmtime.dll");
+    if mode == "generic-persistent" {
+        generic_fixture::persistent_child(&Api::load(&dll).unwrap());
+        return;
+    }
     if matches!(mode.as_str(), "persistent-ipc" | "persistent-graph") {
         ipc_child(&Api::load(&dll).unwrap(), mode == "persistent-graph");
         return;
@@ -80,7 +85,7 @@ fn child() {
         .then(|| fs::read("prepared.cwasm").unwrap());
     let ready_module = matches!(
         mode.as_str(),
-        "ready-module-guest" | "ready-speculative-guest"
+        "ready-module-guest" | "ready-speculative-guest" | "ready-generic-module-guest"
     )
     .then(|| {
         let expected = fs::read_to_string("artifact.sha256").unwrap();
@@ -92,9 +97,42 @@ fn child() {
         )
         .unwrap()
     });
+    let ready_module = if matches!(
+        mode.as_str(),
+        "ready-generic-jit" | "ready-generic-jit-fault"
+    ) {
+        let bytes = fs::read("generic.wasm").unwrap();
+        assert_eq!(
+            digest(&bytes),
+            fs::read_to_string("generic.sha256").unwrap()
+        );
+        let api = api.as_ref().unwrap();
+        {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(b"RAW_PRECOMPILE_V1\n").unwrap();
+            stdout.flush().unwrap();
+        }
+        Some(
+            Runtime::prepare_module(api, &limits(), None, |engine, result| {
+                // SAFETY: fixture bytes remain alive during compilation.
+                unsafe {
+                    api.check(
+                        (api.module_new)(engine, bytes.as_ptr(), bytes.len(), result),
+                        ptr::null_mut(),
+                    )
+                }
+            })
+            .unwrap(),
+        )
+    } else {
+        ready_module
+    };
     if mode.starts_with("ready-") {
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(PROBE_READY).unwrap();
+        if mode == "ready-generic-jit-fault" {
+            writeln!(stdout, "{}", std::process::id()).unwrap();
+        }
         stdout.flush().unwrap();
     }
     let input_started = Instant::now();
@@ -127,6 +165,8 @@ fn child() {
     } else if mode == "compile" {
         assert!(input.is_empty());
         compiled_module::compile(api.as_ref().unwrap(), &limits(), &wasm()).unwrap()
+    } else if mode.starts_with("generic-") {
+        generic_fixture::child(api.as_ref().unwrap(), &mode, input)
     } else if mode == "dictionary-wire" {
         dictionary_wire::guest(api.as_ref().unwrap(), input)
     } else if mode == "persistent" {

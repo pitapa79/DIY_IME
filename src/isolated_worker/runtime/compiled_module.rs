@@ -9,6 +9,23 @@ pub(super) fn compile(api: &Api, limits: &Limits, wasm: &[u8]) -> Result<Vec<u8>
     if digest(wasm)? != OFFICIAL_WASM_HASH {
         return Err("module does not match fixed official Wasm".into());
     }
+    compile_verified(api, limits, wasm)
+}
+
+#[cfg(test)]
+pub(super) fn compile_fixture_for_probe(
+    api: &Api,
+    limits: &Limits,
+    wasm: &[u8],
+    expected: &str,
+) -> Result<Vec<u8>, String> {
+    if digest(wasm)? != expected {
+        return Err("probe fixture bytes changed".into());
+    }
+    compile_verified(api, limits, wasm)
+}
+
+fn compile_verified(api: &Api, limits: &Limits, wasm: &[u8]) -> Result<Vec<u8>, String> {
     // Resolve before allocating engine resources. The DLL is already verified.
     let serialize: unsafe extern "C" fn(P, *mut Bytes) -> P =
         unsafe { symbol(api, c"wasmtime_module_serialize")? };

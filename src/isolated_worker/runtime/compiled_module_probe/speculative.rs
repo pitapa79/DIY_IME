@@ -19,7 +19,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 type Response = (Instant, Vec<u8>);
 type Receipt = (Instant, Option<Vec<u8>>);
 
-fn read_marker(reader: &mut impl Read, marker: &[u8]) -> io::Result<()> {
+pub(super) fn read_marker(reader: &mut impl Read, marker: &[u8]) -> io::Result<()> {
     let mut prefix = Vec::new();
     while prefix.len() < 4096 {
         let mut byte = [0];
