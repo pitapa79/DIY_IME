@@ -194,11 +194,11 @@ try {
     report.pacing=await measureHostInput({steps,submit,read,ended,verify,summarize,pollMs:1,rounds:samples,independentInput:true,
       intervals:cold ? [20,100,null] : [null,100,20],
       beginRound:tracePaced ? async()=>{await host.call({method:'traceStartDetailed'});} : undefined,
-      finishRound:async(intervalMs,attempts)=>{
+      observeRound:round=>report.pacedRounds.push(round),
+      finishRound:async(intervalMs,attempts,round)=>{
         const status=await host.call({method:'status'});
         // Preserve correct/failed/latest outcomes even if diagnostics fail.
-        const round={intervalMs,attempts,status};
-        report.pacedRounds.push(round);
+        round.status=status;
         const events=tracePaced ? await collectTrace() : undefined;
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
         Object.assign(round,...(events?[{events}]:[]),...(paired?[{sameCall:paired}]:[]));
