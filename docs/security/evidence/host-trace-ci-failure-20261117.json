@@ -1,0 +1,192 @@
+{
+  "runId": 43877903036,
+  "artifactId": 14232027565,
+  "status": "failed",
+  "sourceCommit": "6b4e79c4d6d5120d0ebbaccac9c6324202e58d59",
+  "verifiedParents": [
+    "723aa7d0546a1bdff7833c0c5fb5da0b0a9eefeb",
+    "7dbe06aeb17acfa452a4f8eaeb8df9aaae798def"
+  ],
+  "verifiedTree": "2c31f3f69b1f8298b674ced3a0262a7ecc39315c",
+  "treeEqualsPrHead": "7dbe06aeb17acfa452a4f8eaeb8df9aaae798def",
+  "archive": {
+    "artifactId": 14232027565,
+    "zipBytes": 126784274,
+    "sha256": "e992d53d63483a431948fb03ba16b9401308a75fce66cc423c1dd0ca14b35c34",
+    "files": [
+      {
+        "name": "ci43877903036-timing-34-separate-20-identity-cold-paced.job.json",
+        "bytes": 522647,
+        "sha256": "4553ff5674b02c626011000e27a230ae9c87d56a28b5e51f5e7c2b8e659c68ce",
+        "zipMember": "primitive-timing-evidence/34-separate-20-identity-cold-paced.job.json",
+        "crc": 2488468336
+      },
+      {
+        "name": "ci43877903036-timing-34-separate-20-identity-cold-paced.json",
+        "bytes": 1708918,
+        "sha256": "626d6c2f0d208814cc5c770e57b23c432c606c10b5e2795a8361f5f0bb023221",
+        "zipMember": "primitive-timing-evidence/34-separate-20-identity-cold-paced.json",
+        "crc": 1625021838
+      },
+      {
+        "name": "ci43877903036-timing-34-separate-20-identity-cold-paced.log",
+        "bytes": 1108,
+        "sha256": "63796b4651e019400f09de3bab6f1c042006643584b3ef5b486ae7a055c69d90",
+        "zipMember": "primitive-timing-evidence/34-separate-20-identity-cold-paced.log",
+        "crc": 1935742467
+      },
+      {
+        "name": "ci43877903036-timing-manifest.json",
+        "bytes": 36102,
+        "sha256": "8533800e900f9add715ef19e1813d3986220752bcc3bf58ac440fae183891395",
+        "zipMember": "primitive-timing-evidence/manifest.json",
+        "crc": 2911599475
+      }
+    ]
+  },
+  "case": {
+    "name": "34-separate-20-identity-cold-paced",
+    "mode": "separate",
+    "count": 20,
+    "samples": 5,
+    "shape": "identity",
+    "cadence": "cold-paced",
+    "retainedCompiled": false,
+    "retainedTiming": true,
+    "startupParallelism": 1,
+    "exitCode": 1
+  },
+  "failure": "AssertionError: frozen trace has missing events: 1 != 0",
+  "traceCollections": [
+    {
+      "recordingId": "5482628f22e38340cfb095d9078d8d62",
+      "dropped": 0,
+      "eventCount": 336
+    },
+    {
+      "recordingId": "85b8e68f9d331408d16c79abc33b5a2c",
+      "dropped": 0,
+      "eventCount": 808
+    },
+    {
+      "recordingId": "9eb410d7993cafea29952bcec5a2dd0d",
+      "dropped": 0,
+      "eventCount": 692
+    },
+    {
+      "recordingId": "1fc4a2a42666e4912f2b784c1d5ac35f",
+      "dropped": 0,
+      "eventCount": 769
+    },
+    {
+      "recordingId": "01a19d83e840e3328d030df0f2918adb",
+      "dropped": 1,
+      "eventCount": 528
+    }
+  ],
+  "traceLossAudit": [
+    "host-trace-loss-audit total=1 probeBusy=0 reservationFull=0 clockUnavailable=0 recorderBusy=4 hostQueueFull=0 invalidNative=0 unfinished=0"
+  ],
+  "job": {
+    "cpuMs": 36843.75,
+    "peakJobCommitBytes": 335548416,
+    "ownedProcessCount": 75,
+    "activeAtObservation": 0,
+    "driverExitCode": 1,
+    "timedOut": false,
+    "allDescendantsExited": true,
+    "successful": false,
+    "memorySamplingIntervalMs": 100,
+    "missingProcessMemoryReads": 0,
+    "workingSetSumCountsSharedPagesMultipleTimes": true
+  },
+  "fullSafetyNotReached": true,
+  "workspaceReclamationNotProven": true,
+  "investigation": "Recorder contention is observed; run acceptance still drops its ticket on a try_lock miss. Deterministic regression and repair pending; exact CI loss site is not proven by these aggregate counters.",
+  "otherFailure": "Startup passed actual launcher original-handle/Job-zero and built-app assertions, then failed final private temp-root rmSync with EPERM. No process-ending assertion relaxed.",
+  "additionalRun": {
+    "runId": 43982909396,
+    "head": "79925c2ec99d976ce89a44d339ca1ee8c6612efe",
+    "testMerge": "95c0f8ab28d3e8d03ddad4b55920506ac2f1c9b0",
+    "verifiedParents": [
+      "7dbe06aeb17acfa452a4f8eaeb8df9aaae798def",
+      "79925c2ec99d976ce89a44d339ca1ee8c6612efe"
+    ],
+    "tree": "5849e796855ed0884ae1e9c608b4f01536c587d9",
+    "treeEqualsPrHead": true,
+    "status": "failed",
+    "segmentsPassed": 7,
+    "segmentsFailed": [
+      "neutral",
+      "primitive-timing"
+    ],
+    "case": "32-separate-20-identity-cold-paced",
+    "failure": "AssertionError [ERR_ASSERTION]: frozen trace has missing events\n\n1 !== 0\n",
+    "traceCollections": [
+      {
+        "recordingId": "338d83fd1c8a2f638b6b4b6f4d9e57db",
+        "dropped": 0,
+        "eventCount": 336
+      },
+      {
+        "recordingId": "a9f695fea8da94176c57a51e75b1bb26",
+        "dropped": 1,
+        "eventCount": 949
+      }
+    ],
+    "traceLossAudit": [
+      "host-trace-loss-audit total=1 probeBusy=1 reservationFull=0 clockUnavailable=0 recorderBusy=2 hostQueueFull=0 invalidNative=0 unfinished=0"
+    ],
+    "job": {
+      "cpuMs": 25359.375,
+      "peakJobCommitBytes": 333377536,
+      "ownedProcessCount": 61,
+      "activeAtObservation": 0,
+      "driverExitCode": 1,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": false,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    },
+    "boundedRangeReceipt": {
+      "artifactId": 14285297410,
+      "zipBytes": 111153338,
+      "rangeBytesReceived": 550817,
+      "files": [
+        {
+          "name": "ci43982909396-timing-32-separate-20-identity-cold-paced.job.json",
+          "sha256": "08d7ea94930235f5a304bd8e39978ad27e937fcedb5f4f68a4503a5342a443cc",
+          "bytes": 287581,
+          "zipMember": "primitive-timing-evidence/32-separate-20-identity-cold-paced.job.json",
+          "crc": 1114846000
+        },
+        {
+          "name": "ci43982909396-timing-32-separate-20-identity-cold-paced.json",
+          "sha256": "c3f133c3991171f3899ed7253d97387e0fe77567ed04e7e292c8340d466099b2",
+          "bytes": 197485,
+          "zipMember": "primitive-timing-evidence/32-separate-20-identity-cold-paced.json",
+          "crc": 203266147
+        },
+        {
+          "name": "ci43982909396-timing-32-separate-20-identity-cold-paced.log",
+          "sha256": "f6deb86d8afa3c53eb4fd3a0dcb87b1405da6248fffb227d4c65afe3b235cc2b",
+          "bytes": 1109,
+          "zipMember": "primitive-timing-evidence/32-separate-20-identity-cold-paced.log",
+          "crc": 3651388108
+        },
+        {
+          "name": "ci43982909396-timing-manifest.json",
+          "sha256": "80e1cf5b8389ac98f0f8715680d06bf4b0d60e107a5b5d45edcf1cc8c9dd184a",
+          "bytes": 34718,
+          "zipMember": "primitive-timing-evidence/manifest.json",
+          "crc": 4154043849
+        }
+      ]
+    },
+    "partialZipDownloadBytes": 550817,
+    "conclusion": "Clock probe contention is explicitly observed. The local acceptance-only repair does not prove all trace loss fixed. No loss gate relaxed.",
+    "neutral": "Same final private-root EPERM after original-handle exit, strict Job zero and built-app assertions. Independent Issue123/PR124 fix under CI."
+  }
+}
