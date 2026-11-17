@@ -591,6 +591,12 @@ impl Runner {
         self.retired.clear();
     }
     fn status(&self) -> Result<Value, CoreError> {
+        self.status_with_private_samples(false)
+    }
+    fn status_with_private_samples(
+        &self,
+        include_private_samples: bool,
+    ) -> Result<Value, CoreError> {
         let protected = self.controls.manual.load(Ordering::Acquire);
         let worker_processes = self
             .session
@@ -625,9 +631,14 @@ impl Runner {
             value["retainedWorker"]["processIds"] = json!(owner.process_ids());
             value["retainedWorker"]["startupFailures"] = json!(owner.startup_failures());
             value["retainedWorker"]["compiledGenerations"] = json!(owner.compiled_generations());
-            let samples = owner.call_samples();
-            if !samples.is_empty() {
-                value["retainedWorker"]["callSamples"] = Value::Array(samples);
+            // Only explicit CLI status retrieves the bounded diagnostic ring.
+            // Ordinary request replies still expose ownership/readiness, but
+            // must not snapshot/clone the expanding private sample buffer.
+            if include_private_samples {
+                let samples = owner.call_samples();
+                if !samples.is_empty() {
+                    value["retainedWorker"]["callSamples"] = Value::Array(samples);
+                }
             }
         }
         Ok(value)
@@ -846,7 +857,7 @@ impl Runner {
                 );
                 Ok(json!({"definitions":definitions,"state":self.status()?}))
             }
-            Operation::Status {} => self.status(),
+            Operation::Status {} => self.status_with_private_samples(true),
             Operation::Saved {} => Ok(json!({"ids":self.book.saved_ids()})),
             Operation::Secrets {} => Ok(
                 json!({"available":self.vault.is_some(),"entries":self.vault.as_ref().map(|v|v.list()).unwrap_or_default()}),

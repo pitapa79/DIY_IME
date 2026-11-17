@@ -12,10 +12,15 @@ const [hostExe,managerExe,worker,dll,official,mode]=process.argv.slice(2);
 if(!official||(mode!==undefined&&mode!=='--single-worker'))throw Error('usage: HOST MANAGER WORKER DLL OFFICIAL_DIRECTORY [--single-worker]');
 const singleWorker=mode==='--single-worker';
 const root=mkdtempSync(join(tmpdir(),'diyime-retained-host-'));
+function verifyFixedRetainedWire(data) {
+ const owner=data?.retainedWorker??data?.state?.retainedWorker;
+ if(owner)assert.deepEqual(Object.keys(owner).sort(),['activeInput','decodedReplies','generation','physicalJobs','processId','ready'],
+  'fixed/default replies must retain the exact Editor owner fields without private experiments/samples');
+}
 class Client {
  constructor(exe,config){this.serial=0;this.pending=new Map();this.child=spawn(exe,[config],{windowsHide:true,stdio:'pipe'});this.stderr=[];this.child.stderr.on('data',data=>this.stderr.push(data));this.ended=new Promise(resolve=>this.child.on('close',code=>{for(const p of this.pending.values())p.reject(Error('Host ended '+code));resolve(code);}));createInterface({input:this.child.stdout}).on('line',line=>{const value=JSON.parse(line),p=this.pending.get(value.id);if(p){this.pending.delete(value.id);p.resolve(value);}});}
  send(operation,payload=Buffer.alloc(0)){const id=String(++this.serial),json=Buffer.from(JSON.stringify({id,operation})),header=Buffer.alloc(12);header.writeUInt32LE(json.length);header.writeBigUInt64LE(BigInt(payload.length),4);const answer=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject}));this.child.stdin.write(Buffer.concat([header,json,payload]));return answer;}
- async call(operation,payload){const reply=await this.send(operation,payload);assert.equal(reply.ok,true,JSON.stringify(reply.error));return reply.data;}
+ async call(operation,payload){const reply=await this.send(operation,payload);assert.equal(reply.ok,true,JSON.stringify(reply.error));verifyFixedRetainedWire(reply.data);return reply.data;}
  async close(){this.child.stdin.end();assert.equal(await this.ended,0,Buffer.concat(this.stderr).toString());}
 }
 async function until(check){const end=performance.now()+60000;for(;;){const value=await check();if(value)return value;if(performance.now()>end)throw Error('retained Host did not settle');await delay(2);}}

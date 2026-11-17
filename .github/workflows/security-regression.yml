@@ -168,7 +168,7 @@ jobs:
         run: |
           cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget -- --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test scripts/analyze-retained-call-timing.test.mjs scripts/analyze-retained-lifecycle.test.mjs scripts/host-input-intervals.test.mjs scripts/host-input-observation.test.mjs
+          node --test scripts/analyze-retained-call-timing.test.mjs scripts/analyze-retained-lifecycle.test.mjs scripts/host-input-intervals.test.mjs scripts/host-input-observation.test.mjs scripts/private-sample-delivery.test.mjs
           exit $LASTEXITCODE
       - name: Reviewed primitive retention comparison
         if: matrix.segment == 'primitive-comparison' || matrix.segment == 'primitive-safety' || matrix.segment == 'primitive-recovery' || matrix.segment == 'primitive-timing' || matrix.segment == 'primitive-startup'
