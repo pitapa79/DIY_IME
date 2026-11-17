@@ -381,6 +381,17 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
+      - name: Metadata preparation compiled-code isolation canary
+        if: matrix.segment == 'runtime-cache'
+        run: |
+          $env:DIY_EXPERIMENT_PREPARATION_CODE_CACHE = '1'
+          $env:DIY_EXPERIMENT_COMPILED_JIT = '1'
+          $env:DIY_RANGE_WORKER_BINARY = (Resolve-Path target/windows-app/bin/diy-ime2-wasm-worker.exe).Path
+          $env:DIY_RANGE_RUNTIME_DLL = (Resolve-Path target/windows-app/runtime/wasmtime.dll).Path
+          $env:DIY_METADATA_FIXTURE_WASM = (Resolve-Path target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm).Path
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::metadata_preparation::tests::real_metadata_code_cache_reuses_only_code_and_refuses_unavailable_producers -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:DIY_EXPERIMENT_PREPARATION_CODE_CACHE
       - name: Compiled JIT replenishment comparison
         if: matrix.segment == 'runtime-cache'
         run: |
