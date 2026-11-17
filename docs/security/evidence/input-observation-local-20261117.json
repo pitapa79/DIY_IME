@@ -1,0 +1,481 @@
+{
+  "issue": 125,
+  "parentGoal": 109,
+  "runtimeBuildSource": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+  "harnessSource": "4bebe764ec6bb40a1828b3858c6fb3c3d8b4d7cd",
+  "testedFilesSha256": {
+    "scripts/host-input-scenarios.mjs": "8622332f796bcf86d4931125bf16002cbefc1c436db97e37914a63eed9631169",
+    "scripts/host-input-observation.test.mjs": "f8a0583fd58522a39a0a2569ea85290fd2bd6f38c217491156154c1697f7b961",
+    "scripts/benchmark-primitive-retention.mjs": "f95a52b04c27c2d1c7d037893724ccdbe6fe230df5723295dad41c4e21518027",
+    ".github/workflows/security-regression.yml": "97e52801ed6136d1e8060e9ab035209ed556ba5376bc8819b33cb5d8c23bc54b"
+  },
+  "binarySha256": {
+    "host": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267",
+    "manager": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9",
+    "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+    "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+  },
+  "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+  "unitTests": {
+    "passed": 36,
+    "log": "input125-observation-benchmark-v4.log",
+    "sha256": "3819996e1e9080206b0291ed4dfacdb8afc70b2bf3788b6508f234318da15d08"
+  },
+  "trial": {
+    "name": "input125-raw-cold-v1-separate-20-identity-cold-paced",
+    "elapsedSeconds": 123.922,
+    "completed": true,
+    "attempts": 105,
+    "rounds": 15,
+    "latestCorrect": 15,
+    "observedStalePhysicalEndProofs": 90,
+    "pacing": [
+      {
+        "intervalMs": 20,
+        "attempts": 35,
+        "admitted": 35,
+        "admissionRejected": 0,
+        "correct": 5,
+        "superseded": 30,
+        "timedOut": 0,
+        "cancelled": 0,
+        "failed": 0,
+        "over50Ms": 5,
+        "schedulingDelay": {
+          "count": 35,
+          "p50": 21.413699999990058,
+          "p95": 127.53839999999036,
+          "p99": 182.34369999999763,
+          "max": 182.34369999999763
+        },
+        "inputInterval": {
+          "count": 30,
+          "p50": 28.109199999998964,
+          "p95": 81.12699999999313,
+          "p99": 104.74779999999737,
+          "max": 104.74779999999737
+        },
+        "admissionDelay": {
+          "count": 35,
+          "p50": 28.07459999999992,
+          "p95": 81.11569999999483,
+          "p99": 104.71189999999478,
+          "max": 104.71189999999478
+        },
+        "firstCorrectResponse": {
+          "count": 5,
+          "p50": 644.3078000000096,
+          "p95": 44446.6943,
+          "p99": 44446.6943,
+          "max": 44446.6943
+        },
+        "physicalEnd": {
+          "count": 35,
+          "p50": 243.3469000000041,
+          "p95": 4583.830199999997,
+          "p99": 44446.6943,
+          "max": 44446.6943
+        },
+        "latestInput": {
+          "attempts": 5,
+          "admitted": 5,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 5,
+            "p50": 86.75799999999435,
+            "p95": 182.34369999999763,
+            "p99": 182.34369999999763,
+            "max": 182.34369999999763
+          },
+          "inputInterval": {
+            "count": 5,
+            "p50": 33.12359999999899,
+            "p95": 81.12699999999313,
+            "p99": 81.12699999999313,
+            "max": 81.12699999999313
+          },
+          "admissionDelay": {
+            "count": 5,
+            "p50": 47.458500000007916,
+            "p95": 64.91310000000522,
+            "p99": 64.91310000000522,
+            "max": 64.91310000000522
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 644.3078000000096,
+            "p95": 44446.6943,
+            "p99": 44446.6943,
+            "max": 44446.6943
+          },
+          "physicalEnd": {
+            "count": 5,
+            "p50": 644.3078000000096,
+            "p95": 44446.6943,
+            "p99": 44446.6943,
+            "max": 44446.6943
+          }
+        }
+      },
+      {
+        "intervalMs": 100,
+        "attempts": 35,
+        "admitted": 35,
+        "admissionRejected": 0,
+        "correct": 10,
+        "superseded": 25,
+        "timedOut": 0,
+        "cancelled": 0,
+        "failed": 0,
+        "over50Ms": 10,
+        "schedulingDelay": {
+          "count": 35,
+          "p50": 17.324299999992945,
+          "p95": 1432.368300000002,
+          "p99": 1481.5162999999884,
+          "max": 1481.5162999999884
+        },
+        "inputInterval": {
+          "count": 30,
+          "p50": 101.01880000000529,
+          "p95": 370.09090000001015,
+          "p99": 1523.89880000001,
+          "max": 1523.89880000001
+        },
+        "admissionDelay": {
+          "count": 35,
+          "p50": 62.876799999998184,
+          "p95": 175.62630000000354,
+          "p99": 370.08000000000175,
+          "max": 370.08000000000175
+        },
+        "firstCorrectResponse": {
+          "count": 10,
+          "p50": 251.43060000000696,
+          "p95": 5920.088699999993,
+          "p99": 5920.088699999993,
+          "max": 5920.088699999993
+        },
+        "physicalEnd": {
+          "count": 35,
+          "p50": 379.71339999999327,
+          "p95": 3894.0553999999975,
+          "p99": 5920.088699999993,
+          "max": 5920.088699999993
+        },
+        "latestInput": {
+          "attempts": 5,
+          "admitted": 5,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 5,
+            "p50": 82.48150000000896,
+            "p95": 1385.2249999999913,
+            "p99": 1385.2249999999913,
+            "max": 1385.2249999999913
+          },
+          "inputInterval": {
+            "count": 5,
+            "p50": 75.55479999999807,
+            "p95": 370.09090000001015,
+            "p99": 370.09090000001015,
+            "max": 370.09090000001015
+          },
+          "admissionDelay": {
+            "count": 5,
+            "p50": 62.431400000001304,
+            "p95": 175.62630000000354,
+            "p99": 175.62630000000354,
+            "max": 175.62630000000354
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 1557.167100000006,
+            "p95": 5920.088699999993,
+            "p99": 5920.088699999993,
+            "max": 5920.088699999993
+          },
+          "physicalEnd": {
+            "count": 5,
+            "p50": 1557.167100000006,
+            "p95": 5920.088699999993,
+            "p99": 5920.088699999993,
+            "max": 5920.088699999993
+          }
+        }
+      },
+      {
+        "intervalMs": null,
+        "attempts": 35,
+        "admitted": 35,
+        "admissionRejected": 0,
+        "correct": 35,
+        "superseded": 0,
+        "timedOut": 0,
+        "cancelled": 0,
+        "failed": 0,
+        "over50Ms": 35,
+        "schedulingDelay": {
+          "count": 35,
+          "p50": 0.0019000000029336661,
+          "p95": 0.0028000000020256266,
+          "p99": 0.003499999991618097,
+          "max": 0.003499999991618097
+        },
+        "inputInterval": {
+          "count": 30,
+          "p50": 133.03899999998976,
+          "p95": 369.497000000003,
+          "p99": 451.0257999999885,
+          "max": 451.0257999999885
+        },
+        "admissionDelay": {
+          "count": 35,
+          "p50": 76.98580000000948,
+          "p95": 196.58839999999327,
+          "p99": 205.54009999999835,
+          "max": 205.54009999999835
+        },
+        "firstCorrectResponse": {
+          "count": 35,
+          "p50": 133.54619999999704,
+          "p95": 450.97709999998915,
+          "p99": 794.2240999999922,
+          "max": 794.2240999999922
+        },
+        "physicalEnd": {
+          "count": 35,
+          "p50": 133.54619999999704,
+          "p95": 450.97709999998915,
+          "p99": 794.2240999999922,
+          "max": 794.2240999999922
+        },
+        "latestInput": {
+          "attempts": 5,
+          "admitted": 5,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 5,
+            "p50": 0.0019000000029336661,
+            "p95": 0.003499999991618097,
+            "p99": 0.003499999991618097,
+            "max": 0.003499999991618097
+          },
+          "inputInterval": {
+            "count": 5,
+            "p50": 115.96400000000722,
+            "p95": 343.09999999999127,
+            "p99": 343.09999999999127,
+            "max": 343.09999999999127
+          },
+          "admissionDelay": {
+            "count": 5,
+            "p50": 80.29919999999402,
+            "p95": 113.41010000000824,
+            "p99": 113.41010000000824,
+            "max": 113.41010000000824
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 139.14109999999346,
+            "p95": 794.2240999999922,
+            "p99": 794.2240999999922,
+            "max": 794.2240999999922
+          },
+          "physicalEnd": {
+            "count": 5,
+            "p50": 139.14109999999346,
+            "p95": 794.2240999999922,
+            "p99": 794.2240999999922,
+            "max": 794.2240999999922
+          }
+        }
+      }
+    ],
+    "traceCollections": [
+      {
+        "recordingId": "51913556b6260354c2cd21a2d89b83c3",
+        "dropped": 0,
+        "eventCount": 345
+      },
+      {
+        "recordingId": "61dcbb622282973279f1abd5183784de",
+        "dropped": 0,
+        "eventCount": 317
+      },
+      {
+        "recordingId": "2adac06fb74c680a21d1a69560c0b9a7",
+        "dropped": 0,
+        "eventCount": 433
+      },
+      {
+        "recordingId": "a60f5bdb9a9c6272ca3a1360c6d1c8db",
+        "dropped": 0,
+        "eventCount": 410
+      },
+      {
+        "recordingId": "ecd3a15455c793986201553cb51fedb0",
+        "dropped": 0,
+        "eventCount": 380
+      },
+      {
+        "recordingId": "0492b3637daa656aa2437b7c51a981c5",
+        "dropped": 0,
+        "eventCount": 546
+      },
+      {
+        "recordingId": "dd5f2a3cf8d462579e3791e29f186234",
+        "dropped": 0,
+        "eventCount": 694
+      },
+      {
+        "recordingId": "be07127d61ba31151e0ac0b27af7d1e4",
+        "dropped": 0,
+        "eventCount": 379
+      },
+      {
+        "recordingId": "00adff0026ca01542ea70e91d4c8fe81",
+        "dropped": 0,
+        "eventCount": 698
+      },
+      {
+        "recordingId": "1b5d2762a6bdcf8cb2c669257aa2f0b8",
+        "dropped": 0,
+        "eventCount": 441
+      },
+      {
+        "recordingId": "46c3bbde28b8b9c83654fbeebf30ab61",
+        "dropped": 0,
+        "eventCount": 1043
+      },
+      {
+        "recordingId": "530c3fa884ea9fe644b600d5e73e2fae",
+        "dropped": 0,
+        "eventCount": 1043
+      },
+      {
+        "recordingId": "dd989c1844959fed35e64df5db28570a",
+        "dropped": 0,
+        "eventCount": 1043
+      },
+      {
+        "recordingId": "9009c2d19a64618e093b595183f7f54b",
+        "dropped": 0,
+        "eventCount": 1043
+      },
+      {
+        "recordingId": "5e305a93d34a8f5c97a7b527be334b9a",
+        "dropped": 0,
+        "eventCount": 1043
+      }
+    ],
+    "traceEvents": 9858,
+    "sameCallLatestFullMeasurementRequired": true,
+    "actualEditorDecoderRequired": true,
+    "workspaceAfterHostExit": [],
+    "job": {
+      "cpuMs": 87390.625,
+      "peakJobCommitBytes": 456507392,
+      "ownedProcessCount": 63,
+      "activeAtObservation": 0,
+      "driverExitCode": 0,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": true,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    },
+    "controls": {
+      "DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT": "1",
+      "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "1",
+      "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+      "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "0",
+      "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+      "DIY_EXPERIMENT_PREPARED_JIT": "0",
+      "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+      "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+      "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+      "DIY_EXPERIMENT_COMPILED_JIT": "1",
+      "DIY_EXPERIMENT_POOLED_JIT": "1",
+      "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+      "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+      "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+      "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+    },
+    "fileSha256": {
+      ".json": "89db22c1c468f4f353b93c8d2f680124efe3e5211dcc3b4c3ddac75f5b2baa05",
+      ".log": "7a3745a134e7b62492870a5abdd0a1a30c1da16a142787bd264b01f85b801178",
+      ".job.json": "142111c703f8d2f8858d1b9f5c7b7ae7523cf14aa9e2644e5c15ab7e80f86106"
+    }
+  },
+  "previousFailure": {
+    "trial": "trace117-native-raw-cold-v1-separate-20-identity-cold-paced",
+    "source": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+    "runtimeBuildSource": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+    "binaries": {
+      "host": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267",
+      "manager": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9",
+      "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+      "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+    },
+    "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+    "requestedSamples": 5,
+    "mode": "separate",
+    "count": 20,
+    "cadence": "cold-paced",
+    "completed": false,
+    "elapsedSeconds": 113.984,
+    "failure": {
+      "message": "AssertionError [ERR_ASSERTION]: {\"code\":\"result-gone\",\"message\":\"run result is unavailable; this does not mean it never executed\"}\n\nfalse !== true\n",
+      "stack": "AssertionError [ERR_ASSERTION]: {\"code\":\"result-gone\",\"message\":\"run result is unavailable; this does not mean it never executed\"}\n\nfalse !== true\n\n    at Client.call (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-trace-host/scripts/benchmark-primitive-retention.mjs:69:85)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async read (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-trace-host/scripts/benchmark-primitive-retention.mjs:140:26)\n    at async observe (file:///C:/Users/USER/Documents/ChatGPT/DIY_IME2/.work/resume-20261113/DIY_IME-trace-host/scripts/host-input-scenarios.mjs:29:26)"
+    },
+    "partialRoundCount": 0,
+    "frozenTraceCollections": 0,
+    "job": {
+      "cpuMs": 65843.75,
+      "peakJobCommitBytes": 412934144,
+      "ownedProcessCount": 61,
+      "activeAtObservation": 0,
+      "driverExitCode": 1,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": false,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    },
+    "fileSha256": {
+      ".json": "c3f47e2990b1bd059138f08da8a3a4f0c34bd3172763bcb43f6ca9ea1d66e0ff",
+      ".log": "f9aea69cf971a2b861cbe30defbb9cffec7dc1ea8cf61e8a25f35229d2844504",
+      ".job.json": "71c76716f7e9d9837d35392190b62171aad8639006c70249b61a1588be52b139"
+    },
+    "limitation": "No partial attempt/key evidence survives. Cannot identify which key became unavailable or claim latest loss, trace-loss pass/failure, or performance percentiles. No retry performed."
+  },
+  "limitations": [
+    "One raw-Wasm separate20 synthetic trial on the same newly built runtime; not a universal absence of result loss or trace contention.",
+    "First20ms burst latest response was44446.6943ms; the20ms latest-response median across five bursts was644.3078ms. Major product response problems remain.",
+    "Actual input intervals and scheduling/admission delays are recorded separately; requested20ms is not proof all physical submissions occurred20ms apart.",
+    "Guest API still includes SDK ABI/JSON work; no semantic Node Execution Overhead or Goal performance pass claimed.",
+    "The old result-gone report lacked the key and attempts. Its exact expired key cannot be retrospectively recovered; this is not a controlled causal A/B latency comparison.",
+    "Full exact-source combined CI remains required."
+  ]
+}

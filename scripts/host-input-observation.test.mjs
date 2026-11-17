@@ -114,3 +114,15 @@ test('failed submission settles the outstanding read and preserves both failures
   assert.equal(progress.attempts[1].submissionFailure.message,'second-submit-failed');
   assert.equal(progress.counts.unresolvedAdmission,1);assert.equal(progress.counts.physicalEndUnknown,1);
 });
+
+test('a stuck outstanding read cannot block failure finalization or mutate returned evidence',{timeout:4000},async()=>{
+  let progress,release,submitted=0;const failure=Error('submission-failed');
+  await assert.rejects(measureHostInput({...defaults,independentInput:true,intervals:[20,100,null],
+    observeRound:r=>{progress=r;},
+    submit:async()=>{if(++submitted===2)throw failure;return {runId:'1'};},
+    read:async()=>{await new Promise(resolve=>{release=resolve;});return terminal;}}),e=>e===failure);
+  assert.equal(progress.outstandingReadUnsettled,true);assert.equal(progress.failure.message,'submission-failed');
+  assert.equal(progress.attempts[0].endedMs,null);assert.equal(progress.counts.physicalEndUnknown,1);
+  const frozen=JSON.stringify(progress);release();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(JSON.stringify(progress),frozen);
+});

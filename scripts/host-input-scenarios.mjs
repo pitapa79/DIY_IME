@@ -25,8 +25,9 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
       const errorEvidence = error => ({name: error?.name ?? 'Error', message: String(error?.message ?? error)});
       const staleAndEnded = new Set();
       let observing;
+      let closed = false;
       try {
-        if (observeRound) observeRound(progress);
+        if (observeRound) await observeRound(progress);
         if (beginRound) await beginRound();
         origin = performance.now();
         let index = 0;
@@ -37,7 +38,8 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         async function observe(record) {
           let snapshot;
           try { snapshot = await read(record.key); }
-          catch (error) {record.observationFailure = errorEvidence(error); throw error;}
+          catch (error) {if (!closed) record.observationFailure = errorEvidence(error); throw error;}
+          if (closed) return;
           const observed = performance.now() - record.issued;
           if (!snapshot.current) {
             if (snapshot.current !== false || snapshot.result != null) {
@@ -147,11 +149,21 @@ export async function measureHostInput({submit, read, ended, verify, summarize, 
         progress.complete = true;
       } catch (error) {
         progress.failure = errorEvidence(error);
-        // Settle the one already-issued read before the caller serializes the
-        // evidence. Never replace the original failure with a secondary read.
-        if (observing) await observing;
+        // Bound failure-only observation finalization. A stuck read must not
+        // prevent the caller from closing its Host. An unresolved read proves
+        // neither a result nor physical ending; late replies cannot mutate the
+        // already returned evidence or replace the original failure.
+        if (observing) {
+          let timer;
+          try {
+            const settled = await Promise.race([observing.then(() => true),
+              new Promise(resolve => {timer = setTimeout(() => resolve(false), 1000);})]);
+            if (!settled) progress.outstandingReadUnsettled = true;
+          } finally {clearTimeout(timer);}
+        }
         throw error;
       } finally {
+        closed = true;
         const latest = steps.length && pending.length === steps.length ? pending.at(-1) : null;
         progress.latestInput = {attempted: latest !== null, admissionStatus: latest?.admissionStatus ?? null,
           outcome: latest?.outcome ?? null, responseMs: latest?.responseMs ?? null,

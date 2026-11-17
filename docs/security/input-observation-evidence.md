@@ -27,6 +27,12 @@ submission/read/verification failures and latest-input evidence. Missing
 observations stay null. A failed submission has unknown admission, not busy or
 proof that no process ran. A single already-issued read is settled before a
 different failure is returned, preserving both records and the original error.
+Failure finalization waits at most1000ms for the one already-issued read, then
+records outstandingReadUnsettled and freezes unknown observations. A late reply
+cannot mutate returned evidence. This is a test-only failure-evidence bound,
+not a Host timeout, termination receipt or product recovery allowance. The
+caller can then close its Host under the unchanged outer Job bounds. The
+original failure is preserved even if the outstanding read also fails.
 The primitive harness keeps these round objects even when it fails before the
 normal finish hook. These are private synthetic benchmark reports; no Host
 diagnostic input payload, product API or real-input logging was added.
@@ -51,8 +57,29 @@ scheduling and preserving two simultaneous failures. Existing input-interval,
 same-call/lifecycle analysis and Windows benchmark tests are also checked.
 The new tests are added to the existing required CI command; no job is removed.
 
-Initial combined36 tests passed. Source-bound real Windows confirmation and
-required full combined CI remain pending. This fixes measurement fidelity and
+Initial combined36 tests passed at4bebe764ec6bb40a1828b3858c6fb3c3d8b4d7cd.
+One source-bound raw20cold-paced Windows trial at that harness commit, reusing
+the newly built30ee1ca production executables, passed in123.922s:105 inputs,
+15 complete rounds,15 latest correct results,90 observed stale/end proofs,
+15 frozen trace collections/9858 events/dropped0 and unchanged actual Editor
+decoding. The Host reclaimed its worker workspace; the outer Job reported
+driver0, no timeout, all descendants ended and no missing memory reads.
+See [exact-source local evidence](evidence/input-observation-local-20261117.json).
+
+This is not a performance pass. The raw route's first20ms burst latest response
+was44446.6943ms; the five-burst median was644.3078ms.100ms latest median was
+1557.1671ms and sequential latest median139.1411ms, each with five latest
+samples. Actual submission intervals, scheduling and admission delays are
+reported separately; requested20ms is not proof all submissions met that pace.
+Guest API includes SDK/ABI work and does not isolate semantic Node execution.
+The old report cannot retrospectively reveal which result expired. These
+different trials are not a controlled causal A/B latency comparison.
+
+Subsequent self-review found that an unresponsive already-issued read could
+stall failure finalization. The additional finite-wait/late-reply test and all
+existing related checks now pass37 tests. The measured raw trial remains bound
+to4bebe76, before this failure-only addition; no relabeling of measured source.
+Required full combined CI remains pending. This fixes measurement fidelity and
 observer starvation, not product recovery latency. General S1 eligibility,
 semantic-work separation, broad contexts/lifetimes and technical practicality
 under Goal109 remain unfinished; product/default adoption is separate.
