@@ -3,6 +3,21 @@
 Registers obtained to confirm suspension are wiped and never emitted. Image,
 workspace, digest and live process/thread ownership are checked before acting.
 """
+import sys
+import time
+
+
+def setup_stage(stage):
+    # Fixed test-only vocabulary, never process paths, inputs, or registers.
+    if __name__ == '__main__':
+        try:
+            print('DIYIME_HOLD_SETUP ' + stage, file=sys.stderr, flush=True)
+        except OSError:
+            pass  # Diagnostic delivery never substitutes for owned cleanup.
+
+
+setup_stage('python-entered')
+
 import argparse
 import ctypes as c
 from ctypes import wintypes as w
@@ -12,9 +27,7 @@ import json
 import msvcrt
 import os
 from pathlib import Path
-import sys
 import threading
-import time
 
 spec = importlib.util.spec_from_file_location(
     'hold_job_base', Path(__file__).with_name('measure-windows-benchmark-job.py'))
@@ -45,6 +58,7 @@ class ThreadEntry(c.Structure):
 
 first_thread = api('Thread32First', w.BOOL, w.HANDLE, c.POINTER(ThreadEntry))
 next_thread = api('Thread32Next', w.BOOL, w.HANDLE, c.POINTER(ThreadEntry))
+setup_stage('native-api-ready')
 
 
 def digest_file(path):
@@ -72,6 +86,7 @@ def checked_worker(pid, root, digest):
         raise ValueError('invalid expected process identity')
     handle = base.check(open_process(0x1000 | 0x100000 | 0x1, False, pid))
     try:
+        setup_stage('original-handle-opened')
         if not alive(handle):
             raise ValueError('original Worker already ended')
         buffer, length = c.create_unicode_buffer(32768), w.DWORD(32768)
@@ -81,6 +96,7 @@ def checked_worker(pid, root, digest):
             raise ValueError('process is not an exact workspace Worker')
         if digest_file(path) != digest:
             raise ValueError('Worker image digest differs')
+        setup_stage('image-verified')
         if c.sizeof(c.c_void_p) != 8:
             raise ValueError('native AMD64 helper required')
         guest_machine, native_machine = w.WORD(), w.WORD()
@@ -92,6 +108,7 @@ def checked_worker(pid, root, digest):
         if process_id(handle) != pid or not alive(handle):
             raise ValueError('original Worker identity expired')
         created = times[0].dwLowDateTime | (times[0].dwHighDateTime << 32)
+        setup_stage('original-identity-verified')
         return handle, str(created)
     except BaseException:
         base.close(handle)
@@ -227,8 +244,10 @@ def main():
 
     threading.Thread(target=watchdog, daemon=True).start()
     try:
+        setup_stage('suspension-started')
         held = HeldThreads(process)
         count = len(held.threads)
+        setup_stage('suspension-confirmed')
         emit({'event': 'held', 'pid': args.pid, 'creationFileTime': created, 'threads': count})
         stdin = msvcrt.get_osfhandle(sys.stdin.fileno())
         deadline = time.monotonic() + args.hold_ms / 1000

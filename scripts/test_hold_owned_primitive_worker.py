@@ -166,7 +166,14 @@ class HoldTests(unittest.TestCase):
         child, started = self.helper()
         child.stdin.close()
         released = line(child)
-        self.assertEqual(child.wait(timeout=5), 0, child.stderr.read().decode(errors='replace'))
+        code = child.wait(timeout=5)
+        evidence = child.stderr.read().decode(errors='replace')
+        self.assertEqual(code, 0, evidence)
+        self.assertEqual(evidence.splitlines(), [
+            'DIYIME_HOLD_SETUP ' + stage for stage in (
+                'python-entered', 'native-api-ready', 'original-handle-opened',
+                'image-verified', 'original-identity-verified', 'suspension-started',
+                'suspension-confirmed')])
         self.assertEqual(released['event'], 'released')
         self.assertEqual(released['reason'], 'eof-or-release')
         self.assertFalse(released['originalHandleSignalled'])
