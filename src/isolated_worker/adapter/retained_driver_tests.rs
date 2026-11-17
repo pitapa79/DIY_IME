@@ -125,6 +125,7 @@ impl Fixture {
         let owner_unconfirmed = unconfirmed.clone();
         let (send, ended) = mpsc::sync_channel(1);
         let owner = thread::spawn(move || {
+            let fixture_preparation_started = std::time::Instant::now();
             let result = (|| -> Result<ExitReceipt, String> {
                 let cleanup_pin = cleanup_pin;
                 let mut profile = PreparationProfile {
@@ -132,6 +133,10 @@ impl Fixture {
                     strict: captured,
                 };
                 let job = Job::with_memory_limit(Some(512 * 1024 * 1024))?;
+                eprintln!(
+                    "retained fixture profile/job prepared: {:?}",
+                    fixture_preparation_started.elapsed()
+                );
                 let cache = Cache::new(Path::new(env!("CARGO_MANIFEST_DIR")), &profile)?;
                 let program = cache.copy(&worker, "worker.exe")?;
                 let runtime_path = cache.copy(&dll, "wasmtime.dll")?;
@@ -148,6 +153,10 @@ impl Fixture {
                     module1.clone(),
                 ];
                 cache.allow_read_execute(&profile)?;
+                eprintln!(
+                    "retained fixture assets/ACL prepared: {:?}",
+                    fixture_preparation_started.elapsed()
+                );
                 let mut args = vec![
                     "--retained-resources-v1".into(),
                     runtime_path.into_os_string(),
@@ -229,6 +238,12 @@ impl Fixture {
                 drop(cleanup_pin);
                 result
             })();
+            if let Err(error) = &result {
+                eprintln!(
+                    "retained fixture owner failed after {:?}: {error}",
+                    fixture_preparation_started.elapsed()
+                );
+            }
             let _ = send.send(result);
         });
         Self {
@@ -758,6 +773,116 @@ fn real_retained_driver_stage_publication() {
     eprintln!(
         "retained per-stage publication and exact suffix hooks passed; actual Core skip attestation belongs to the Host coordinator"
     );
+}
+
+#[test]
+#[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
+fn real_retained_driver_queue_release_before_reply() {
+    let mut fixture = Fixture::start(policy());
+    let (entered_send, entered) = mpsc::sync_channel(1);
+    let (resume, wait) = mpsc::channel();
+    let client = fixture.client.as_mut().unwrap();
+    client.wait_ready(Duration::from_secs(10)).unwrap();
+    client.pause_after_reply_for_test(2, entered_send, wait);
+    let cancel = CancellationToken::default();
+    let empty = fixture_empty(&fixture.gate, &fixture.target, 2, cancel.clone());
+    let resource = fixture_scope(
+        &fixture.gate,
+        &fixture.target,
+        2,
+        cancel.clone(),
+        fixture.source.clone(),
+    );
+    let mut input = fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .begin_input(fixture_key(2), cancel)
+        .unwrap();
+    assert_eq!(
+        input.call(b"{}".to_vec(), empty).unwrap(),
+        json!({"counter":1,"memory":1})
+    );
+    let data = input.call(sdk_request(), resource).unwrap();
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        fixture.host.usage().queued_jobs,
+        1,
+        "the unfinished parent input still owns its reservation"
+    );
+    let accepted = input.finish(|| Ok(data)).unwrap();
+    assert_eq!(
+        fixture.host.usage().queued_jobs,
+        0,
+        "completed IO must release its clone before waking the parent"
+    );
+    assert_eq!(fixture.host.usage().queued_input_bytes, 0);
+    assert_eq!(fixture.host.usage().physical_jobs, 1);
+    assert_eq!(fixture.host.usage().reserved_result_bytes, 8192);
+    assert!(fixture.ended.try_recv().is_err());
+    assert_eq!(accepted, json!({"copied":[97,98,99,100,101,102,103,104]}));
+    resume.send(()).unwrap();
+    fixture.close();
+}
+
+#[test]
+#[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
+fn real_retained_driver_pending_io_keeps_queue_lease() {
+    let mut fixture = Fixture::start(policy());
+    fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .wait_ready(Duration::from_secs(10))
+        .unwrap();
+    let (entered_send, entered) = mpsc::sync_channel(1);
+    let (resume, wait) = mpsc::channel();
+    let cancel = CancellationToken::default();
+    let empty = fixture_empty(&fixture.gate, &fixture.target, 2, cancel.clone());
+    let mut resource = fixture_scope(
+        &fixture.gate,
+        &fixture.target,
+        2,
+        cancel.clone(),
+        fixture.source.clone(),
+    );
+    let mut paused = false;
+    resource.after_read = Some(Box::new(move || {
+        if !paused {
+            paused = true;
+            entered_send.try_send(()).unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        }
+    }));
+    let host = fixture.host.clone();
+    let mut input = fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .begin_input(fixture_key(2), cancel.clone())
+        .unwrap();
+    assert_eq!(
+        input.call(b"{}".to_vec(), empty).unwrap(),
+        json!({"counter":1,"memory":1})
+    );
+    thread::scope(|scope| {
+        let call = scope.spawn(move || {
+            let result = input.call(sdk_request(), resource);
+            drop(input);
+            result
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        cancel.cancel();
+        assert!(call.join().unwrap().is_err());
+        // The parent input has dropped, but the IO callback is still blocked.
+        // Its queue reservation cannot be released merely on cancellation.
+        assert_eq!(host.usage().queued_jobs, 1);
+        assert_eq!(host.usage().physical_jobs, 1);
+        resume.send(()).unwrap();
+    });
+    fixture.close();
+    assert_eq!(fixture.host.usage().queued_jobs, 0);
+    assert_eq!(fixture.host.usage().queued_input_bytes, 0);
 }
 
 #[test]
