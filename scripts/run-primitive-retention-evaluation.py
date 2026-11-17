@@ -29,6 +29,8 @@ controls = ['INHERITED_CODE_ACL', 'VERIFIED_RUNTIME_FILE', 'OVERLAP_WORKER_CLEAN
 env = {k: v for k, v in os.environ.items() if not k.startswith('DIY_EXPERIMENT_')}
 env.update({'DIY_EXPERIMENT_'+k: '1' for k in controls})
 env['DIY_PRIMITIVE_PYTHON'] = sys.executable
+env['DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT'] = '1'
+env['DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK'] = '1'
 cases = []
 timing_controls = []
 startup_limits = []
@@ -88,7 +90,8 @@ def save():
              *sorted((repo/'scripts').glob('*primitive*'))]
     files.extend(sorted((repo/'scripts').glob('analyze-retained-*.mjs')))
     files.extend([repo/'scripts/host-input-scenarios.mjs', repo/'scripts/host-input-intervals.test.mjs',
-                  repo/'scripts/terminate-owned-retention-worker.py'])
+                  repo/'scripts/private-sample-delivery.mjs', repo/'scripts/private-sample-delivery.test.mjs',
+                  repo/'scripts/terminate-owned-retention-worker.py', repo/'editor/src/executionTrace.ts'])
     files.extend(sorted(output.glob('*.json')))
     files.extend(sorted(output.glob('*.log')))
     manifest['files'] = [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}

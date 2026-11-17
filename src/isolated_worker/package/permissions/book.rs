@@ -321,10 +321,10 @@ impl PendingPermissionSession {
         if !matches!(group_size, 1 | 4)
             || plan.nodes.is_empty()
             || plan.nodes.len() > 20
-            || plan
-                .nodes
-                .iter()
-                .any(|n| !n.node.retention_evaluation_eligible())
+            || plan.nodes.iter().any(|n| {
+                !n.node
+                    .retention_evaluation_eligible(&n.config, group_size == 4)
+            })
         {
             return Err(CoreError::new(
                 "retained-evaluation",

@@ -1,0 +1,266 @@
+{
+  "issue": 121,
+  "goal": 109,
+  "sourceCommit": "5a16ae7111433da82b4473d6495f5daa21b50500",
+  "runtimeBuildSourceCommit": "33b8c4701daa33a541e88d79d2aa4e4f81b30a84",
+  "runtimeExecutionDiff": [],
+  "scope": "actual Host/IPC input against a controlled suspended Worker; not guest-running proof",
+  "localOnly": true,
+  "combinedCiPassed": false,
+  "durationSeconds": 97.78099999995902,
+  "binaries": {
+    "host": "0809ac8f7ec75fd8e2ae3cff5e4116a4b1bbaca968b2fd5f6f523a8a23b5e3cc",
+    "manager": "dad9ee900fc27fca3ec919ce7602961076ab121b32b1ddc89e4505e36e2fb6a2",
+    "worker": "3c34bc3966eb177fcc05b56fedf49eaacf41aff729df4113f8ee5a32b1380955",
+    "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+  },
+  "moduleSha256": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+  "controlledCancellation": {
+    "scope": "actual Host/IPC input against a controlled suspended Worker; not guest-running proof",
+    "pid": 98528,
+    "passed": true,
+    "held": {
+      "event": "held",
+      "pid": 98528,
+      "creationFileTime": "134393458662559521",
+      "threads": 3
+    },
+    "key": {
+      "deliveryGeneration": "4",
+      "inputRevision": 2,
+      "planVersion": "1",
+      "runId": "7",
+      "sessionEpoch": "c68488f6138e7e66bf293e4fb638df83"
+    },
+    "observedActive": true,
+    "activePhysical": {
+      "cancelRequested": 0,
+      "queued": 0,
+      "running": 1,
+      "stalled": 0
+    },
+    "ending": {
+      "code": 0,
+      "error": null,
+      "header": {
+        "event": "held",
+        "pid": 98528,
+        "creationFileTime": "134393458662559521",
+        "threads": 3
+      },
+      "release": {
+        "event": "released",
+        "reason": "original-exit",
+        "originalHandleSignalled": true,
+        "threads": 3,
+        "resumed": 0,
+        "forcedCleanup": false
+      },
+      "stderr": ""
+    },
+    "outcome": "cancelled",
+    "finalPhysical": {
+      "cancelRequested": 0,
+      "queued": 0,
+      "running": 0,
+      "stalled": 0
+    },
+    "freshGeneration": 21,
+    "helperCompletion": {
+      "code": 0,
+      "error": null,
+      "header": {
+        "event": "held",
+        "pid": 98528,
+        "creationFileTime": "134393458662559521",
+        "threads": 3
+      },
+      "release": {
+        "event": "released",
+        "reason": "original-exit",
+        "originalHandleSignalled": true,
+        "threads": 3,
+        "resumed": 0,
+        "forcedCleanup": false
+      },
+      "stderr": ""
+    }
+  },
+  "safety": [
+    {
+      "check": "empty-and-unicode",
+      "passed": true
+    },
+    {
+      "check": "plan-session-replacement-and-old-key-fence",
+      "passed": true
+    },
+    {
+      "check": "controlled-active-host-input-cancel-original-exit-and-recovery",
+      "passed": true
+    },
+    {
+      "check": "active-cancel-and-recovery",
+      "trial": 0,
+      "observedActive": true,
+      "outcome": "cancelled"
+    },
+    {
+      "check": "active-cancel-and-recovery",
+      "trial": 1,
+      "observedActive": false,
+      "outcome": "completed"
+    },
+    {
+      "check": "active-cancel-and-recovery",
+      "trial": 2,
+      "observedActive": false,
+      "outcome": "completed"
+    },
+    {
+      "check": "protection-response-fence-original-process-drain-and-recovery",
+      "passed": true
+    },
+    {
+      "check": "revocation-drain-consent-and-recovery",
+      "passed": true
+    },
+    {
+      "check": "owned-original-process-fault-no-retroactive-result-change-and-recovery",
+      "passed": true,
+      "pid": 99960
+    },
+    {
+      "check": "close-session-and-fresh-reopen",
+      "passed": true
+    }
+  ],
+  "traceCollections": [
+    {
+      "recordingId": "20585e7fc62aa6a9179d081498976e00",
+      "dropped": 0,
+      "eventCount": 149
+    },
+    {
+      "recordingId": "cfb614f71743b03e1ce481769e8e816c",
+      "dropped": 0,
+      "eventCount": 149
+    }
+  ],
+  "workspaceAfterHostExit": [],
+  "afterClose": {
+    "phase": "empty",
+    "physicalJobs": 0,
+    "workerProcesses": 0
+  },
+  "job": {
+    "cpuMs": 63812.5,
+    "peakJobCommitBytes": 623030272,
+    "ownedProcessCount": 251,
+    "activeAtObservation": 0,
+    "driverExitCode": 0,
+    "timedOut": false,
+    "allDescendantsExited": true,
+    "successful": true,
+    "memorySamplingIntervalMs": 100,
+    "missingProcessMemoryReads": 0,
+    "workingSetSumCountsSharedPagesMultipleTimes": true
+  },
+  "helperTests": {
+    "passed": 5,
+    "seconds": 72.45,
+    "priorFixtureCleanupRunsFailed": [
+      1,
+      2,
+      3
+    ]
+  },
+  "files": [
+    {
+      "path": "cancel121-compiled-active-v1-separate-20-identity-safety.json",
+      "bytes": 562425,
+      "sha256": "ef92562198dbd13ff98d82f058661ca7a73fd506a28a848a44e425edc17915e7"
+    },
+    {
+      "path": "cancel121-compiled-active-v1-separate-20-identity-safety.log",
+      "bytes": 514,
+      "sha256": "424ce1944086c201c377236ec9027c366fda11501dde75554436e9a54ca02f0c"
+    },
+    {
+      "path": "cancel121-compiled-active-v1-separate-20-identity-safety.job.json",
+      "bytes": 2632360,
+      "sha256": "701b2db3c9c000a632f0f0498874f182373a77b94118450299c260e570dd88b4"
+    },
+    {
+      "path": "cancel121-owned-hold-unit-v4.log",
+      "bytes": 109,
+      "sha256": "9c62aa848af1ee373a728957cf4b403c4054d73fda39e471f01c9e7413b90af5"
+    },
+    {
+      "path": "cancel121-cleanup-probe-v1.json",
+      "bytes": 667,
+      "sha256": "085cc1ef1e47306b47a7099ffe8faf80e09105df09fc19b1a4775d39be2f7aee"
+    },
+    {
+      "path": "cancel121-owned-hold-unit-v1.log",
+      "bytes": 1670,
+      "sha256": "5330fe497efdf9b5db2a731ba2789044e0fb4af6ffd8c3be359d815afdc00326"
+    },
+    {
+      "path": "cancel121-owned-hold-unit-v2.log",
+      "bytes": 1160,
+      "sha256": "b65fffee41251ed9f5eace4a02a91bdc3fed71bf54ee2f92817d9372e0dced27"
+    },
+    {
+      "path": "cancel121-owned-hold-unit-v3.log",
+      "bytes": 950,
+      "sha256": "1bf51eafb2c974b9cd69b37404380e667da72fa514fd02a7dda1f3d65f3fd15c"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/hold-owned-primitive-worker.py",
+      "bytes": 11313,
+      "sha256": "bfb305434142dd375815363aa5482e93f68fcb0998b99b47c28952eef00def40"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/hold-owned-primitive-worker.mjs",
+      "bytes": 3825,
+      "sha256": "f34b323366210308df092af1850b198bc454286017faa3c48a7b211f61543530"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/test_hold_owned_primitive_worker.py",
+      "bytes": 8774,
+      "sha256": "897782f8d9931b17b9ed7dbd8dade1febac8df1328421ff74dc0812d86e18f4e"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/benchmark-primitive-retention.mjs",
+      "bytes": 28215,
+      "sha256": "dab6d85f21b96bd35e5e62c0d35e2a8959f2aabe3c9d8c05d37e915f1dce1760"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/measure-primitive-retention-job.py",
+      "bytes": 6061,
+      "sha256": "9283da40ef0520166551d941712e016e861f0b3747316794d859cc55ff84d1d5"
+    },
+    {
+      "path": "DIY_IME-cancel-host/scripts/measure-windows-benchmark-job.py",
+      "bytes": 6067,
+      "sha256": "db2b91cb3f4e1f1b8dcb194395dd254bd9099c8c2aa6f123ed4b2aa61b20e0f4"
+    }
+  ],
+  "limitations": [
+    "Controlled suspended Worker does not prove guest instructions executing.",
+    "No semantic Node overhead or product performance claim.",
+    "General qualification, full matrix, practical response and main integration remain incomplete."
+  ],
+  "supplementalTests": [
+    {
+      "case": "stale original PID refused while its original handle prevents PID reuse",
+      "count": 1,
+      "seconds": 16.345,
+      "passed": true,
+      "testScriptSha256": "b72da005381f3515a2fed60ea0464b4e97d638a050f34a186c93183b6cd4292f",
+      "log": "cancel121-stale-original-unit-v1.log",
+      "logSha256": "168986fd73e6ab7dd295452f2a252b3494ba04c3d40830d86fbc4eabebc97fca"
+    }
+  ]
+}

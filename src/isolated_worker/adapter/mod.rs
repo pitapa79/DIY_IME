@@ -7,6 +7,7 @@ mod network;
 mod profile_pool;
 mod retained;
 mod retention_evaluation;
+mod retention_review;
 pub(in crate::isolated_worker) use retained::Owner as RetainedOwner;
 pub(in crate::isolated_worker) use retention_evaluation::Owners as RetainedOwners;
 pub(in crate::isolated_worker) use retention_evaluation::Stages as RetainedEvaluationStages;

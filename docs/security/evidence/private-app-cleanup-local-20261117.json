@@ -1,0 +1,72 @@
+{
+  "issue": 123,
+  "goal": 109,
+  "startMain": "94931a1d8584587ca835e07870f821a6a0f96f72",
+  "localOnly": true,
+  "combinedCiPassed": false,
+  "tests": {
+    "count": 3,
+    "passed": 3,
+    "durationMs": 13011.3248,
+    "actualWindows": true,
+    "cases": [
+      "Actual initial deletion refusal, then signalled transient reference release and successful bounded cleanup.",
+      "Persistent actual reference must still throw; controller EOF releases it only afterwards.",
+      "Wrong prefix and missing root remain errors."
+    ]
+  },
+  "nodeRuntimeSha256": "d702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5",
+  "retryPolicy": {
+    "maxRetries": 8,
+    "retryDelayMs": 50,
+    "linearBackoffSleepMsPerFailingOperation": 1800,
+    "force": false,
+    "wholeTreeWallClockGuarantee": false
+  },
+  "ownershipGateUnchanged": {
+    "originalLauncherHandle": true,
+    "rawJobMembershipAndAccountingZeroBeforeJobClose": true,
+    "endingDeadlineMs": 30000
+  },
+  "files": [
+    {
+      "path": "private-app-cleanup123-native-v1.log",
+      "bytes": 384,
+      "sha256": "262906725a0b8043134f19ce0aa67ac7cd5b3b3c0b82a97c7bdac7dbc1f85b23"
+    },
+    {
+      "path": "ci43982909396-neutral-job.log",
+      "bytes": 243720,
+      "sha256": "77358a7b924b2d20c6c4cb6fac520251308b9405a86b4d38fbe8f1d2245b2ef7"
+    },
+    {
+      "path": "ci43877903036-startup-job.log",
+      "bytes": 244230,
+      "sha256": "173bfd36834b2faaea07877921adf60a773a7f4b5713f3b0d0bb570888f88fc4"
+    },
+    {
+      "path": "DIY_IME-app-cleanup/scripts/private-app-cleanup.mjs",
+      "bytes": 931,
+      "sha256": "3bf4b542ed5beaf12a4946047477bcb091589c1b6191d2846d93f0c1c5451190"
+    },
+    {
+      "path": "DIY_IME-app-cleanup/scripts/private-app-cleanup.test.mjs",
+      "bytes": 3619,
+      "sha256": "1c99e6f73e1d0145e6bad741f45d1c65192a0d472985d1cfa246858af77c1ee4"
+    },
+    {
+      "path": "DIY_IME-app-cleanup/scripts/private-app-file-lock-fixture.py",
+      "bytes": 1607,
+      "sha256": "32ec8f63ab641b0bda550629098047b5c508f5d4fc97bbe214fb620ef398c138"
+    },
+    {
+      "path": "DIY_IME-app-cleanup/scripts/check-windows-distribution.mjs",
+      "bytes": 14106,
+      "sha256": "9a7b695089d06a0159e3a6b7b72b27e4241a24d7e545913320934ec91765de63"
+    }
+  ],
+  "remaining": [
+    "Exact-source full Windows CI and built application proof",
+    "No S1/default adoption or Goal109 completion claim"
+  ]
+}

@@ -1,0 +1,409 @@
+{
+  "issue": 128,
+  "parentGoal": 109,
+  "sourceSnapshot": {
+    "baseCommit": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+    "modifiedRustFiles": {
+      "src/isolated_worker/pipe/retained/driver.rs": "b28a12733e5c7cca913891d2ffa35c68aa5ece6e26896c89a008297760bed2e1",
+      "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+    },
+    "workingTreePatchSha256": "eddf56836a362d8f6e3cf8280968f6fc3314faa45d592d48e68167e8fce9a91e",
+    "beforePatchSha256": "f76d9c0a02f56c5c8a3c28666761b9bd1dfed81fcdaee17c2719ba373977cb6d",
+    "note": "Actual builds used base plus the explicitly hashed modified Rust files, not an unchanged base commit."
+  },
+  "originalCiFailure": {
+    "run": 44020616003,
+    "job": 133829055141,
+    "segmentsPassed": 8,
+    "segmentsTotal": 9,
+    "conclusion": "failure",
+    "checkout": "5ff2a059d0a2f4a41c79da6f39ddb15cdd2d4a9d",
+    "parents": [
+      "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "1158bee75c7ed7160e14bc25b60bf3b8a6322ad4"
+    ],
+    "tree": "b6ec03ca3a6a21007e8ec90406369fc7f718a09c",
+    "failure": "real_bounded_retained_driver queued_jobs1 versus expected0 after finish",
+    "jobLogSha256": "d350628bcbc0c670935f3549f5174e9bc3850264c72f160e32a8f2219b4f315f"
+  },
+  "controlledBeforeFailure": {
+    "stage": "before-v3",
+    "case": "release",
+    "testExecutableSha256": "4809ddc4d4886f36cd576223827d30284874f56622b4a27b31dd5c2716233abe",
+    "testBuild": {
+      "stage": "before-v3",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "95842fc268a119e7b419e78e02d8800d446ab3d92fb274f2b6e3044fe830ecc5",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "diy-ime2-core",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--config",
+        "profile.release.package.diy-ime2-core.opt-level=1"
+      ],
+      "exitCode": 0,
+      "seconds": 228.93800000008196,
+      "buildLogSha256": "c74b6dd76c5455862129375122c04a838e04cf194ac1f691958549294c7ae3e4",
+      "testExecutable": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\deps\\diy_ime2_core-40cfb49d1907be5c.exe",
+      "testExecutableSha256": "4809ddc4d4886f36cd576223827d30284874f56622b4a27b31dd5c2716233abe"
+    },
+    "explicitExperiments": {
+      "DIY_EXPERIMENT_COMPILED_JIT": "1"
+    },
+    "inheritedExperimentNamesCleared": [],
+    "assetSha256": {
+      "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+      "runtimeDll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+      "sdkConsumer": "5645dd8f92cafa383dc63c6d84009ef0e7dcb92fd59d8e9d91f3fbf08d518da4"
+    },
+    "exitCode": 101,
+    "seconds": 5.530999999959022,
+    "logSha256": "896086f4f736139f4b5ec57794143b290b5fcc23f7ae605060ab502c1613bde3",
+    "job": {
+      "cpuMs": 968.75,
+      "peakJobCommitBytes": 29921280,
+      "ownedProcessCount": 3,
+      "activeAtObservation": 0,
+      "driverExitCode": 101,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": false,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    }
+  },
+  "pendingIoBeforePass": {
+    "stage": "before-v3",
+    "case": "pending",
+    "testExecutableSha256": "4809ddc4d4886f36cd576223827d30284874f56622b4a27b31dd5c2716233abe",
+    "testBuild": {
+      "stage": "before-v3",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "95842fc268a119e7b419e78e02d8800d446ab3d92fb274f2b6e3044fe830ecc5",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "diy-ime2-core",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--config",
+        "profile.release.package.diy-ime2-core.opt-level=1"
+      ],
+      "exitCode": 0,
+      "seconds": 228.93800000008196,
+      "buildLogSha256": "c74b6dd76c5455862129375122c04a838e04cf194ac1f691958549294c7ae3e4",
+      "testExecutable": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\deps\\diy_ime2_core-40cfb49d1907be5c.exe",
+      "testExecutableSha256": "4809ddc4d4886f36cd576223827d30284874f56622b4a27b31dd5c2716233abe"
+    },
+    "explicitExperiments": {
+      "DIY_EXPERIMENT_COMPILED_JIT": "1"
+    },
+    "inheritedExperimentNamesCleared": [],
+    "assetSha256": {
+      "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+      "runtimeDll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+      "sdkConsumer": "5645dd8f92cafa383dc63c6d84009ef0e7dcb92fd59d8e9d91f3fbf08d518da4"
+    },
+    "exitCode": 0,
+    "seconds": 12.719000000040978,
+    "logSha256": "b13d0c95c18ca9a45c3c77fee28466494c5ba94ef4416c5360f0d67ce8fdc153",
+    "job": {
+      "cpuMs": 906.25,
+      "peakJobCommitBytes": 28958720,
+      "ownedProcessCount": 3,
+      "activeAtObservation": 0,
+      "driverExitCode": 0,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": true,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    }
+  },
+  "afterSuite": {
+    "stage": "after",
+    "case": "suite",
+    "testExecutableSha256": "b5507b2f252135ee9a7d7d920a13563cb1decb032bb127e273e427fbc6b4d5ef",
+    "testBuild": {
+      "stage": "after",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "b28a12733e5c7cca913891d2ffa35c68aa5ece6e26896c89a008297760bed2e1",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "diy-ime2-core",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--config",
+        "profile.release.package.diy-ime2-core.opt-level=1"
+      ],
+      "exitCode": 0,
+      "seconds": 242.07799999974668,
+      "buildLogSha256": "51cbdba8fef86dbe832933670631c98bb8082b28234c19092072abad05051c6d",
+      "testExecutable": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\deps\\diy_ime2_core-40cfb49d1907be5c.exe",
+      "testExecutableSha256": "b5507b2f252135ee9a7d7d920a13563cb1decb032bb127e273e427fbc6b4d5ef"
+    },
+    "explicitExperiments": {
+      "DIY_EXPERIMENT_COMPILED_JIT": "1"
+    },
+    "inheritedExperimentNamesCleared": [],
+    "assetSha256": {
+      "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+      "runtimeDll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+      "sdkConsumer": "5645dd8f92cafa383dc63c6d84009ef0e7dcb92fd59d8e9d91f3fbf08d518da4"
+    },
+    "exitCode": 101,
+    "seconds": 155.98400000017136,
+    "logSha256": "4332fb47f3e2d53aea4d19ae41b50a219a13f7d855da67a0037dbbe45f78461a",
+    "job": {
+      "cpuMs": 22703.125,
+      "peakJobCommitBytes": 67100672,
+      "ownedProcessCount": 61,
+      "activeAtObservation": 0,
+      "driverExitCode": 101,
+      "timedOut": false,
+      "allDescendantsExited": true,
+      "successful": false,
+      "memorySamplingIntervalMs": 100,
+      "missingProcessMemoryReads": 0,
+      "workingSetSumCountsSharedPagesMultipleTimes": true
+    }
+  },
+  "afterSuiteResult": {
+    "passed": 6,
+    "failed": 2,
+    "newQueueReleaseCheck": "passed",
+    "newPendingIoCheck": "passed",
+    "failedTests": {
+      "real_bounded_retained_driver": "retained-not-ready before body",
+      "real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget": "retained-not-ready before body"
+    }
+  },
+  "otherPreservedFailures": {
+    "firstBeforeNativeReadinessFailure": {
+      "stage": "before",
+      "case": "release",
+      "testExecutableSha256": "523872324127cde548061099321daa0b33939ef99ebb1565a7e0b0a9ca2a2c93",
+      "testBuild": {
+        "stage": "before",
+        "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+        "sourceFilesSha256": {
+          "src/isolated_worker/pipe/retained/driver.rs": "95842fc268a119e7b419e78e02d8800d446ab3d92fb274f2b6e3044fe830ecc5",
+          "src/isolated_worker/adapter/retained_driver_tests.rs": "d76acf4da5dd9d752dfeb30502d7db1c39f14d0b5d06f15b41640818a56f1915"
+        },
+        "command": [
+          "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+          "test",
+          "--locked",
+          "--offline",
+          "--release",
+          "-p",
+          "diy-ime2-core",
+          "--lib",
+          "--no-run",
+          "--message-format=json"
+        ],
+        "exitCode": 0,
+        "seconds": 530.7029999997467,
+        "buildLogSha256": "24c10379bfad790fb4fd8615ba567a3764e792209e7d1f10548432677efd1c9e",
+        "testExecutable": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\deps\\diy_ime2_core-1a965022e3af92d4.exe",
+        "testExecutableSha256": "523872324127cde548061099321daa0b33939ef99ebb1565a7e0b0a9ca2a2c93"
+      },
+      "assetSha256": {
+        "worker": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+        "runtimeDll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+        "sdkConsumer": "5645dd8f92cafa383dc63c6d84009ef0e7dcb92fd59d8e9d91f3fbf08d518da4"
+      },
+      "exitCode": 101,
+      "seconds": 22.765999999828637,
+      "logSha256": "238eaea8f22a8c0e91bf18735ba00a5361d1104570f58661fec65593126fdba3",
+      "job": {
+        "cpuMs": 484.375,
+        "peakJobCommitBytes": 10223616,
+        "ownedProcessCount": 3,
+        "activeAtObservation": 0,
+        "driverExitCode": 101,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": false,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      }
+    },
+    "diagnosticCompilationFailure": {
+      "stage": "before-v2",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "95842fc268a119e7b419e78e02d8800d446ab3d92fb274f2b6e3044fe830ecc5",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "8c6192cfe48854b0cec6c6054797c72e26d9b9fcd6085b986ec1b50568d73d69"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "diy-ime2-core",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--config",
+        "profile.release.package.diy-ime2-core.opt-level=1"
+      ],
+      "exitCode": 101,
+      "seconds": 374.7029999997467,
+      "buildLogSha256": "4cec27bb8299f0140f0276853c13fe758077e1c401b5c34eb8a959580ef7b08f",
+      "testExecutable": null
+    }
+  },
+  "sdkBuild": {
+    "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+    "fixtureLockSha256": "2e84db4bf0eff31e980d1cf00ae9961f8bd9378cd5e1814cc6fd771af73cac86",
+    "auditedMainLockSha256": "23dbda2bdcc3717daf19011e23874a55accf11a49390394c34189dba20654ed5",
+    "exitCode": 0,
+    "seconds": 187.375,
+    "command": [
+      "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+      "build",
+      "--locked",
+      "--offline",
+      "--manifest-path",
+      "tests/fixtures/resource_sdk_guest/Cargo.toml",
+      "--release",
+      "--target",
+      "wasm32-unknown-unknown",
+      "--target-dir",
+      "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build",
+      "--no-default-features"
+    ],
+    "logSha256": "d236b45107478af88446608a280458f69d834e7a9a68d14f7661dece07bc1f18",
+    "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-public-sdk-consumer.wasm",
+    "bytes": 226491,
+    "sha256": "5645dd8f92cafa383dc63c6d84009ef0e7dcb92fd59d8e9d91f3fbf08d518da4"
+  },
+  "wasmStdComponent": {
+    "source": "https://static.rust-lang.org/dist/rust-std-1.90.0-wasm32-unknown-unknown.tar.xz",
+    "archiveSha256": "e6e3964f4a9639688577d5a3609633b983c795ad8de43c9eceb878a84d1aeb78",
+    "archiveBytes": 21133648
+  },
+  "archivedExecutables": {
+    "before": {
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-test-binaries\\before.exe",
+      "bytes": 10717780,
+      "sha256": "523872324127cde548061099321daa0b33939ef99ebb1565a7e0b0a9ca2a2c93"
+    },
+    "before-v3": {
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-test-binaries\\before-v3.exe",
+      "bytes": 11264850,
+      "sha256": "4809ddc4d4886f36cd576223827d30284874f56622b4a27b31dd5c2716233abe"
+    },
+    "after": {
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-test-binaries\\after.exe",
+      "bytes": 11264850,
+      "sha256": "b5507b2f252135ee9a7d7d920a13563cb1decb032bb127e273e427fbc6b4d5ef"
+    }
+  },
+  "limitations": [
+    "The full after native suite failed6/8, with two readiness failures; not a green regression suite. No retry until green.",
+    "The cause of the earlier and after readiness failures is not established; no clock/timeout was increased.",
+    "Original Worker binary is unchanged30ee1ca; this does not claim a newly built normal Host product execution.",
+    "Local diagnostic before-v3/after use Core optimization1; mandatory final CI debug/default checks remain required.",
+    "Full Rust checks and full final-source Windows CI remain pending; no main integration, S1 adoption, semantic/performance or Goal109 completion."
+  ],
+  "localRustChecks": {
+    "test": {
+      "stage": "test",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "b28a12733e5c7cca913891d2ffa35c68aa5ece6e26896c89a008297760bed2e1",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "--config",
+        "profile.release.package.diy-ime2-core.opt-level=1",
+        "--workspace"
+      ],
+      "exitCode": 101,
+      "seconds": 620.9070000001229,
+      "logSha256": "5c6808927729e1398d6c34b02f7af92830be2b5c31d3e655cccba3ce0a1e7eee",
+      "resultingExecutables": [
+        {
+          "name": "diy-ime2-external-host",
+          "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-external-host.exe",
+          "bytes": 8638912,
+          "sha256": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267"
+        },
+        {
+          "name": "diy-ime2-node-manager",
+          "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-node-manager.exe",
+          "bytes": 8626756,
+          "sha256": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9"
+        },
+        {
+          "name": "diy-ime2-wasm-worker",
+          "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-wasm-worker.exe",
+          "bytes": 8622473,
+          "sha256": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0"
+        }
+      ],
+      "interpretation": "Build failed linking wasm_permission_probe: No space left on device. No tests executed; not a functional test failure or pass."
+    },
+    "fmt": {
+      "stage": "fmt",
+      "sourceHead": "557d2f65e4a6265bbdca3b8ed3ec977475d34ac3",
+      "sourceFilesSha256": {
+        "src/isolated_worker/pipe/retained/driver.rs": "b28a12733e5c7cca913891d2ffa35c68aa5ece6e26896c89a008297760bed2e1",
+        "src/isolated_worker/adapter/retained_driver_tests.rs": "e1ea9f6836d99274fdf937cd91fbffacfffbc845e39377ab7804417ffc39272d"
+      },
+      "command": [
+        "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exitCode": 0,
+      "seconds": 23.67200000025332,
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "status": "not run",
+      "reason": "Local disk exhausted by full workspace build; final-source required CI still needed."
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "command": [
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\runtime-ci\\node.exe",
+    "--test",
+    "scripts/private-sample-delivery.test.mjs",
+    "scripts/analyze-retained-call-timing.test.mjs",
+    "scripts/analyze-retained-lifecycle.test.mjs",
+    "scripts/host-input-intervals.test.mjs",
+    "scripts/host-input-observation.test.mjs",
+    "scripts/benchmark-windows-application.test.mjs"
+  ],
+  "exitCode": 0,
+  "seconds": 9.0,
+  "logSha256": "98cc643ac39a235a803f812e43555b27fb7105e4d4789499c075c949383c19a2",
+  "nodeSyntaxChecks": [
+    "scripts/benchmark-primitive-retention.mjs",
+    "scripts/check-retained-host.mjs"
+  ],
+  "pythonCollectorSyntax": "passed",
+  "modifiedSourceSha256": {
+    "src\\isolated_worker\\package\\execution_host.rs": "63415dee704ee85bb4808e693f918195bacf1145d4e2f2378fd66327075bf9fd",
+    "scripts\\benchmark-primitive-retention.mjs": "399661bbc26a8cda656159674de2986a3fe0baccacf762611abcb3b695a7f4ae",
+    "scripts\\check-retained-host.mjs": "6421171413231bd49b74facf1969eda05e2d07706906052c5fe4422b8756ae80",
+    "scripts\\private-sample-delivery.mjs": "92a8f992927df43ecb24f3ad2939e7ee234d6d847dd6c50854f7093b9b8c95d9",
+    "scripts\\private-sample-delivery.test.mjs": "f03277810e81618e573406cad726955cb255cf32fa21e2218896f860f50bf254",
+    "scripts\\run-primitive-retention-evaluation.py": "e29f22d19f795f2fe2b32160203770c7b2cd21c72a0a6a4e57eb51eb18b9ec65",
+    ".github\\workflows\\security-regression.yml": "ba13ff4cc3affcab6e3d68238f0dcd264dfd8c0304dce956246c44ba5188b09c"
+  }
+}

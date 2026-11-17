@@ -1,0 +1,2738 @@
+{
+  "issue": 127,
+  "parentGoal": 109,
+  "harnessSource": "b814ecdc515bcd49ff25ab79ed201c260d47a9c9",
+  "newHostBuild": {
+    "sourceCommit": "0996064b932f768b70a822ea7acea5628a324f82",
+    "sourceTree": "d8ad11820fc4b80ab082697f4721dad4e1299099",
+    "command": [
+      "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+      "build",
+      "--locked",
+      "--offline",
+      "--release",
+      "--bin",
+      "diy-ime2-external-host"
+    ],
+    "rustflags": null,
+    "exitCode": 0,
+    "seconds": 468.030999999959,
+    "logSha256": "f9912a283c93dcb07c287bf4784ac946a357458bb8be8fef90692cc3f1a6853d",
+    "srcDifferenceFromOld": [
+      "src/isolated_worker/package/execution_host.rs"
+    ],
+    "freeAfter": 97783808,
+    "executable": {
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-host.exe",
+      "bytes": 8639369,
+      "sha256": "ef4899c4e9a7eefab2eff73b0f8d909c998077131230788cca67d84c27393b6b"
+    }
+  },
+  "oldHostBuild": {
+    "sourceCommit": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+    "sourceTree": "8bc9db656a0d63c7713d2933972c13f08b25aca3",
+    "exitCode": 0,
+    "elapsedSeconds": 460.92199999978766,
+    "command": [
+      "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\target\\portable-rust\\toolchain\\bin\\cargo.exe",
+      "build",
+      "--locked",
+      "--offline",
+      "--release",
+      "--bin",
+      "diy-ime2-external-host",
+      "--bin",
+      "diy-ime2-node-manager",
+      "--bin",
+      "diy-ime2-wasm-worker"
+    ],
+    "files": [
+      {
+        "name": "diy-ime2-external-host",
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-external-host.exe",
+        "bytes": 8638912,
+        "sha256": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267"
+      },
+      {
+        "name": "diy-ime2-node-manager",
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-node-manager.exe",
+        "bytes": 8626756,
+        "sha256": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9"
+      },
+      {
+        "name": "diy-ime2-wasm-worker",
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-wasm-worker.exe",
+        "bytes": 8622473,
+        "sha256": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0"
+      }
+    ],
+    "buildLogSha256": "5d1e3d1c4ee887d9a3944ab5f082f34a5999904a01b0ce768834e9e98516c821",
+    "rustcVersion": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+    "rustflags": null
+  },
+  "componentSources": {
+    "oldHost": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+    "newHost": "0996064b932f768b70a822ea7acea5628a324f82",
+    "manager": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+    "worker": "30ee1caf66b9db82ab9b100c1007d00a164d394c"
+  },
+  "scope": "Isolated status-delivery comparison: both native Host builds precede queue-order fix128. Final merged Host validation is still required. Same release profile and fixed Manager/Worker/DLL/module; same observer and repeated retrievals.",
+  "plannedCases": [
+    {
+      "timing": false,
+      "version": "old",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": false,
+      "version": "new",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": false,
+      "version": "new",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": false,
+      "version": "old",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": true,
+      "version": "old",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": true,
+      "version": "new",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": true,
+      "version": "new",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": true,
+      "version": "old",
+      "cadence": "warm",
+      "samples": 30
+    },
+    {
+      "timing": true,
+      "version": "old",
+      "cadence": "cold-paced",
+      "samples": 5
+    },
+    {
+      "timing": true,
+      "version": "new",
+      "cadence": "cold-paced",
+      "samples": 5
+    },
+    {
+      "timing": true,
+      "version": "new",
+      "cadence": "cold-paced",
+      "samples": 5
+    },
+    {
+      "timing": true,
+      "version": "old",
+      "cadence": "cold-paced",
+      "samples": 5
+    }
+  ],
+  "files": {
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-old30ee-production\\diy-ime2-external-host.exe": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-host.exe": "ef4899c4e9a7eefab2eff73b0f8d909c998077131230788cca67d84c27393b6b",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-old30ee-production\\diy-ime2-node-manager.exe": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\queue128-old30ee-production\\diy-ime2-wasm-worker.exe": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\runtime-ci\\wasmtime.dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\runtime-ci\\node.exe": "d702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\DIY_IME-sample-delivery\\distribution\\official\\official.wasm": "105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\DIY_IME-sample-delivery\\scripts\\benchmark-primitive-retention.mjs": "3668f519c181c749173b6487626ffcddd83eeef6ec6362198eabaea4fad9d87b",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\DIY_IME-sample-delivery\\scripts\\private-sample-delivery.mjs": "92a8f992927df43ecb24f3ad2939e7ee234d6d847dd6c50854f7093b9b8c95d9",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\DIY_IME-sample-delivery\\scripts\\host-input-scenarios.mjs": "e0a68fdc46e8d23e64978299dfcd8145f480a844e979f3c4408ec99956e6bbf6",
+    "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\DIY_IME-sample-delivery\\editor\\src\\executionTrace.ts": "b7ef65317e121bc1a5c12ef92c29fdb7e34758323d7f772e1d6cfa51c6ddfc60"
+  },
+  "complete": true,
+  "cases": [
+    {
+      "name": "00-old-timing0-warm",
+      "version": "old",
+      "timing": false,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 131.875,
+      "filesSha256": {
+        "00-old-timing0-warm.json": "078f02a0f4b10e7d4558b03bf9ddfa39ef48e738f5ba8a39b2b92744f8236918",
+        "00-old-timing0-warm.job.json": "ff4eed9084aef852961cc27cd64fca0f272cb0f7662c4ca62c41f8b8aefc49de",
+        "00-old-timing0-warm.log": "6bae1a100dfe13c976db5cee15879065b9ce00d49abdbf5d9d21d768e50b2e91"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 734,
+            "maxJsonBytes": 734,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 2992,
+            "jsonBytes": 2410974,
+            "maxJsonBytes": 881,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7133,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33175,
+            "maxJsonBytes": 1073,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 98,
+            "jsonBytes": 252295,
+            "maxJsonBytes": 5596,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 669158,
+            "maxJsonBytes": 21814,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 676455,
+            "maxJsonBytes": 21814,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26373,
+            "maxJsonBytes": 881,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 28078.125,
+        "peakJobCommitBytes": 348753920,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 31137.551300000003,
+        "prepareThroughReadinessMs": 82599.1839,
+        "prepareThroughFirstResultMs": 84321.2905
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 63.93889999999374,
+        "p95": 1127.7746999999945,
+        "p99": 1152.9593999999925,
+        "max": 1152.9593999999925
+      },
+      "firstResultMs": 1667.1757999999973
+    },
+    {
+      "name": "01-new-timing0-warm",
+      "version": "new",
+      "timing": false,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 116.40599999995902,
+      "filesSha256": {
+        "01-new-timing0-warm.json": "8302b221d7975b3ed28b2ab30b41b7fdc3b5071887d0223a8f1c341ada2d18d6",
+        "01-new-timing0-warm.job.json": "0ca6ebd639c3f320085f793f4bd01a9e179f52a6bfd0190d25cbde38c71b133f",
+        "01-new-timing0-warm.log": "2ccfc1549b818dcf4229e6d5f608b04a19aac243179d4cd093a583992318b76a"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 734,
+            "maxJsonBytes": 734,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 1678,
+            "jsonBytes": 1341855,
+            "maxJsonBytes": 879,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7132,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33113,
+            "maxJsonBytes": 1071,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 66,
+            "jsonBytes": 214465,
+            "maxJsonBytes": 5594,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 668762,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 676057,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26313,
+            "maxJsonBytes": 879,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 26000.0,
+        "peakJobCommitBytes": 347783168,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 20553.1022,
+        "prepareThroughReadinessMs": 46837.9876,
+        "prepareThroughFirstResultMs": 47645.24360000001
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 62.40720000000147,
+        "p95": 169.14519999999902,
+        "p99": 281.63000000000466,
+        "max": 281.63000000000466
+      },
+      "firstResultMs": 762.1065999999992
+    },
+    {
+      "name": "02-new-timing0-warm",
+      "version": "new",
+      "timing": false,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 103.92200000025332,
+      "filesSha256": {
+        "02-new-timing0-warm.json": "e57298fa7201c6c4ca8db1ca32996dec34d99c0787e0a0df76d4561184d5f11b",
+        "02-new-timing0-warm.job.json": "ef91008a5bb98bcf138c4206ffb455ca157ef7f67e00f00c3af8bdd3ec55e393",
+        "02-new-timing0-warm.log": "a41e8164d8b538e76352965dab2bd53591b66382506ccbd23ddb185ce4ae3238"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 734,
+            "maxJsonBytes": 734,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 1925,
+            "jsonBytes": 1548427,
+            "maxJsonBytes": 881,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7131,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33175,
+            "maxJsonBytes": 1073,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 83,
+            "jsonBytes": 234773,
+            "maxJsonBytes": 5596,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 668904,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 676198,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26373,
+            "maxJsonBytes": 881,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 24765.625,
+        "peakJobCommitBytes": 349302784,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 24308.592399999998,
+        "prepareThroughReadinessMs": 59780.8578,
+        "prepareThroughFirstResultMs": 60402.9353
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 62.847099999999045,
+        "p95": 463.5152999999991,
+        "p99": 687.9006999999983,
+        "max": 687.9006999999983
+      },
+      "firstResultMs": 473.7520000000077
+    },
+    {
+      "name": "03-old-timing0-warm",
+      "version": "old",
+      "timing": false,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 112.0,
+      "filesSha256": {
+        "03-old-timing0-warm.json": "a9d617c33455776f49afacf20677b6a9bf974c3ff1c0cd72fc85aa082a1fcd1e",
+        "03-old-timing0-warm.job.json": "f5f40e4b761e6666cb262ccb81613c736e4e22590f9c38431e834f21a2b6e54c",
+        "03-old-timing0-warm.log": "7443a0fbea509aa9764a3bf3d5f3e82cc583e45a1aaf3806d4f6a7865cc7cc96"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 734,
+            "maxJsonBytes": 734,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 1128,
+            "jsonBytes": 920812,
+            "maxJsonBytes": 884,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7131,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33268,
+            "maxJsonBytes": 1076,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 57,
+            "jsonBytes": 204126,
+            "maxJsonBytes": 5599,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 668486,
+            "maxJsonBytes": 21701,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 675777,
+            "maxJsonBytes": 21701,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26463,
+            "maxJsonBytes": 884,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 20906.25,
+        "peakJobCommitBytes": 350048256,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 10419.0628,
+        "prepareThroughReadinessMs": 26371.39929999999,
+        "prepareThroughFirstResultMs": 26572.554999999993
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 59.11960000000545,
+        "p95": 137.65670000000682,
+        "p99": 298.950800000006,
+        "max": 298.950800000006
+      },
+      "firstResultMs": 172.7503999999899
+    },
+    {
+      "name": "04-old-timing1-warm",
+      "version": "old",
+      "timing": true,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 138.43699999991804,
+      "filesSha256": {
+        "04-old-timing1-warm.json": "c543cef32374403046e9e46d42fdbd43cb692a43a1702ac0dbc6bc548983e068",
+        "04-old-timing1-warm.job.json": "4123b2b4a36b25a191df8d9e0edf1d92735e4ee6af6f6b185433a663abe294a5",
+        "04-old-timing1-warm.log": "8419f953fcb8f9e25521b973d5cae2d77b6c0f15ac8d220503f22e7024d14bf0"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 4746,
+            "maxJsonBytes": 4746,
+            "repliesWithSamples": 1
+          },
+          "status": {
+            "replies": 1556,
+            "jsonBytes": 39139469,
+            "maxJsonBytes": 370842,
+            "repliesWithSamples": 1555
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7131,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 6766182,
+            "maxJsonBytes": 362994,
+            "repliesWithSamples": 31
+          },
+          "getRun": {
+            "replies": 42,
+            "jsonBytes": 8220857,
+            "maxJsonBytes": 375556,
+            "repliesWithSamples": 42
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 669793,
+            "maxJsonBytes": 21714,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 677105,
+            "maxJsonBytes": 21714,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 6725693,
+            "maxJsonBytes": 362802,
+            "repliesWithSamples": 30
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 30859.375,
+        "peakJobCommitBytes": 395997184,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 27336.070699999997,
+        "prepareThroughReadinessMs": 53632.082599999994,
+        "prepareThroughFirstResultMs": 53874.527700000006
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 112.2106000000058,
+        "p95": 205.50860000000102,
+        "p99": 359.8847999999998,
+        "max": 359.8847999999998
+      },
+      "firstResultMs": 205.45560000000114
+    },
+    {
+      "name": "05-new-timing1-warm",
+      "version": "new",
+      "timing": true,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 173.14099999982864,
+      "filesSha256": {
+        "05-new-timing1-warm.json": "132f9c502a38aafd36b862855deb24adfa862681047e0dcad5ae40704ab2565a",
+        "05-new-timing1-warm.job.json": "faa71ca1a320a18d9df727dd034fba6a0a69724036c9788225c2bbf90779434a",
+        "05-new-timing1-warm.log": "5501336e4164162c1cb1253a65b380cad5e4860d079748c7199f75444f29f449"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 740,
+            "maxJsonBytes": 740,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 2371,
+            "jsonBytes": 57062048,
+            "maxJsonBytes": 371183,
+            "repliesWithSamples": 2370
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7131,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33327,
+            "maxJsonBytes": 1077,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 110,
+            "jsonBytes": 267368,
+            "maxJsonBytes": 5601,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 669346,
+            "maxJsonBytes": 21758,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 676645,
+            "maxJsonBytes": 21758,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26516,
+            "maxJsonBytes": 885,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 32218.75,
+        "peakJobCommitBytes": 392155136,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 31224.584999999992,
+        "prepareThroughReadinessMs": 71470.05429999999,
+        "prepareThroughFirstResultMs": 71931.2726
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 60.676800000015646,
+        "p95": 1117.9994999999763,
+        "p99": 1285.9014000000025,
+        "max": 1285.9014000000025
+      },
+      "firstResultMs": 426.39790000001085
+    },
+    {
+      "name": "06-new-timing1-warm",
+      "version": "new",
+      "timing": true,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 80.5,
+      "filesSha256": {
+        "06-new-timing1-warm.json": "a6e888a89b27f20f645d2a49d9cd7d5d5b21e38cb0c67f21bfc225235162d26b",
+        "06-new-timing1-warm.job.json": "299542f1a2ebb433bb91d841b79427072d0af4364ed5c93cf945fbd713981838",
+        "06-new-timing1-warm.log": "72df7e6c87026a464a9bc9052b5092d0c6309bd50e7b7b137af2b5d60f9b19a8"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 740,
+            "maxJsonBytes": 740,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 1187,
+            "jsonBytes": 38529653,
+            "maxJsonBytes": 370582,
+            "repliesWithSamples": 1186
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7132,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 33234,
+            "maxJsonBytes": 1074,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 60,
+            "jsonBytes": 207613,
+            "maxJsonBytes": 5597,
+            "repliesWithSamples": 0
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 668785,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 676078,
+            "maxJsonBytes": 21711,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 26426,
+            "maxJsonBytes": 882,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 25281.25,
+        "peakJobCommitBytes": 393166848,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 13285.212199999994,
+        "prepareThroughReadinessMs": 31478.4709,
+        "prepareThroughFirstResultMs": 31697.367799999993
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 65.57189999999537,
+        "p95": 211.53609999999753,
+        "p99": 330.12420000000566,
+        "max": 330.12420000000566
+      },
+      "firstResultMs": 184.91250000000582
+    },
+    {
+      "name": "07-old-timing1-warm",
+      "version": "old",
+      "timing": true,
+      "cadence": "warm",
+      "samples": 30,
+      "exitCode": 0,
+      "seconds": 87.85900000017136,
+      "filesSha256": {
+        "07-old-timing1-warm.json": "b3d5d19e7bf2a5ef379118c4c129f9ced0a488017cd0ca15313fb80c99a9b08f",
+        "07-old-timing1-warm.job.json": "5da4a1d9c0ad39be649c60669cbc7483160f3f9cf6feebb24a232ff54d9baf5a",
+        "07-old-timing1-warm.log": "29fbc69b55b99e38a906441be11f2140e5c73eb07342c937fc83b2877615f63c"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 4746,
+            "maxJsonBytes": 4746,
+            "repliesWithSamples": 1
+          },
+          "status": {
+            "replies": 1399,
+            "jsonBytes": 40810308,
+            "maxJsonBytes": 370425,
+            "repliesWithSamples": 1398
+          },
+          "traceStartDetailed": {
+            "replies": 31,
+            "jsonBytes": 7131,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 31,
+            "jsonBytes": 6757590,
+            "maxJsonBytes": 362593,
+            "repliesWithSamples": 31
+          },
+          "getRun": {
+            "replies": 44,
+            "jsonBytes": 9954045,
+            "maxJsonBytes": 375140,
+            "repliesWithSamples": 44
+          },
+          "traceStop": {
+            "replies": 31,
+            "jsonBytes": 670213,
+            "maxJsonBytes": 21713,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 62,
+            "jsonBytes": 677521,
+            "maxJsonBytes": 21713,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 30,
+            "jsonBytes": 6717158,
+            "maxJsonBytes": 362401,
+            "repliesWithSamples": 30
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 31
+      },
+      "job": {
+        "cpuMs": 30312.5,
+        "peakJobCommitBytes": 401870848,
+        "ownedProcessCount": 59,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 31,
+      "traceEvents": 4619,
+      "setup": {
+        "prepareAndActivateMs": 11496.276499999996,
+        "prepareThroughReadinessMs": 34232.7169,
+        "prepareThroughFirstResultMs": 34433.760899999994
+      },
+      "warmResultMs": {
+        "count": 30,
+        "p50": 138.96890000000712,
+        "p95": 409.27780000001076,
+        "p99": 490.42750000000524,
+        "max": 490.42750000000524
+      },
+      "firstResultMs": 170.49930000000313
+    },
+    {
+      "name": "08-old-timing1-cold-paced",
+      "version": "old",
+      "timing": true,
+      "cadence": "cold-paced",
+      "samples": 5,
+      "exitCode": 0,
+      "seconds": 208.67199999978766,
+      "filesSha256": {
+        "08-old-timing1-cold-paced.json": "70fce95605a9666659c8ec4ee946c4afc828cf382c42f2222a445441fe12e5ee",
+        "08-old-timing1-cold-paced.job.json": "82ca88c282bb62ca3e3ffd86600052134acacb366f4f81db8fe47f38426da68c",
+        "08-old-timing1-cold-paced.log": "50af664b0e9a5fe1ffe055befbd0956dab5bc59955989a13838391e484e79737"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 7097,
+            "maxJsonBytes": 7097,
+            "repliesWithSamples": 1
+          },
+          "traceStartDetailed": {
+            "replies": 15,
+            "jsonBytes": 3447,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 105,
+            "jsonBytes": 26077501,
+            "maxJsonBytes": 479907,
+            "repliesWithSamples": 105
+          },
+          "invalidateInput": {
+            "replies": 104,
+            "jsonBytes": 26044414,
+            "maxJsonBytes": 479712,
+            "repliesWithSamples": 104
+          },
+          "getRun": {
+            "replies": 1091,
+            "jsonBytes": 83428237,
+            "maxJsonBytes": 484542,
+            "repliesWithSamples": 1091
+          },
+          "status": {
+            "replies": 32,
+            "jsonBytes": 8538418,
+            "maxJsonBytes": 479845,
+            "repliesWithSamples": 31
+          },
+          "traceStop": {
+            "replies": 15,
+            "jsonBytes": 551489,
+            "maxJsonBytes": 37319,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 67,
+            "jsonBytes": 1541699,
+            "maxJsonBytes": 37968,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 451,
+            "maxJsonBytes": 451,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 15
+      },
+      "job": {
+        "cpuMs": 46328.125,
+        "peakJobCommitBytes": 404639744,
+        "ownedProcessCount": 65,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 15,
+      "traceEvents": 10567,
+      "setup": {
+        "prepareAndActivateMs": 114718.0694,
+        "prepareThroughReadinessMs": null,
+        "prepareThroughFirstResultMs": null
+      },
+      "pacing": [
+        {
+          "intervalMs": 20,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 30,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 60.257500000006985,
+            "p95": 454.11410000000615,
+            "p99": 470.30509999999776,
+            "max": 470.30509999999776
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 32.922200000000885,
+            "p95": 204.0844999999972,
+            "p99": 436.9829000000027,
+            "max": 436.9829000000027
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 28.190100000007078,
+            "p95": 204.07440000001225,
+            "p99": 436.97609999999986,
+            "max": 436.97609999999986
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 588.4774000000034,
+            "p95": 31760.593900000007,
+            "p99": 31760.593900000007,
+            "max": 31760.593900000007
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 349.6380000000063,
+            "p95": 28575.865300000005,
+            "p99": 31760.593900000007,
+            "max": 31760.593900000007
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 141.44029999998747,
+              "p95": 470.30509999999776,
+              "p99": 470.30509999999776,
+              "max": 470.30509999999776
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 36.19099999999162,
+              "p95": 58.87169999998878,
+              "p99": 58.87169999998878,
+              "max": 58.87169999998878
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 19.263299999991432,
+              "p95": 42.231400000018766,
+              "p99": 42.231400000018766,
+              "max": 42.231400000018766
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 588.4774000000034,
+              "p95": 31760.593900000007,
+              "p99": 31760.593900000007,
+              "max": 31760.593900000007
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 588.4774000000034,
+              "p95": 31760.593900000007,
+              "p99": 31760.593900000007,
+              "max": 31760.593900000007
+            }
+          }
+        },
+        {
+          "intervalMs": 100,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 9,
+          "superseded": 26,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 9,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 4.984400000015739,
+            "p95": 81.81940000000759,
+            "p99": 137.7233000000124,
+            "max": 137.7233000000124
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 100.94539999999688,
+            "p95": 119.66309999997611,
+            "p99": 226.61720000000787,
+            "max": 226.61720000000787
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 69.69100000002072,
+            "p95": 137.36780000000726,
+            "p99": 226.60620000000927,
+            "max": 226.60620000000927
+          },
+          "firstCorrectResponse": {
+            "count": 9,
+            "p50": 144.61689999999362,
+            "p95": 3254.917699999991,
+            "p99": 3254.917699999991,
+            "max": 3254.917699999991
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 206.54180000000633,
+            "p95": 2861.40830000001,
+            "p99": 3254.917699999991,
+            "max": 3254.917699999991
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 1.5891999999876134,
+              "p95": 81.81940000000759,
+              "p99": 81.81940000000759,
+              "max": 81.81940000000759
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 98.90849999999045,
+              "p95": 101.39369999998598,
+              "p99": 101.39369999998598,
+              "max": 101.39369999998598
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 63.75479999999516,
+              "p95": 137.36780000000726,
+              "p99": 137.36780000000726,
+              "max": 137.36780000000726
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 772.7926000000152,
+              "p95": 3254.917699999991,
+              "p99": 3254.917699999991,
+              "max": 3254.917699999991
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 772.7926000000152,
+              "p95": 3254.917699999991,
+              "p99": 3254.917699999991,
+              "max": 3254.917699999991
+            }
+          }
+        },
+        {
+          "intervalMs": null,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 35,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 35,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 0.0020000000076834112,
+            "p95": 0.003700000001117587,
+            "p99": 0.005900000018300489,
+            "max": 0.005900000018300489
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 168.36009999999078,
+            "p95": 336.3727999999828,
+            "p99": 347.48649999999907,
+            "max": 347.48649999999907
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 99.41610000000219,
+            "p95": 167.94509999998263,
+            "p99": 174.074099999998,
+            "max": 174.074099999998
+          },
+          "firstCorrectResponse": {
+            "count": 35,
+            "p50": 165.222299999994,
+            "p95": 336.3070000000007,
+            "p99": 347.45900000000256,
+            "max": 347.45900000000256
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 165.222299999994,
+            "p95": 336.3070000000007,
+            "p99": 347.45900000000256,
+            "max": 347.45900000000256
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 0.0020000000076834112,
+              "p95": 0.003700000001117587,
+              "p99": 0.003700000001117587,
+              "max": 0.003700000001117587
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 165.37659999998868,
+              "p95": 182.95119999998133,
+              "p99": 182.95119999998133,
+              "max": 182.95119999998133
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 93.07219999999506,
+              "p95": 124.88990000000922,
+              "p99": 124.88990000000922,
+              "max": 124.88990000000922
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 149.83480000001146,
+              "p95": 189.60970000000088,
+              "p99": 189.60970000000088,
+              "max": 189.60970000000088
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 149.83480000001146,
+              "p95": 189.60970000000088,
+              "p99": 189.60970000000088,
+              "max": 189.60970000000088
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "09-new-timing1-cold-paced",
+      "version": "new",
+      "timing": true,
+      "cadence": "cold-paced",
+      "samples": 5,
+      "exitCode": 0,
+      "seconds": 149.81300000008196,
+      "filesSha256": {
+        "09-new-timing1-cold-paced.json": "eee690bf4a58651f45d91403f0cde1fbb3e5ebe6b5ee598d9cd4e5d2cb067173",
+        "09-new-timing1-cold-paced.job.json": "2ae9a6842f04292c199539b3252dd602791f46b0f00a66ba20230bce962b7d5d",
+        "09-new-timing1-cold-paced.log": "0a3117e909f0520ec25fe5541173df7e375ece2f4ff3af7f5f976aced9b9c77c"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 740,
+            "maxJsonBytes": 740,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 15,
+            "jsonBytes": 3447,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 105,
+            "jsonBytes": 112515,
+            "maxJsonBytes": 1087,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 104,
+            "jsonBytes": 91528,
+            "maxJsonBytes": 892,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 1142,
+            "jsonBytes": 1554889,
+            "maxJsonBytes": 5590,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 32,
+            "jsonBytes": 9124139,
+            "maxJsonBytes": 480694,
+            "repliesWithSamples": 31
+          },
+          "traceStop": {
+            "replies": 15,
+            "jsonBytes": 551801,
+            "maxJsonBytes": 37236,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 68,
+            "jsonBytes": 1603078,
+            "maxJsonBytes": 37712,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 451,
+            "maxJsonBytes": 451,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 15
+      },
+      "job": {
+        "cpuMs": 32328.125,
+        "peakJobCommitBytes": 389185536,
+        "ownedProcessCount": 63,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 15,
+      "traceEvents": 11004,
+      "setup": {
+        "prepareAndActivateMs": 28402.2204,
+        "prepareThroughReadinessMs": null,
+        "prepareThroughFirstResultMs": null
+      },
+      "pacing": [
+        {
+          "intervalMs": 20,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 30,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 6.120899999994435,
+            "p95": 64.84299999999348,
+            "p99": 74.50840000000608,
+            "max": 74.50840000000608
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 21.943999999995867,
+            "p95": 64.75299999999697,
+            "p99": 84.82679999999527,
+            "max": 84.82679999999527
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 9.908299999995506,
+            "p95": 64.74409999999625,
+            "p99": 84.81710000000021,
+            "max": 84.81710000000021
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 731.9855000000098,
+            "p95": 49990.655699999996,
+            "p99": 49990.655699999996,
+            "max": 49990.655699999996
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 115.96119999999064,
+            "p95": 1126.4471000000049,
+            "p99": 49990.655699999996,
+            "max": 49990.655699999996
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 11.389200000005076,
+              "p95": 60.17239999999583,
+              "p99": 60.17239999999583,
+              "max": 60.17239999999583
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 19.183799999998882,
+              "p95": 31.49210000000312,
+              "p99": 31.49210000000312,
+              "max": 31.49210000000312
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 16.5853000000061,
+              "p95": 22.615499999999884,
+              "p99": 22.615499999999884,
+              "max": 22.615499999999884
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 731.9855000000098,
+              "p95": 49990.655699999996,
+              "p99": 49990.655699999996,
+              "max": 49990.655699999996
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 731.9855000000098,
+              "p95": 49990.655699999996,
+              "p99": 49990.655699999996,
+              "max": 49990.655699999996
+            }
+          }
+        },
+        {
+          "intervalMs": 100,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 16,
+          "superseded": 19,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 10,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 5.858799999987241,
+            "p95": 13.053899999998976,
+            "p99": 13.064500000007683,
+            "max": 13.064500000007683
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 99.10849999998754,
+            "p95": 112.48219999999856,
+            "p99": 113.05969999999797,
+            "max": 113.05969999999797
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 8.862000000008265,
+            "p95": 59.054999999993015,
+            "p99": 59.29429999999411,
+            "max": 59.29429999999411
+          },
+          "firstCorrectResponse": {
+            "count": 16,
+            "p50": 56.83310000000347,
+            "p95": 3322.7390999999916,
+            "p99": 3322.7390999999916,
+            "max": 3322.7390999999916
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 119.51229999998759,
+            "p95": 428.28850000000966,
+            "p99": 3322.7390999999916,
+            "max": 3322.7390999999916
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 4,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 3.97280000000319,
+              "p95": 12.608400000011898,
+              "p99": 12.608400000011898,
+              "max": 12.608400000011898
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 95.32820000000356,
+              "p95": 109.01800000001094,
+              "p99": 109.01800000001094,
+              "max": 109.01800000001094
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 12.861499999999069,
+              "p95": 59.29429999999411,
+              "p99": 59.29429999999411,
+              "max": 59.29429999999411
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 285.11389999999665,
+              "p95": 3322.7390999999916,
+              "p99": 3322.7390999999916,
+              "max": 3322.7390999999916
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 285.11389999999665,
+              "p95": 3322.7390999999916,
+              "p99": 3322.7390999999916,
+              "max": 3322.7390999999916
+            }
+          }
+        },
+        {
+          "intervalMs": null,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 35,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 27,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 0.0018999999883817509,
+            "p95": 0.0024000000121304765,
+            "p99": 0.0024000000121304765,
+            "max": 0.0024000000121304765
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 72.1469999999972,
+            "p95": 278.44650000000547,
+            "p99": 289.4296000000031,
+            "max": 289.4296000000031
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 4.288499999995111,
+            "p95": 9.53399999999965,
+            "p99": 15.615400000009686,
+            "max": 15.615400000009686
+          },
+          "firstCorrectResponse": {
+            "count": 35,
+            "p50": 72.12430000001041,
+            "p95": 278.4195999999938,
+            "p99": 289.40780000000086,
+            "max": 289.40780000000086
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 72.12430000001041,
+            "p95": 278.4195999999938,
+            "p99": 289.40780000000086,
+            "max": 289.40780000000086
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 4,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 0.0018999999883817509,
+              "p95": 0.0024000000121304765,
+              "p99": 0.0024000000121304765,
+              "max": 0.0024000000121304765
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 60.771200000002864,
+              "p95": 75.25090000001364,
+              "p99": 75.25090000001364,
+              "max": 75.25090000001364
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 3.342400000008638,
+              "p95": 4.288499999995111,
+              "p99": 4.288499999995111,
+              "max": 4.288499999995111
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 65.9319000000105,
+              "p95": 175.95530000000144,
+              "p99": 175.95530000000144,
+              "max": 175.95530000000144
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 65.9319000000105,
+              "p95": 175.95530000000144,
+              "p99": 175.95530000000144,
+              "max": 175.95530000000144
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10-new-timing1-cold-paced",
+      "version": "new",
+      "timing": true,
+      "cadence": "cold-paced",
+      "samples": 5,
+      "exitCode": 0,
+      "seconds": 289.43699999991804,
+      "filesSha256": {
+        "10-new-timing1-cold-paced.json": "e4a6bc13164261466fc61306be2f1356f936f773fc09d90f8aeed472cf198210",
+        "10-new-timing1-cold-paced.job.json": "4e091580931182d9a30ec9bc9591db4a457011623a49e1e6910150790b7d6b06",
+        "10-new-timing1-cold-paced.log": "eb952060e17987ddbe41e465dc07d9d3480bdf77f13fc29b17189799734b0182"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 740,
+            "maxJsonBytes": 740,
+            "repliesWithSamples": 0
+          },
+          "traceStartDetailed": {
+            "replies": 15,
+            "jsonBytes": 3442,
+            "maxJsonBytes": 231,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 105,
+            "jsonBytes": 112619,
+            "maxJsonBytes": 1088,
+            "repliesWithSamples": 0
+          },
+          "invalidateInput": {
+            "replies": 104,
+            "jsonBytes": 91628,
+            "maxJsonBytes": 893,
+            "repliesWithSamples": 0
+          },
+          "getRun": {
+            "replies": 894,
+            "jsonBytes": 1270665,
+            "maxJsonBytes": 5590,
+            "repliesWithSamples": 0
+          },
+          "status": {
+            "replies": 32,
+            "jsonBytes": 8644171,
+            "maxJsonBytes": 481086,
+            "repliesWithSamples": 31
+          },
+          "traceStop": {
+            "replies": 15,
+            "jsonBytes": 549966,
+            "maxJsonBytes": 37346,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 66,
+            "jsonBytes": 1499054,
+            "maxJsonBytes": 37968,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 451,
+            "maxJsonBytes": 451,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 15
+      },
+      "job": {
+        "cpuMs": 32812.5,
+        "peakJobCommitBytes": 369336320,
+        "ownedProcessCount": 67,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 15,
+      "traceEvents": 10281,
+      "setup": {
+        "prepareAndActivateMs": 25797.713699999993,
+        "prepareThroughReadinessMs": null,
+        "prepareThroughFirstResultMs": null
+      },
+      "pacing": [
+        {
+          "intervalMs": 20,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 30,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 9.901699999987613,
+            "p95": 250.3226999999897,
+            "p99": 258.8586999999825,
+            "max": 258.8586999999825
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 17.632700000016484,
+            "p95": 54.25389999998151,
+            "p99": 269.68859999999404,
+            "max": 269.68859999999404
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 10.859299999981886,
+            "p95": 54.24499999999534,
+            "p99": 269.679599999974,
+            "max": 269.679599999974
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 1351.8475000000035,
+            "p95": 34041.81,
+            "p99": 34041.81,
+            "max": 34041.81
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 161.7381999999925,
+            "p95": 3457.098499999993,
+            "p99": 34041.81,
+            "max": 34041.81
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 16.928000000014435,
+              "p95": 237.04240000000573,
+              "p99": 237.04240000000573,
+              "max": 237.04240000000573
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 16.985899999999674,
+              "p95": 33.71450000000186,
+              "p99": 33.71450000000186,
+              "max": 33.71450000000186
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 11.8524000000034,
+              "p95": 42.1307000000088,
+              "p99": 42.1307000000088,
+              "max": 42.1307000000088
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 1351.8475000000035,
+              "p95": 34041.81,
+              "p99": 34041.81,
+              "max": 34041.81
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 1351.8475000000035,
+              "p95": 34041.81,
+              "p99": 34041.81,
+              "max": 34041.81
+            }
+          }
+        },
+        {
+          "intervalMs": 100,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 14,
+          "superseded": 21,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 10,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 3.8985000000102445,
+            "p95": 14.989400000020396,
+            "p99": 15.236000000004424,
+            "max": 15.236000000004424
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 100.15299999999115,
+            "p95": 114.10959999999614,
+            "p99": 114.72469999999157,
+            "max": 114.72469999999157
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 10.246299999998882,
+            "p95": 94.95230000000447,
+            "p99": 114.56410000001779,
+            "max": 114.56410000001779
+          },
+          "firstCorrectResponse": {
+            "count": 14,
+            "p50": 59.26939999999013,
+            "p95": 1462.040799999988,
+            "p99": 1462.040799999988,
+            "max": 1462.040799999988
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 187.1816000000108,
+            "p95": 772.5180999999866,
+            "p99": 1462.040799999988,
+            "max": 1462.040799999988
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 8.544499999989057,
+              "p95": 14.989400000020396,
+              "p99": 14.989400000020396,
+              "max": 14.989400000020396
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 99.75340000001597,
+              "p95": 101.22669999999925,
+              "p99": 101.22669999999925,
+              "max": 101.22669999999925
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 10.246299999998882,
+              "p95": 114.56410000001779,
+              "p99": 114.56410000001779,
+              "max": 114.56410000001779
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 751.0958000000101,
+              "p95": 1462.040799999988,
+              "p99": 1462.040799999988,
+              "max": 1462.040799999988
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 751.0958000000101,
+              "p95": 1462.040799999988,
+              "p99": 1462.040799999988,
+              "max": 1462.040799999988
+            }
+          }
+        },
+        {
+          "intervalMs": null,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 35,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 23,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 0.0017999999690800905,
+            "p95": 0.002699999953620136,
+            "p99": 0.0033999999868683517,
+            "max": 0.0033999999868683517
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 66.06509999997797,
+            "p95": 1011.0062000000034,
+            "p99": 1027.7583999999915,
+            "max": 1027.7583999999915
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 3.5354999999981374,
+            "p95": 46.863300000026356,
+            "p99": 105.0101999999606,
+            "max": 105.0101999999606
+          },
+          "firstCorrectResponse": {
+            "count": 35,
+            "p50": 66.03839999999036,
+            "p95": 1027.695699999982,
+            "p99": 1771.5149000000092,
+            "max": 1771.5149000000092
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 66.03839999999036,
+            "p95": 1027.695699999982,
+            "p99": 1771.5149000000092,
+            "max": 1771.5149000000092
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 4,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 0.0017999999690800905,
+              "p95": 0.0018000000272877514,
+              "p99": 0.0018000000272877514,
+              "max": 0.0018000000272877514
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 71.54430000000866,
+              "p95": 334.02920000001905,
+              "p99": 334.02920000001905,
+              "max": 334.02920000001905
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 3.75189999997383,
+              "p95": 5.918999999994412,
+              "p99": 5.918999999994412,
+              "max": 5.918999999994412
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 63.180200000002515,
+              "p95": 1771.5149000000092,
+              "p99": 1771.5149000000092,
+              "max": 1771.5149000000092
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 63.180200000002515,
+              "p95": 1771.5149000000092,
+              "p99": 1771.5149000000092,
+              "max": 1771.5149000000092
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "11-old-timing1-cold-paced",
+      "version": "old",
+      "timing": true,
+      "cadence": "cold-paced",
+      "samples": 5,
+      "exitCode": 0,
+      "seconds": 92.67200000025332,
+      "filesSha256": {
+        "11-old-timing1-cold-paced.json": "d0fc7c3fce5d0ba84dfb9f2baa01571b450bbe4d1becdb024a9d5d68bdd6ddbc",
+        "11-old-timing1-cold-paced.job.json": "9b01420cbdd1456549a23b6a7f7cf558b0db035b2ae5e48b8af9d83570ef28a7",
+        "11-old-timing1-cold-paced.log": "7b95cf63985a0b0f84d8050891beaedd33216e07982aa7c8ac49ec36602e5f4e"
+      },
+      "replyEvidence": {
+        "byMethod": {
+          "prepare": {
+            "replies": 1,
+            "jsonBytes": 8374,
+            "maxJsonBytes": 8374,
+            "repliesWithSamples": 0
+          },
+          "approve": {
+            "replies": 1,
+            "jsonBytes": 88,
+            "maxJsonBytes": 88,
+            "repliesWithSamples": 0
+          },
+          "activate": {
+            "replies": 1,
+            "jsonBytes": 6477,
+            "maxJsonBytes": 6477,
+            "repliesWithSamples": 1
+          },
+          "traceStartDetailed": {
+            "replies": 15,
+            "jsonBytes": 3434,
+            "maxJsonBytes": 230,
+            "repliesWithSamples": 0
+          },
+          "run": {
+            "replies": 105,
+            "jsonBytes": 26374646,
+            "maxJsonBytes": 480573,
+            "repliesWithSamples": 105
+          },
+          "invalidateInput": {
+            "replies": 104,
+            "jsonBytes": 26342173,
+            "maxJsonBytes": 480378,
+            "repliesWithSamples": 104
+          },
+          "getRun": {
+            "replies": 596,
+            "jsonBytes": 61860488,
+            "maxJsonBytes": 485228,
+            "repliesWithSamples": 596
+          },
+          "status": {
+            "replies": 32,
+            "jsonBytes": 8621225,
+            "maxJsonBytes": 480531,
+            "repliesWithSamples": 31
+          },
+          "traceStop": {
+            "replies": 15,
+            "jsonBytes": 550843,
+            "maxJsonBytes": 37287,
+            "repliesWithSamples": 0
+          },
+          "traceRead": {
+            "replies": 65,
+            "jsonBytes": 1510593,
+            "maxJsonBytes": 37858,
+            "repliesWithSamples": 0
+          },
+          "closeSession": {
+            "replies": 1,
+            "jsonBytes": 450,
+            "maxJsonBytes": 450,
+            "repliesWithSamples": 0
+          }
+        },
+        "repeatedSnapshotsChecked": 15
+      },
+      "job": {
+        "cpuMs": 38906.25,
+        "peakJobCommitBytes": 409542656,
+        "ownedProcessCount": 67,
+        "activeAtObservation": 0,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "memorySamplingIntervalMs": 100,
+        "missingProcessMemoryReads": 0,
+        "workingSetSumCountsSharedPagesMultipleTimes": true
+      },
+      "traceCollections": 15,
+      "traceEvents": 10372,
+      "setup": {
+        "prepareAndActivateMs": 28511.9828,
+        "prepareThroughReadinessMs": null,
+        "prepareThroughFirstResultMs": null
+      },
+      "pacing": [
+        {
+          "intervalMs": 20,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 5,
+          "superseded": 30,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 5,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 12.090100000001257,
+            "p95": 144.971000000005,
+            "p99": 302.83720000000903,
+            "max": 302.83720000000903
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 32.13189999999304,
+            "p95": 79.16289999999572,
+            "p99": 177.86620000000403,
+            "max": 177.86620000000403
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 28.770799999998417,
+            "p95": 89.99519999999029,
+            "p99": 177.841499999995,
+            "max": 177.841499999995
+          },
+          "firstCorrectResponse": {
+            "count": 5,
+            "p50": 711.2135999999882,
+            "p95": 10149.471599999997,
+            "p99": 10149.471599999997,
+            "max": 10149.471599999997
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 378.4112000000023,
+            "p95": 3875.5148999999947,
+            "p99": 10149.471599999997,
+            "max": 10149.471599999997
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 91.20350000000326,
+              "p95": 302.83720000000903,
+              "p99": 302.83720000000903,
+              "max": 302.83720000000903
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 28.782099999996717,
+              "p95": 177.86620000000403,
+              "p99": 177.86620000000403,
+              "max": 177.86620000000403
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 24.690499999996973,
+              "p95": 89.99519999999029,
+              "p99": 89.99519999999029,
+              "max": 89.99519999999029
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 711.2135999999882,
+              "p95": 10149.471599999997,
+              "p99": 10149.471599999997,
+              "max": 10149.471599999997
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 711.2135999999882,
+              "p95": 10149.471599999997,
+              "p99": 10149.471599999997,
+              "max": 10149.471599999997
+            }
+          }
+        },
+        {
+          "intervalMs": 100,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 6,
+          "superseded": 29,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 6,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 10.224199999996927,
+            "p95": 530.0831999999937,
+            "p99": 911.8338999999978,
+            "max": 911.8338999999978
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 102.65790000000561,
+            "p95": 496.99920000000566,
+            "p99": 614.4818999999989,
+            "max": 614.4818999999989
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 78.58640000000014,
+            "p95": 496.9858000000095,
+            "p99": 614.4717999999993,
+            "max": 614.4717999999993
+          },
+          "firstCorrectResponse": {
+            "count": 6,
+            "p50": 262.87270000000717,
+            "p95": 1634.3896999999997,
+            "p99": 1634.3896999999997,
+            "max": 1634.3896999999997
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 333.6176000000123,
+            "p95": 1528.456600000005,
+            "p99": 1634.3896999999997,
+            "max": 1634.3896999999997
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 56.65680000001157,
+              "p95": 911.8338999999978,
+              "p99": 911.8338999999978,
+              "max": 911.8338999999978
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 93.97509999999602,
+              "p95": 496.99920000000566,
+              "p99": 496.99920000000566,
+              "max": 496.99920000000566
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 75.01369999999588,
+              "p95": 93.9091000000044,
+              "p99": 93.9091000000044,
+              "max": 93.9091000000044
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 323.0705999999918,
+              "p95": 1634.3896999999997,
+              "p99": 1634.3896999999997,
+              "max": 1634.3896999999997
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 323.0705999999918,
+              "p95": 1634.3896999999997,
+              "p99": 1634.3896999999997,
+              "max": 1634.3896999999997
+            }
+          }
+        },
+        {
+          "intervalMs": null,
+          "attempts": 35,
+          "admitted": 35,
+          "admissionRejected": 0,
+          "correct": 35,
+          "superseded": 0,
+          "timedOut": 0,
+          "cancelled": 0,
+          "failed": 0,
+          "over50Ms": 35,
+          "schedulingDelay": {
+            "count": 35,
+            "p50": 0.001799999998183921,
+            "p95": 0.0022000000026309863,
+            "p99": 0.0031000000017229468,
+            "max": 0.0031000000017229468
+          },
+          "inputInterval": {
+            "count": 30,
+            "p50": 144.064200000008,
+            "p95": 231.07200000000012,
+            "p99": 278.7471000000078,
+            "max": 278.7471000000078
+          },
+          "admissionDelay": {
+            "count": 35,
+            "p50": 86.8231999999989,
+            "p95": 103.06290000000445,
+            "p99": 119.91730000000098,
+            "max": 119.91730000000098
+          },
+          "firstCorrectResponse": {
+            "count": 35,
+            "p50": 144.03029999999853,
+            "p95": 231.04000000000815,
+            "p99": 278.71659999999974,
+            "max": 278.71659999999974
+          },
+          "physicalEnd": {
+            "count": 35,
+            "p50": 144.03029999999853,
+            "p95": 231.04000000000815,
+            "p99": 278.71659999999974,
+            "max": 278.71659999999974
+          },
+          "latestInput": {
+            "attempts": 5,
+            "admitted": 5,
+            "admissionRejected": 0,
+            "correct": 5,
+            "superseded": 0,
+            "timedOut": 0,
+            "cancelled": 0,
+            "failed": 0,
+            "over50Ms": 5,
+            "schedulingDelay": {
+              "count": 5,
+              "p50": 0.001600000003236346,
+              "p95": 0.0019000000029336661,
+              "p99": 0.0019000000029336661,
+              "max": 0.0019000000029336661
+            },
+            "inputInterval": {
+              "count": 5,
+              "p50": 147.65119999999297,
+              "p95": 168.57790000000386,
+              "p99": 168.57790000000386,
+              "max": 168.57790000000386
+            },
+            "admissionDelay": {
+              "count": 5,
+              "p50": 89.34969999999157,
+              "p95": 91.72600000000966,
+              "p99": 91.72600000000966,
+              "max": 91.72600000000966
+            },
+            "firstCorrectResponse": {
+              "count": 5,
+              "p50": 140.93700000000536,
+              "p95": 176.6094000000012,
+              "p99": 176.6094000000012,
+              "max": 176.6094000000012
+            },
+            "physicalEnd": {
+              "count": 5,
+              "p50": 140.93700000000536,
+              "p95": 176.6094000000012,
+              "p99": 176.6094000000012,
+              "max": 176.6094000000012
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "attempts": 668,
+  "warmMeasuredResults": 240,
+  "coldLatestCorrect": 60,
+  "traceEvents": 79176,
+  "manifestSha256": "dffcc8fd44db58c730fc99d42486107aedbff7e2038333f24668c68e1e20f5ce",
+  "storageMaintenance": {
+    "operation": "Lossless compression of completed evidence only; exact before/after content hashes retained.",
+    "utc": "2026-11-17T11:58:23.209501+00:00",
+    "freeBefore": 4177920,
+    "overlapsActiveCase": [
+      "08-old-timing1-cold-paced"
+    ],
+    "interpretation": "Storage maintenance is background activity outside the measured Job; do not describe the local environment as otherwise idle. All eight warm trials finished before first compression.",
+    "files": [
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\00-old-timing0-warm.json",
+        "bytes": 707307,
+        "beforeSha256": "078f02a0f4b10e7d4558b03bf9ddfa39ef48e738f5ba8a39b2b92744f8236918",
+        "afterSha256": "078f02a0f4b10e7d4558b03bf9ddfa39ef48e738f5ba8a39b2b92744f8236918"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\00-old-timing0-warm.job.json",
+        "bytes": 2508944,
+        "beforeSha256": "ff4eed9084aef852961cc27cd64fca0f272cb0f7662c4ca62c41f8b8aefc49de",
+        "afterSha256": "ff4eed9084aef852961cc27cd64fca0f272cb0f7662c4ca62c41f8b8aefc49de"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\01-new-timing0-warm.json",
+        "bytes": 706844,
+        "beforeSha256": "8302b221d7975b3ed28b2ab30b41b7fdc3b5071887d0223a8f1c341ada2d18d6",
+        "afterSha256": "8302b221d7975b3ed28b2ab30b41b7fdc3b5071887d0223a8f1c341ada2d18d6"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\01-new-timing0-warm.job.json",
+        "bytes": 1582241,
+        "beforeSha256": "0ca6ebd639c3f320085f793f4bd01a9e179f52a6bfd0190d25cbde38c71b133f",
+        "afterSha256": "0ca6ebd639c3f320085f793f4bd01a9e179f52a6bfd0190d25cbde38c71b133f"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\02-new-timing0-warm.json",
+        "bytes": 707049,
+        "beforeSha256": "e57298fa7201c6c4ca8db1ca32996dec34d99c0787e0a0df76d4561184d5f11b",
+        "afterSha256": "e57298fa7201c6c4ca8db1ca32996dec34d99c0787e0a0df76d4561184d5f11b"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\02-new-timing0-warm.job.json",
+        "bytes": 1917732,
+        "beforeSha256": "ef91008a5bb98bcf138c4206ffb455ca157ef7f67e00f00c3af8bdd3ec55e393",
+        "afterSha256": "ef91008a5bb98bcf138c4206ffb455ca157ef7f67e00f00c3af8bdd3ec55e393"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\03-old-timing0-warm.json",
+        "bytes": 706744,
+        "beforeSha256": "a9d617c33455776f49afacf20677b6a9bf974c3ff1c0cd72fc85aa082a1fcd1e",
+        "afterSha256": "a9d617c33455776f49afacf20677b6a9bf974c3ff1c0cd72fc85aa082a1fcd1e"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\03-old-timing0-warm.job.json",
+        "bytes": 1372868,
+        "beforeSha256": "f5f40e4b761e6666cb262ccb81613c736e4e22590f9c38431e834f21a2b6e54c",
+        "afterSha256": "f5f40e4b761e6666cb262ccb81613c736e4e22590f9c38431e834f21a2b6e54c"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\04-old-timing1-warm.json",
+        "bytes": 8845831,
+        "beforeSha256": "c543cef32374403046e9e46d42fdbd43cb692a43a1702ac0dbc6bc548983e068",
+        "afterSha256": "c543cef32374403046e9e46d42fdbd43cb692a43a1702ac0dbc6bc548983e068"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\04-old-timing1-warm.job.json",
+        "bytes": 1717875,
+        "beforeSha256": "4123b2b4a36b25a191df8d9e0edf1d92735e4ee6af6f6b185433a663abe294a5",
+        "afterSha256": "4123b2b4a36b25a191df8d9e0edf1d92735e4ee6af6f6b185433a663abe294a5"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\05-new-timing1-warm.json",
+        "bytes": 8852976,
+        "beforeSha256": "132f9c502a38aafd36b862855deb24adfa862681047e0dcad5ae40704ab2565a",
+        "afterSha256": "132f9c502a38aafd36b862855deb24adfa862681047e0dcad5ae40704ab2565a"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\05-new-timing1-warm.job.json",
+        "bytes": 2471024,
+        "beforeSha256": "faa71ca1a320a18d9df727dd034fba6a0a69724036c9788225c2bbf90779434a",
+        "afterSha256": "faa71ca1a320a18d9df727dd034fba6a0a69724036c9788225c2bbf90779434a"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\06-new-timing1-warm.json",
+        "bytes": 8838009,
+        "beforeSha256": "a6e888a89b27f20f645d2a49d9cd7d5d5b21e38cb0c67f21bfc225235162d26b",
+        "afterSha256": "a6e888a89b27f20f645d2a49d9cd7d5d5b21e38cb0c67f21bfc225235162d26b"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\06-new-timing1-warm.job.json",
+        "bytes": 1431670,
+        "beforeSha256": "299542f1a2ebb433bb91d841b79427072d0af4364ed5c93cf945fbd713981838",
+        "afterSha256": "299542f1a2ebb433bb91d841b79427072d0af4364ed5c93cf945fbd713981838"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\07-old-timing1-warm.json",
+        "bytes": 8836532,
+        "beforeSha256": "b3d5d19e7bf2a5ef379118c4c129f9ced0a488017cd0ca15313fb80c99a9b08f",
+        "afterSha256": "b3d5d19e7bf2a5ef379118c4c129f9ced0a488017cd0ca15313fb80c99a9b08f"
+      },
+      {
+        "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\sample127-native-comparison-v1\\07-old-timing1-warm.job.json",
+        "bytes": 1590997,
+        "beforeSha256": "5da4a1d9c0ad39be649c60669cbc7483160f3f9cf6feebb24a232ff54d9baf5a",
+        "afterSha256": "5da4a1d9c0ad39be649c60669cbc7483160f3f9cf6feebb24a232ff54d9baf5a"
+      }
+    ],
+    "freeAfter": 42663936
+  },
+  "limitations": [
+    "This isolated native comparison uses old30ee and new0996064 Host builds, both before queue fix128. It is not a performance measurement of final combined source.",
+    "All eight warm trials finished before evidence compression; storage maintenance overlapped first cold trial08. Local disk was constrained and P95/P99 volatile; do not describe the environment as idle.",
+    "Warm timing-ON median ranges old112.211-138.969ms/new60.677-65.572ms; timing-OFF old59.120-63.939/new62.407-62.847. These are whole20-node trial distributions, not per-node overhead or causal percentile subtraction.",
+    "New warm max1285.901ms and new cold20ms latest max49990.656ms remain major response problems. No performance qualification, semantic-work separation or Goal109 completion.",
+    "Final-source same-runner CI comparison including queue fix128, all required Windows CI and general eligibility/integration remain required. No retries of these twelve trials."
+  ]
+}
