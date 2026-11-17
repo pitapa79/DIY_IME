@@ -13,13 +13,14 @@ import {analyzeRetainedLifecycle} from './analyze-retained-lifecycle.mjs';
 import {decodeTracePage} from '../editor/src/executionTrace.ts';
 import {HeldPrimitiveWorker} from './hold-owned-primitive-worker.mjs';
 import {PrivateReplyEvidence} from './private-sample-delivery.mjs';
+import {wasmCodeSha256} from './wasm-host-overhead.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
-assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed warm|paced');
+assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed|thirdparty warm|paced');
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal'].includes(cadence));
+assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal'].includes(cadence));
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
@@ -32,13 +33,20 @@ const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
 assert(reportPath, 'explicit report path required');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primitive-retention-'));
-const kinds=shape==='identity' ? ['demo.identity'] : ['text.romaji-to-hiragana','experimental.text-trim','experimental.text-case','experimental.packet-passthrough'];
+const thirdparty=shape==='thirdparty';
+const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
+if(thirdparty) {
+  assert.notEqual(wasmCodeSha256(reviewedModules[0]),wasmCodeSha256(reviewedModules[1]),'reviewed fixtures must differ in executable code');
+  assert(['0','separate'].includes(mode),'S1 qualification does not grant grouped S2 approval');
+}
+const kinds=thirdparty ? ['fixture.wasm.chain','fixture.wasm.chain-alt','demo.identity'] : shape==='identity' ? ['demo.identity'] : ['text.romaji-to-hiragana','experimental.text-trim','experimental.text-case','experimental.packet-passthrough'];
 const ids=Array.from({length:count},(_,i)=>`stage${i}`);
 // The passthrough advertises an `any` output root. It may be terminal,
 // but cannot feed a text-only input. Preserve the published contracts.
-const kindAt=i=>shape==='identity' ? kinds[0] : i===0 ? kinds[0]
+// demo.identity advertises Any output; keep it terminal before text-only fixtures.
+const kindAt=i=>thirdparty ? (count>=3 && i===count-1 ? kinds[2] : kinds[i%2]) : shape==='identity' ? kinds[0] : i===0 ? kinds[0]
   : i===count-1 && count>=4 ? kinds[3] : kinds[1+(i-1)%2];
-const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1}))],
+const graph={version:1,nodes:[{id:'input',kind:'input.text',version:1},...ids.map((id,i)=>({id,kind:kindAt(i),version:1,...(thirdparty&&kindAt(i)!==kinds[2]?{config:{mode:'forward'}}:{})}))],
   edges:ids.map((id,i)=>({from:{node:i ? ids[i-1] : 'input',port:'out'},to:{node:id,port:'in'}}))};
 const target={node:ids.at(-1),port:'out'};
 const contract=JSON.parse(readFileSync(new URL('../tests/contracts/execution_control.json',import.meta.url),'utf8'));
@@ -90,7 +98,7 @@ const summarize=values=>{
   return {count:values.length,p50:p(.5),p95:p(.95),p99:p(.99),max:sorted.at(-1)};
 };
 const ended=s=>s.state==='terminal' && Object.values(s.physical).every(n=>n===0);
-const expected=text=>shape==='identity' ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
+const expected=text=>shape==='identity'||thirdparty ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
 function verify(s,wanted) {
   assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
   const value=s.result.ports.find(p=>p.endpoint.node===target.node && p.endpoint.port==='out')?.value;
@@ -110,9 +118,20 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
+  if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
   manager=new Client(managerExe,managerPath);
   const frames=[...new Set(ids.map((_,i)=>kindAt(i)))].map(kind=>{
-    const manifest=readFileSync(join(official,kind+'.manifest.json')),module=readFileSync(join(official,'official.wasm')),header=Buffer.alloc(24);
+    const fixtureIndex=thirdparty?kinds.indexOf(kind):-1;
+    const fixture=fixtureIndex>=0&&fixtureIndex<2;
+    const module=fixture?reviewedModules[fixtureIndex]:readFileSync(join(official,'official.wasm'));
+    const port={id:'in',dataType:{id:'text-packet',version:1},language:'ja-Latn',root:'text'};
+    const manifest=fixture?Buffer.from(JSON.stringify({
+      packageId:`test.retention-review.${fixtureIndex}`,version:'1.0.0',displayName:`Reviewed fixture ${fixtureIndex}`,
+      runtime:'wasm32',guestApiVersion:1,moduleSha256:sha(module),capabilities:[],
+      node:{kind,version:1,inputs:[{port,required:true}],outputs:[{...port,id:'out'}],
+        configSchema:{type:'object'},defaultConfig:{mode:'echo'}}
+    })):readFileSync(join(official,kind+'.manifest.json'));
+    const header=Buffer.alloc(24);
     header.write('DIY2NODE');header.writeUInt32LE(1,8);header.writeUInt32LE(manifest.length,12);header.writeBigUInt64LE(BigInt(module.length),16);
     const frame=Buffer.concat([header,manifest,module]),size=Buffer.alloc(8);size.writeBigUInt64LE(BigInt(frame.length));return Buffer.concat([size,frame]);
   });

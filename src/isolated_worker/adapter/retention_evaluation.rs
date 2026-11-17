@@ -258,28 +258,6 @@ impl Drop for Owners {
     }
 }
 
-impl WasmNode {
-    pub(in crate::isolated_worker) fn retention_evaluation_eligible(&self) -> bool {
-        // A classification, package name or guest self-report grants nothing.
-        // These exact reviewed official bytes are already pinned by distribution.
-        self.artifact.0.identity.rsplit(':').next()
-            == Some("105c0ceb2854dba27a747eae5faa6e393bb99a88ce5ab3048a468fa9add88134")
-            && matches!(
-                self.definition.kind.as_str(),
-                "experimental.packet-passthrough"
-                    | "experimental.text-trim"
-                    | "experimental.text-case"
-                    | "demo.identity"
-                    | "text.romaji-to-hiragana"
-                    | "experimental.text-concat"
-            )
-            && self.definition.version == 1
-            && self.network.is_none()
-            && self.dictionary.is_none()
-            && self.prepared_dictionary.get().is_none()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

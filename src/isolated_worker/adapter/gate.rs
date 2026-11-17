@@ -396,6 +396,24 @@ impl ExecutionGate {
     }
 }
 impl GuardedController {
+    /// Bind a Host retention qualification to this sealed grant/context. This
+    /// reads no guest data and issues no Core command. The per-call lease still
+    /// linearizes delivery/publication with permission and protection changes.
+    pub(super) fn authorize_retention_review(
+        &self,
+        gate: &ExecutionGate,
+        target: &GrantTarget,
+    ) -> Result<(), CoreError> {
+        if !self.gate.same_authority(gate) {
+            return Err(denied());
+        }
+        let state = self.gate.0.lock().unwrap_or_else(|p| p.into_inner());
+        if !self.valid(&state) || !self.seal.grants.iter().any(|(known, _)| known == target) {
+            return Err(denied());
+        }
+        Ok(())
+    }
+
     pub(in crate::isolated_worker) fn trace_is_recording(&self) -> bool {
         self.call(|c| Ok(c.trace_is_recording())).unwrap_or(false)
     }
