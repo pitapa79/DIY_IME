@@ -68,6 +68,11 @@ class HoldTests(unittest.TestCase):
             print(json.dumps({'fixtureCleanupWaits': cls.cleanup_waits}), flush=True)
 
     def setUp(self):
+        self.fixed_root = None
+        if self._testMethodName == 'test_original_handle_termination_ends_helper_and_releases_dead_references':
+            self.fixed_root = Path(tempfile.mkdtemp(prefix='diyime-retained-host-unit-', dir=self.parent)).resolve(strict=True)
+            self.workers = self.fixed_root/'workers'
+            self.workers.mkdir()
         folder = self.workers/('DIYIME2.Worker.'+uuid.uuid4().hex)
         folder.mkdir()
         worker = folder/'worker.exe'
@@ -123,6 +128,9 @@ class HoldTests(unittest.TestCase):
             self.cleanup_waits.append({'case': self._testMethodName, 'attempts': attempts,
                                        'elapsedMs': (time.monotonic()-started)*1000})
         resolved.parent.rmdir()
+        if self.fixed_root:
+            self.workers.rmdir()
+            self.fixed_root.rmdir()
 
     def helper(self, milliseconds=5000):
         child = subprocess.Popen([sys.executable, str(Path(__file__).with_name('hold-owned-primitive-worker.py')),
@@ -191,6 +199,8 @@ class HoldTests(unittest.TestCase):
             hold.checked_worker(self.owner.process.pid, self.workers, self.digest)
 
     def test_wrong_digest_and_unrelated_image_are_refused_before_hold(self):
+        with self.assertRaisesRegex(ValueError, 'private benchmark workspace required'):
+            hold.checked_worker(self.owner.process.pid, self.workers.parent, self.digest)
         with self.assertRaisesRegex(ValueError, 'digest differs'):
             hold.checked_worker(self.owner.process.pid, self.workers, '0'*64)
         foreign = job.LauncherJob([sys.executable, '-u', '-c',

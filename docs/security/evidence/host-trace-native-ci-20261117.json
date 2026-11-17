@@ -1,0 +1,317 @@
+{
+  "run": 44000259793,
+  "runConclusion": "failure",
+  "windowsSegmentsPassed": 8,
+  "windowsSegmentsTotal": 9,
+  "testMerge": {
+    "sha": "95ee1f2ce190771fb55726165bbba01eedb1cfac",
+    "parents": [
+      "723aa7d0546a1bdff7833c0c5fb5da0b0a9eefeb",
+      "30ee1caf66b9db82ab9b100c1007d00a164d394c"
+    ],
+    "tree": "8bc9db656a0d63c7713d2933972c13f08b25aca3"
+  },
+  "timingJob": 133762257158,
+  "artifactId": 14293430097,
+  "manifestSha256": "2b9cc00c31afe9d3b67a5f7acb039c6b2925ac2a8edfbce0709b7be1d451521b",
+  "timingCasesPassed": 46,
+  "selectedReportsIndependentlyInspected": [
+    {
+      "case": "32",
+      "reportSha256": "aad32723fb21e2022a4f7bd491e2a37631de05e072fcaa4d7d278eb432f2956b",
+      "jobSha256": "8b5d7e269133ea2a1e74036f83bfd7bc10858c6a0a9a91a8c54e6fefac151737",
+      "traceCollections": [
+        {
+          "recordingId": "c84d6203656898a9ce07d273e1d2830d",
+          "dropped": 0,
+          "eventCount": 340
+        },
+        {
+          "recordingId": "6a2a66988283a4cdee8717fabb412489",
+          "dropped": 0,
+          "eventCount": 1040
+        },
+        {
+          "recordingId": "07f36558314568f6e49506e7ff84ea96",
+          "dropped": 0,
+          "eventCount": 1041
+        },
+        {
+          "recordingId": "ff29610b2cfe1db93e0fc408e06da8ee",
+          "dropped": 0,
+          "eventCount": 1041
+        },
+        {
+          "recordingId": "3ede79392d73f8f80962eebb21037ec3",
+          "dropped": 0,
+          "eventCount": 1041
+        },
+        {
+          "recordingId": "e5862bdb702f83caaef3cea871cb838c",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "3b173fecae7993884983534edba810fd",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "871fc95de55d3a4affc40792fb2c50de",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "77b23f2ad7df35c8de9b27d90ce5bcff",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "f5e5d868388e294b08b50b8e14529318",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "38ea78f39f9cfd5944fc7d94fdb0f1d1",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "66b1cb08d839aec1f72deae04ce7678c",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "bf8314ceb31caac5904d2e177324d1ea",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "23a6330b028ad2ff621b382eb57c3bfa",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "9d60f281feb153d4cf628e547a0c0880",
+          "dropped": 0,
+          "eventCount": 1043
+        }
+      ],
+      "completed": true,
+      "workspaceAfterHostExit": [],
+      "binaries": {
+        "host": "17e76b8328b7d62d2f23a9a98b36eafbce885da2c551d77dffd5ce5d643562d2",
+        "manager": "a7ee5107cf2dbf2954fef4156ba567f4daf817bd44f70fb871d983ebc832600f",
+        "worker": "a3e11c17a68b7aa07be8df5829cdcc7970e57287d5c9fd4fa121227afa2c464a",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "controls": {
+        "DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT": "1",
+        "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "1",
+        "DIY_EXPERIMENT_RETAINED_TIMING": "0",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "0",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "job": {
+        "cpuMs": 26984.375,
+        "peakJobCommitBytes": 321683456,
+        "ownedProcessCount": 57,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "missingProcessMemoryReads": 0
+      }
+    },
+    {
+      "case": "34",
+      "reportSha256": "8bb143727843a82416945a86c13fb7d040d49ece82b9c420574d4bfa97598d0e",
+      "jobSha256": "bdff9a36fa50ef45c3a557258556348d3aedbf775735eccaae60f220aaeb1292",
+      "traceCollections": [
+        {
+          "recordingId": "e50b06b00dd21961f389eccc259d0bf4",
+          "dropped": 0,
+          "eventCount": 342
+        },
+        {
+          "recordingId": "123a27b21f88cc0e3c166465adbfe7ec",
+          "dropped": 0,
+          "eventCount": 971
+        },
+        {
+          "recordingId": "4caceb4724bf23abcb2f9f45186377b4",
+          "dropped": 0,
+          "eventCount": 645
+        },
+        {
+          "recordingId": "0ad5920fc0b061c5dce41435e853684e",
+          "dropped": 0,
+          "eventCount": 725
+        },
+        {
+          "recordingId": "64b13efdcb4e9cacb335b4e4c8c15dab",
+          "dropped": 0,
+          "eventCount": 717
+        },
+        {
+          "recordingId": "96072b8f98c609f665110b483ab3e58f",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "b3fe1dd203d5ebcced9fd340b0e691e3",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "1a9d31ba3ad722dcdcf480cd0e6e272d",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "32bdba08aa59d3624ee45353ffa42fa7",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "a89a1136f0157f7ab70bdeb96f2f64a1",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "ac12dd968b7f285b2e6f0d497c5326ac",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "f73bde46783e1838d9a7a9f8914e7cc0",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "41a03dd6df10546386a510aa8a26b874",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "47e36fdf1d98d4e4f516fc0152c757db",
+          "dropped": 0,
+          "eventCount": 1043
+        },
+        {
+          "recordingId": "b883196d9aaf9ebd8cf25815dbd2d9c2",
+          "dropped": 0,
+          "eventCount": 1043
+        }
+      ],
+      "completed": true,
+      "workspaceAfterHostExit": [],
+      "binaries": {
+        "host": "17e76b8328b7d62d2f23a9a98b36eafbce885da2c551d77dffd5ce5d643562d2",
+        "manager": "a7ee5107cf2dbf2954fef4156ba567f4daf817bd44f70fb871d983ebc832600f",
+        "worker": "a3e11c17a68b7aa07be8df5829cdcc7970e57287d5c9fd4fa121227afa2c464a",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "controls": {
+        "DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT": "1",
+        "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "1",
+        "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "0",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "job": {
+        "cpuMs": 39140.625,
+        "peakJobCommitBytes": 365039616,
+        "ownedProcessCount": 71,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "missingProcessMemoryReads": 0
+      }
+    },
+    {
+      "case": "45",
+      "reportSha256": "b403950141dbebf4f123992064583318f3ae61e13f5fe2fcbf2455b3938407ec",
+      "jobSha256": "89b1c0411b8896bdb28c896f8d7d44466fb311f714197f6e253a2042cc8cfee0",
+      "traceCollections": [
+        {
+          "recordingId": "fa22e888d970a57feca5ec134b4927e7",
+          "dropped": 0,
+          "eventCount": 149
+        },
+        {
+          "recordingId": "0b937efcf7caf0fa327a670c2bd881a6",
+          "dropped": 0,
+          "eventCount": 149
+        }
+      ],
+      "completed": true,
+      "workspaceAfterHostExit": [],
+      "binaries": {
+        "host": "17e76b8328b7d62d2f23a9a98b36eafbce885da2c551d77dffd5ce5d643562d2",
+        "manager": "a7ee5107cf2dbf2954fef4156ba567f4daf817bd44f70fb871d983ebc832600f",
+        "worker": "a3e11c17a68b7aa07be8df5829cdcc7970e57287d5c9fd4fa121227afa2c464a",
+        "dll": "fa7fdafc1dcb98ff20acd6ea480f305b90b7a8f518cb35110904ef345517e4ef"
+      },
+      "controls": {
+        "DIY_EXPERIMENT_HOST_TRACE_LOSS_AUDIT": "1",
+        "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "1",
+        "DIY_EXPERIMENT_RETAINED_TIMING": "1",
+        "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
+        "DIY_EXPERIMENT_PREPARED_JIT": "0",
+        "DIY_EXPERIMENT_INHERITED_CODE_ACL": "1",
+        "DIY_EXPERIMENT_VERIFIED_RUNTIME_FILE": "1",
+        "DIY_EXPERIMENT_OVERLAP_WORKER_CLEANUP": "1",
+        "DIY_EXPERIMENT_COMPILED_JIT": "1",
+        "DIY_EXPERIMENT_POOLED_JIT": "1",
+        "DIY_EXPERIMENT_JIT_STREAM_MODULE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_JIT_POOL": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_CACHE": "1",
+        "DIY_EXPERIMENT_NEUTRAL_CODE_MAPPING": "1"
+      },
+      "job": {
+        "cpuMs": 11734.375,
+        "peakJobCommitBytes": 333438976,
+        "ownedProcessCount": 249,
+        "driverExitCode": 0,
+        "timedOut": false,
+        "allDescendantsExited": true,
+        "successful": true,
+        "missingProcessMemoryReads": 0
+      }
+    }
+  ],
+  "rangeReceiptSha256": "36c338238fc30b9d9033526f8762bf8ea1c7fe0b4f25c9d00eb89d63c7bd8e1a",
+  "remainingFailure": {
+    "job": 133762256805,
+    "script": "scripts/check-retained-host.mjs",
+    "reason": "All three natural full-size Unicode trials completed before active-input observation; required actual cancellation was not observed."
+  },
+  "limitations": [
+    "All 46 case exit codes are from the authenticated complete manifest; only selected cases32/34/45 reports were separately downloaded and inspected.",
+    "Actual Editor decoder and dropped-zero gates are present in the tested source; they were not weakened.",
+    "Synthetic fixture results do not prove semantic-work separation, general eligibility, product adoption, universal zero-loss under pressure, or Goal109 completion."
+  ]
+}

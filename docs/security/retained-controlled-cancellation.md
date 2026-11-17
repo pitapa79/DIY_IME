@@ -60,10 +60,48 @@ and251 cumulative owned processes are safety-trial totals, not per-input costs.
 See [source-bound local evidence](evidence/retained-controlled-cancel-local-20261117.json).
 This is not guest-running proof, semantic-work separation or a performance pass.
 
-Full exact-source combined CI and final review remain required. Parent118
-CI43877903036 failed a startup temporary-directory deletion after actual Job-zero
-proof and timing case34; the timing cause is still being investigated. Neither
-failure is discarded or treated as success.
+## Fixed official-route coverage and current dependency
+
+The explicit dependency now includes PR118 source
+`30ee1caf66b9db82ab9b100c1007d00a164d394c`, integrated at
+`b91ce194e9db7031db1b7d56f04715c456078be9`. The only CI merge conflict
+was resolved by preserving both the owned-worker helper tests and the private
+application-cleanup tests, including their individual exit-code checks.
+
+Parent CI44000259793 tested merge95ee1f2ce190771fb55726165bbba01eedb1cfac,
+with the same tree as30ee1ca. Eight of nine Windows segments passed. The timing
+manifest is complete with46 successful cases. Selected cases32/34/45 were
+independently retrieved through bounded byte ranges and CRC/SHA checked:
+15/15/2 trace collections,14933/13830/298 events, all dropped0. The original
+Editor decoder and strict trace-loss gates remain in the tested source.
+See [parent CI evidence](evidence/host-trace-native-ci-20261117.json).
+Only these selected reports were independently inspected; the46-case claim
+comes from the authenticated complete manifest. This is synthetic timing
+evidence, not semantic-work separation or universal zero loss under contention.
+
+The remaining comparison-segment failure occurred earlier in the separate
+existing fixed official route: all three natural Unicode inputs completed
+before active-input observation. The same owned-worker controlled cancellation
+now covers that route, preserving natural trials, full4096-code-point Unicode,
+fixed50M fuel, dictionary/Session replacement, protection/revocation and faults.
+The helper additionally accepts only the private `diyime-retained-host-*` /
+`workers` workspace, with the same live-handle/image/thread ownership checks.
+The original-handle/stale-PID helper test now exercises this additional prefix;
+all five actual Windows tests passed in53.963s. Invalid workspaces are refused.
+
+Actual fixed official Host regression passed in190.125s on newly built30ee1ca
+executables. Controlled cancellation observed running1, original-handle exit
+without forced cleanup, running0, generation4 and latest correct output.
+Natural trials were2 cancelled/1 correctly completed. The remaining Node-error,
+dictionary/Session, protection and revocation checks and Host close passed.
+The outer Job wrapper returned only after driver success and zero descendants.
+This fixed four-node contract remains independent of general S1 qualification.
+See [source-bound fixed-route evidence](evidence/retained-fixed-controlled-cancel-local-20261117.json).
+
+Full exact-source combined CI and final review remain required. Prior failed
+CI43877903036/43982909396 and all local failures remain evidence; the current
+successful timing segment does not turn those runs into passes. No full-CI,
+S1 adoption, performance-target or Goal109 completion is claimed.
 
 Helper/tests are included by the existing primitive-script evidence
 manifest glob and are not shipped. No S1 adoption or Goal109 completion claimed.

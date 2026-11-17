@@ -1,0 +1,111 @@
+{
+  "parentGoal": 109,
+  "issue": 121,
+  "parentRuntimeSource": "30ee1caf66b9db82ab9b100c1007d00a164d394c",
+  "integrationMerge": "b91ce194e9db7031db1b7d56f04715c456078be9",
+  "testedHarnessFilesSha256": {
+    "scripts/check-retained-host.mjs": "dfe9ba9eda4f0e934329a4520a3114d95172695c063c5aab5380024697d51f22",
+    "scripts/hold-owned-primitive-worker.py": "f60affc09585384441ba3cee13a1b4d7eea6f620873d54f26b9e8a7beffcb794",
+    "scripts/hold-owned-primitive-worker.mjs": "f34b323366210308df092af1850b198bc454286017faa3c48a7b211f61543530",
+    "scripts/measure-windows-benchmark-job.py": "db2b91cb3f4e1f1b8dcb194395dd254bd9099c8c2aa6f123ed4b2aa61b20e0f4"
+  },
+  "runtimeExecutables": [
+    {
+      "name": "diy-ime2-external-host",
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-external-host.exe",
+      "bytes": 8638912,
+      "sha256": "73a31259e9f61881dd38164abd6e3194bd067e80f376f3c5cb04e9b734ce4267"
+    },
+    {
+      "name": "diy-ime2-node-manager",
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-node-manager.exe",
+      "bytes": 8626756,
+      "sha256": "d8ff2043d7b5a351a2950d4e6f6588e413b463be392ac6d99b30483ee97c4cd9"
+    },
+    {
+      "name": "diy-ime2-wasm-worker",
+      "path": "C:\\Users\\USER\\Documents\\ChatGPT\\DIY_IME2\\.work\\resume-20261113\\release-build\\release\\diy-ime2-wasm-worker.exe",
+      "bytes": 8622473,
+      "sha256": "6487edeaa42186b73ce20b8fa16161457303f38bc522932a37b826f17d72f4f0"
+    }
+  ],
+  "productionBuildLogSha256": "5d1e3d1c4ee887d9a3944ab5f082f34a5999904a01b0ce768834e9e98516c821",
+  "helperTests": {
+    "count": 5,
+    "passed": true,
+    "seconds": 53.963,
+    "logSha256": "4625005f270498950d368bd6ef7af69f74c485763d6e946216e93f2002a27b70",
+    "testSourceSha256": "9c202ea7516932d384c997b18c356adaf8f657a21fd4b4878b7e7f4f06ddee5f",
+    "coverage": "primitive workspace hold/resume/EOF/timeout/refusals, fixed-official private workspace original-handle exit and stale PID refusal"
+  },
+  "fixedOfficialHost": {
+    "passed": true,
+    "seconds": 190.125,
+    "logSha256": "7c3d9e48ff1cc21bc96a8031052743b3db048389cf5b05ca1f42c295c78af587",
+    "proof": {
+      "check": "fixed-official-controlled-active-host-ipc-cancellation",
+      "scope": "suspended Worker; not guest-running proof",
+      "held": {
+        "event": "held",
+        "pid": 98944,
+        "creationFileTime": "134393621653236664",
+        "threads": 7
+      },
+      "activePhysical": {
+        "cancelRequested": 0,
+        "queued": 0,
+        "running": 1,
+        "stalled": 0
+      },
+      "ending": {
+        "event": "released",
+        "reason": "original-exit",
+        "originalHandleSignalled": true,
+        "threads": 7,
+        "resumed": 0,
+        "forcedCleanup": false
+      },
+      "outcome": "cancelled",
+      "finalPhysical": {
+        "cancelRequested": 0,
+        "queued": 0,
+        "running": 0,
+        "stalled": 0
+      },
+      "freshGeneration": 4,
+      "latestCorrect": true
+    },
+    "naturalTrials": {
+      "total": 3,
+      "cancelled": 2,
+      "completedCorrectly": 1
+    },
+    "job": {
+      "cpuMs": 67765.625,
+      "peakJobCommitBytes": 225689600,
+      "ownedProcessCount": 193
+    },
+    "subsequentChecks": [
+      "retained ordinary Host: missing-input failure/Blocked, failed/cancelled successor preservation, successful Session/dictionary replacement and old-key fencing passed",
+      "retained ordinary Host: valid Node error terminated the original owner; a later correct input replenished successfully",
+      "retained ordinary Host: protection closed the actual original owner and all reservations; Host exited",
+      "{\"cpuMs\": 67765.625, \"peakJobCommitBytes\": 225689600, \"ownedProcessCount\": 193}"
+    ]
+  },
+  "limitations": [
+    "Controlled suspended-Worker Host/IPC cancellation, not guest-running proof.",
+    "Fixed official four-node route is an independent existing contract, not general S1 eligibility.",
+    "CI44000259793 is a parent-source run with eight of nine segments passed; combined-source final CI remains required.",
+    "Job wrapper enforces original driver exit and zero live descendants before returning. Its CPU/RAM/process counts are whole-test totals, not performance percentiles."
+  ],
+  "nonRetainedSingleSlotRegression": {
+    "exitCode": 0,
+    "elapsedSeconds": 67.7660000002943,
+    "logSha256": "c3a4fd162277f71aca861f689f56b3e3950cebec306e6fde134464bded1da333",
+    "job": {
+      "cpuMs": 10765.625,
+      "peakJobCommitBytes": 184053760,
+      "ownedProcessCount": 47
+    }
+  }
+}

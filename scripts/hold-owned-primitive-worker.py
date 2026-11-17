@@ -64,7 +64,8 @@ def alive(handle):
 
 def checked_worker(pid, root, digest):
     root = Path(root).resolve(strict=True)
-    if root.name != 'workers' or not root.parent.name.startswith('diyime-primitive-retention-'):
+    if root.name != 'workers' or not root.parent.name.startswith(
+            ('diyime-primitive-retention-', 'diyime-retained-host-')):
         raise ValueError('private benchmark workspace required')
     if not isinstance(pid, int) or pid <= 0 or len(digest) != 64 or any(
             char not in '0123456789abcdef' for char in digest):

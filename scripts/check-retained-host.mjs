@@ -6,6 +6,8 @@ import {existsSync,readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync} from
 import {join,resolve,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
+import {createHash} from 'node:crypto';
+import {HeldPrimitiveWorker} from './hold-owned-primitive-worker.mjs';
 const [hostExe,managerExe,worker,dll,official,mode]=process.argv.slice(2);
 if(!official||(mode!==undefined&&mode!=='--single-worker'))throw Error('usage: HOST MANAGER WORKER DLL OFFICIAL_DIRECTORY [--single-worker]');
 const singleWorker=mode==='--single-worker';
@@ -96,6 +98,37 @@ try {
  const firstCancelDelayMs=Number(process.env.DIY_RETAINED_FIRST_CANCEL_DELAY_MS??0);
  assert(Number.isInteger(firstCancelDelayMs)&&firstCancelDelayMs>=0&&firstCancelDelayMs<=1000);
  let cancelled=0;
+ // Hold only this test's exact original Worker. This proves active Host/IPC
+ // cancellation, not that guest instructions were executing during the hold.
+ const beforeControlled=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready&&!s.retainedWorker.activeInput?s:null;});
+ assert.equal(beforeControlled.retainedWorker.processId,pid);
+ const control=new HeldPrimitiveWorker({python:process.env.DIY_PRIMITIVE_PYTHON??'python',pid,
+  workspace:join(root,'workers'),digest:createHash('sha256').update(readFileSync(worker)).digest('hex')});
+ let controlledCancelled=0;
+ try {
+  const held=await control.started;
+  revision++;await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision});
+  const {receipt}=await host.call({method:'run',request:{startKey:String(revision),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text:cancellableText,mode:'compose'}}});
+  const active=await until(async()=>{
+   const status=await host.call({method:'status'}),{snapshot}=await host.call({method:'getRun',key:receipt.key});
+   assert.notEqual(snapshot.state,'terminal','held Worker input must remain pending until cancellation');
+   return status.retainedWorker.activeInput&&snapshot.physical.running>0?{status,snapshot}:null;
+  });
+  assert.equal(active.status.retainedWorker.processId,held.pid);
+  assert.equal(active.status.retainedWorker.generation,beforeControlled.retainedWorker.generation);
+  await host.call({method:'cancelRun',key:receipt.key});
+  const ending=await control.expectOriginalExit();
+  const snapshot=await until(async()=>{const {snapshot}=await host.call({method:'getRun',key:receipt.key});return snapshot.state==='terminal'&&Object.values(snapshot.physical).every(n=>n===0)?snapshot:null;});
+  assert.equal(snapshot.result.reason,'cancelled');
+  await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.physicalJobs===0&&s.workerProcesses===0&&s.physical.physicalJobs===0;});
+  pid=null;assert.equal((await run('kousui')).packet.root.text,'降水');
+  assert(generation>beforeControlled.retainedWorker.generation);
+  controlledCancelled++;
+  console.log(JSON.stringify({check:'fixed-official-controlled-active-host-ipc-cancellation',
+   scope:'suspended Worker; not guest-running proof',held,activePhysical:active.snapshot.physical,
+   ending:ending.release,outcome:snapshot.result.reason,finalPhysical:snapshot.physical,
+   freshGeneration:generation,latestCorrect:true}));
+ } finally {await control.close();}
  for(let trial=0;trial<cancellationTrials;trial++){
   revision++;await host.call({method:'invalidateInput',expectedPlanVersion:'1',revision});const text=cancellableText,{receipt}=await host.call({method:'run',request:{startKey:String(revision),expectedPlanVersion:'1',targets:[{node:'result',port:'out'}],input:{revision,text,mode:'compose'}}});
   const observed=await until(async()=>{const s=await host.call({method:'status'});if(s.retainedWorker.activeInput)return true;const {snapshot}=await host.call({method:'getRun',key:receipt.key});return snapshot.state==='terminal'?{snapshot}:null;});
@@ -114,8 +147,8 @@ try {
   }
   assert.equal((await run('kousui')).packet.root.text,'降水');
  }
- assert(cancelled>0,'must observe cancellation while an actual Host input is active');
- console.log('retained ordinary Host: active-input cancellation, true drain and successful replenishment passed ('+cancelled+'/'+cancellationTrials+' cancelled; remaining trials completed correctly before cancellation)');
+ assert.equal(controlledCancelled,1,'must observe cancellation while an actual Host input is active');
+ console.log('retained ordinary Host: controlled active cancellation 1/1; natural trials '+cancelled+'/'+cancellationTrials+' cancelled, '+(cancellationTrials-cancelled)+' completed correctly; true drain and replenishment passed');
  const previousKey=lastKey;writeFileSync(dictionaryPath,'reading\tsurface\tweight\nこうすい\t香水\t99\n');const successor=await host.call({method:'prepare',graph});assert.equal((await host.call({method:'status'})).sessionEpoch,oldEpoch);await host.call({method:'activate',reviewId:successor.reviewId});assert.notEqual((await host.call({method:'status'})).sessionEpoch,oldEpoch);pid=null;generation=0;revision=0;assert.equal((await run('kousui')).packet.root.text,'香水');assert.equal((await host.send({method:'getRun',key:previousKey})).ok,false);
  writeFileSync(dictionaryPath,originalDictionary);const restore=await host.call({method:'prepare',graph});await host.call({method:'activate',reviewId:restore.reviewId});pid=null;generation=0;revision=0;assert.equal((await run('kousui')).packet.root.text,'降水');
  const preparing=host.send({method:'prepare',graph}),preparingId=String(host.serial);await host.call({method:'cancel',requestId:preparingId});assert.equal((await preparing).ok,false);assert.equal((await run('kousui')).packet.root.text,'降水');
