@@ -53,6 +53,7 @@ impl Command {
     }
 }
 struct Shared {
+    qualifications: Option<Vec<retention_review::Qualification>>,
     send: mpsc::SyncSender<Command>,
     stop: CancellationToken,
     input: Mutex<Option<ActiveInput>>,
@@ -144,6 +145,18 @@ impl NodeLink {
             return Err(Box::new(arguments));
         };
         let (invocation, completion, cancel) = arguments;
+        if let Some(qualifications) = &shared.qualifications
+            && let Err(error) = qualifications[stage].check(
+                node,
+                &shared.ids[stage],
+                invocation.config(),
+                Some(invocation.key()),
+            )
+        {
+            shared.close();
+            completion.complete(Err(error));
+            return Ok(());
+        }
         shared.record_run_phase("invocation-offered", Some(invocation.key().run_id));
         let node = node.clone();
         let token = cancel.clone();
@@ -227,9 +240,10 @@ impl Owner {
         control_probe: Arc<Mutex<()>>,
         diagnostic_origin: Option<std::time::Instant>,
     ) -> Result<Option<Self>, CoreError> {
+        let grouped = retention_evaluation::Owners::evaluation_group_size()? == Some(4);
         if stages
             .iter()
-            .any(|(_, node, _)| !node.retention_evaluation_eligible())
+            .any(|(_, node, config)| !node.retention_evaluation_eligible(config, grouped))
         {
             return Err(fail("retained-evaluation", "unreviewed implementation"));
         }
@@ -278,6 +292,27 @@ impl Owner {
         {
             return Ok(None);
         }
+        let qualifications = if evaluation {
+            let grouped = retention_evaluation::Owners::evaluation_group_size()? == Some(4);
+            Some(
+                nodes
+                    .iter()
+                    .zip(&ids)
+                    .zip(&configs)
+                    .map(|((node, id), config)| {
+                        retention_review::Qualification::review(
+                            node,
+                            id,
+                            config,
+                            &controller,
+                            grouped,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        } else {
+            None
+        };
         let (send, receive) = mpsc::sync_channel(1);
         let samples = if evaluation
             && std::env::var_os("DIY_EXPERIMENT_RETAINED_TIMING").as_deref()
@@ -291,6 +326,7 @@ impl Owner {
             None
         };
         let shared = Arc::new(Shared {
+            qualifications,
             send,
             stop: CancellationToken::default(),
             input: Mutex::new(None),
@@ -525,6 +561,13 @@ impl Native {
         configs: &[Value],
         shared: &Arc<Shared>,
     ) -> Result<Self, CoreError> {
+        if let Some(qualifications) = &shared.qualifications {
+            for (((qualification, node), id), config) in
+                qualifications.iter().zip(nodes).zip(ids).zip(configs)
+            {
+                qualification.check(node, id, config, None)?;
+            }
+        }
         if let Some(samples) = &shared.samples {
             samples.begin_attempt();
         }
@@ -978,6 +1021,14 @@ fn coordinate(
                         ));
                     }
                     command.node.validate_config(command.invocation.config())?;
+                    if let Some(qualifications) = &shared.qualifications {
+                        qualifications[completed].check(
+                            &command.node,
+                            &ids[completed],
+                            command.invocation.config(),
+                            Some(&key),
+                        )?;
+                    }
                     let mut scope = scope(
                         &command.node,
                         &ids[completed],
