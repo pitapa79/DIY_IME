@@ -204,15 +204,17 @@ try {
     assert.equal(collection.dropped,0,'frozen trace has missing events');
     return events;
   }
+  const observedNativeHistory=[];
   function analyze(keys,events,status) {
     const analysis=layout==='serial'
       ?analyzeLinearCallTiming({keys,events,status,ids:executedIds,kinds:executedIds.map(id=>kindAt(ids.indexOf(id)))})
-      :analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds:composition.unexecutedIds});
+      :analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds:composition.unexecutedIds,history:observedNativeHistory});
     assert.equal(analysis.correlationError,null);
     assert.equal(analysis.inconsistent,0,'same-call durations must be internally consistent');
     if(layout!=='serial') {
       const admitted=keys.filter(key=>key?.runId);
       verifyGraphCallCoverage(analysis,admitted.at(-1)?.runId);
+      observedNativeHistory.push(status);
     }
     return analysis;
   }

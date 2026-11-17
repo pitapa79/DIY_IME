@@ -29,6 +29,16 @@ The existing strict-linear analyzer remains restricted to serial graphs.
 Guest spans include SDK ABI work; semantic work and true framework overhead
 remain unavailable. No graph percentile division or independent subtraction.
 
+The private Native ring retains16 rows per owner. Its cumulative eviction
+counter is preserved even when an earlier status already captured the evicted
+row. Nonlinear coverage accepts such retention only with a complete snapshot
+chain: a zero-loss initial observation, unchanged owner/capacity/Session,
+monotonic counters, exact surviving-row prefixes, previously observed evictions,
+and unique new logical Node calls. Missing initial history, an unobserved gap,
+changed rows or a missing latest Node remains failure. Raw snapshots and all
+counters remain in the report. No ring size, runtime budget or production
+behavior changes; without the archive proof the original loss check stays strict.
+
 Finite measurement profiles are explicit: serial/unused physical budget22;
 parallel/join max(22,2*count+2), accounting for lifetime and callback reservations.
 Matrix result reservation512KiB remains bounded by64MiB retained budget. These
@@ -45,6 +55,10 @@ ending, unsubmitted remainder and original failure. A lost read is not busy or
 proof of no process. Correct-result latency still ends before client verification;
 verification failures preserve ending evidence without entering correct cohorts.
 Callback ending is distinct from retained Worker lifetime ending.
+`cold-paced` skips the initial readiness barrier and starts with20ms input;
+cadences and rounds then share that Host. It does not create an independent
+cold Host for each cadence or round. Per-round latest-input outcomes, generation
+and status must distinguish this continuation from a cold-start observation.
 
 Every case runs once under original300s owned Job/330s outer observation, with
 all target correctness, frozen actual trace decoding/dropped0, non-draining
@@ -55,8 +69,9 @@ the remainder unexecuted instead of silently omitting it. No retry until green.
 An extra45min segment is required by the existing aggregate; all originalnine
 segments and safety/deadline/fuel gates remain.
 
-Local graph/evidence and regression tests, syntax/fmt/YAML checks are separate
-from pending actual Core example execution and final-source native/full CI.
+Local graph/evidence tests and actual Core type preflight are separate from a
+successful complete native matrix and final-source required CI. A partial local
+failure or an offline replay of captured Native history is not a passed case.
 The full Goal109 also requires remaining context/long-run coverage, semantic
 attribution, serious latest-response tail improvements and normalHost/main
 technical integration. This matrix alone cannot close it.

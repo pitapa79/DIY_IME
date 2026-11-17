@@ -2,7 +2,8 @@
 // execution order in parallel or repeated-kind graphs. No Core-node duration or
 // semantic/framework overhead is inferred by this checker.
 import assert from 'node:assert/strict';
-export function analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds=[]}) {
+import {proveObservedNativeRingHistory} from './observed-native-ring-history.mjs';
+export function analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds=[],history}) {
   const result={scope:'Native exact run-key/node-id counts; anonymous Core-node correlation unavailable',
     goalOverheadAvailable:false,semanticWorkMs:null,frameworkOverheadMs:null,
     correlationError:null,expected:0,paired:0,inconsistent:0,rows:[],ringDrops:[]};
@@ -13,6 +14,10 @@ export function analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds
   }
   const bundles=status.retainedWorker?.callSamples??[];
   result.ringDrops=bundles.map(b=>({nodeIds:b.nodeIds,dropped:b.calls.dropped}));
+  if(history!==undefined) {
+    try {result.ringHistoryEvidence=proveObservedNativeRingHistory([...history,status]);}
+    catch(error) {result.ringHistoryEvidence={complete:false,error:String(error)};}
+  }
   for(const key of admitted)for(const nodeId of unexecutedIds) {
     if(bundles.some(bundle=>bundle.calls.samples.some(s=>bundle.nodeIds[s.stage]===nodeId&&
       s.runId===key.runId&&s.planVersion===key.planVersion&&s.deliveryGeneration===key.deliveryGeneration&&
@@ -44,7 +49,9 @@ export function analyzeRetainedGraphCalls({keys,status,executedIds,unexecutedIds
 export function verifyGraphCallCoverage(analysis,latestRunId) {
   assert.equal(analysis.correlationError,null);
   assert.equal(analysis.inconsistent,0);
-  assert(analysis.ringDrops.every(row=>row.dropped===0),'Native ring loss prevents complete coverage');
+  if(analysis.ringHistoryEvidence)assert(analysis.ringHistoryEvidence.complete,'Native history has unobserved loss or inconsistent evidence');
+  assert(analysis.ringDrops.every(row=>row.dropped===0)||analysis.ringHistoryEvidence?.complete,
+    'Native ring loss prevents complete coverage');
   const rows=latestRunId?analysis.rows.filter(row=>row.key.runId===latestRunId):analysis.rows;
   assert(rows.length>0&&rows.every(row=>row.status==='paired'),'executed Node coverage is incomplete');
 }

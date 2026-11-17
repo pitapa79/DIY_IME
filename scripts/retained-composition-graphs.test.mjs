@@ -45,6 +45,66 @@ test('wrong generation, duplicate rows, missing nodes and ring loss remain failu
   }
 });
 
+function finiteHistory(count=31) {
+  return Array.from({length:count},(_,index)=>{
+    const n=index+1,status=evidence();
+    for(const bundle of status.retainedWorker.callSamples) {
+      const original=bundle.calls.samples[0];
+      bundle.calls={capacity:16,dropped:Math.max(0,n-16),samples:
+        Array.from({length:Math.min(n,16)},(_,offset)=>({...structuredClone(original),
+          runId:String(Math.max(1,n-15)+offset)}))};
+    }
+    if(index%2)status.retainedWorker.callSamples.reverse();
+    return status;
+  });
+}
+test('31 observed calls survive a finite16 ring with every evicted row archived and no invented aliases',()=>{
+  const snapshots=finiteHistory(),history=[];
+  for(let i=0;i<snapshots.length;i++) {
+    const analysis=analyzeRetainedGraphCalls({keys:[{...key,runId:String(i+1)}],
+      status:snapshots[i],executedIds:['a','b'],history});
+    verifyGraphCallCoverage(analysis,String(i+1));
+    assert.equal(analysis.paired,2);
+    assert(analysis.ringHistoryEvidence.owners.every(o=>o.observedRows===i+1));
+    if(i===30)assert(analysis.ringHistoryEvidence.owners.every(o=>o.evictionsPreviouslyObserved===15));
+    history.push(snapshots[i]);
+  }
+});
+test('batched observation proves all63 rows across seven-input rounds before finite-ring eviction',()=>{
+  const all=finiteHistory(63),history=[];
+  for(let end=7;end<=63;end+=7) {
+    const analysis=analyzeRetainedGraphCalls({keys:Array.from({length:7},(_,i)=>({...key,runId:String(end-6+i)})),
+      status:all[end-1],executedIds:['a','b'],history});
+    verifyGraphCallCoverage(analysis,String(end));
+    assert.equal(analysis.paired,14);
+    assert(analysis.ringHistoryEvidence.owners.every(o=>o.observedRows===end));
+    history.push(all[end-1]);
+  }
+});
+test('archive cannot forgive unobserved eviction, changed rows, reset counters, or foreign Sessions',()=>{
+  const all=finiteHistory(),latest=all.at(-1),keys=[{...key,runId:'31'}];
+  for(const [history,status] of [
+    [[],latest],[[all[0]],latest],
+    [all.slice(0,-1),(()=>{const s=structuredClone(latest);s.retainedWorker.callSamples[0].calls.samples[0].native.invocationNs++;return s;})()],
+    [all.slice(0,-1),(()=>{const s=structuredClone(latest);s.retainedWorker.callSamples[0].calls.dropped=0;return s;})()],
+    [[{...all[0],sessionEpoch:'other'}],latest],
+  ]) {
+    const analysis=analyzeRetainedGraphCalls({keys,status,executedIds:['a','b'],history});
+    assert.equal(analysis.ringHistoryEvidence.complete,false);
+    assert.throws(()=>verifyGraphCallCoverage(analysis,'31'));
+  }
+});
+test('complete archive still cannot replace missing latest Node evidence',()=>{
+  const all=finiteHistory();
+  const status=structuredClone(all.at(-1));
+  status.retainedWorker.callSamples[0].calls.samples.at(-1).runId='32';
+  const analysis=analyzeRetainedGraphCalls({keys:[{...key,runId:'31'}],status,
+    executedIds:['a','b'],history:all.slice(0,-1)});
+  assert.equal(analysis.ringHistoryEvidence.complete,true);
+  assert.equal(analysis.paired,1);
+  assert.throws(()=>verifyGraphCallCoverage(analysis,'31'));
+});
+
 test('reconvergence verifies distinct branch witnesses and rejects swapped or fabricated outputs',()=>{
   const spec=retainedComposition(4,'join'),wanted=spec.expected('🙂');
   const right=JSON.stringify({apiVersion:1,node:{kind:'fixture.wasm.chain-alt'},

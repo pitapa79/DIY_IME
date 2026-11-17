@@ -66,6 +66,7 @@ def main():
                 'harnessFilesSha256': {p: sha(repo/p) for p in [
                     'scripts/compare-private-sample-delivery.py', 'scripts/benchmark-primitive-retention.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/host-input-scenarios.mjs',
+                    'scripts/observed-native-ring-history.mjs',
                     'scripts/retained-composition-graphs.mjs', 'scripts/analyze-retained-graph-calls.mjs',
                     'scripts/host-warm-input-observation.mjs',
                     'scripts/analyze-retained-call-timing.mjs', 'scripts/analyze-retained-lifecycle.mjs',
