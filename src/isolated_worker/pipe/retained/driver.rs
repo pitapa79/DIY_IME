@@ -41,8 +41,34 @@ struct Shared {
     active: Mutex<Option<Active>>,
     cause: Mutex<Option<DriverStop>>,
     cancel: CancellationToken,
+    #[cfg(test)]
+    after_reply: Mutex<Option<ReplyPause>>,
+}
+#[cfg(test)]
+struct ReplyPause {
+    sequence: u64,
+    entered: mpsc::SyncSender<()>,
+    resume: mpsc::Receiver<()>,
 }
 impl Shared {
+    #[cfg(test)]
+    fn pause_after_reply(&self, sequence: u64) {
+        let pause = {
+            let mut slot = self.after_reply.lock().unwrap_or_else(|p| p.into_inner());
+            if slot
+                .as_ref()
+                .is_some_and(|pause| pause.sequence == sequence)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            let _ = pause.entered.try_send(());
+            let _ = pause.resume.recv_timeout(Duration::from_secs(5));
+        }
+    }
     fn stop(&self, cause: DriverStop) {
         let mut first = self.cause.lock().unwrap_or_else(|p| p.into_inner());
         if first.is_none() {
@@ -149,6 +175,25 @@ pub struct RetainedClient {
     _buffers: ResourceLease,
 }
 impl RetainedClient {
+    #[cfg(test)]
+    pub(in crate::isolated_worker) fn pause_after_reply_for_test(
+        &self,
+        sequence: u64,
+        entered: mpsc::SyncSender<()>,
+        resume: mpsc::Receiver<()>,
+    ) {
+        let mut slot = self
+            .shared
+            .after_reply
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        assert!(slot.is_none(), "one owned reply pause at a time");
+        *slot = Some(ReplyPause {
+            sequence,
+            entered,
+            resume,
+        });
+    }
     /// Stage indexes refer to the reservation's exact grant/config/resource
     /// bindings, not guest-supplied names. No package becomes eligible here.
     pub fn channel(
@@ -197,6 +242,8 @@ impl RetainedClient {
             active: Mutex::new(None),
             cause: Mutex::new(None),
             cancel: pin.inner.cancel.clone(),
+            #[cfg(test)]
+            after_reply: Mutex::new(None),
         });
         let driver_pin = pin.clone();
         let driver_shared = shared.clone();
@@ -311,6 +358,10 @@ impl RetainedClient {
                     // Release their actual charge before waking the next stage.
                     drop(call.input);
                     drop(call._input_budget);
+                    // IO is complete. The parent still owns its active-input
+                    // reservation; this clone must not outlive reply delivery
+                    // and make a finished input appear queued.
+                    drop(call._budget);
                     match reply {
                         Ok((data, size, metrics)) => {
                             let measurement = call.metrics_budget.map(|budget| CallMeasurement {
@@ -333,6 +384,8 @@ impl RetainedClient {
                             return Err("retained call failed".into());
                         }
                     }
+                    #[cfg(test)]
+                    driver_shared.pause_after_reply(sequence);
                     last = Instant::now();
                 }
             })();
