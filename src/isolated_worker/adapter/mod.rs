@@ -361,6 +361,8 @@ impl CodeFiles {
             inherited_acl: std::env::var_os("DIY_EXPERIMENT_INHERITED_CODE_ACL").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
         };
+        let chunked = std::env::var_os("DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
         for (name, bytes) in assets {
             let write_timing = Span::worker(match *name {
                 "worker.exe" => "worker-snapshot-image-write",
@@ -369,7 +371,11 @@ impl CodeFiles {
             });
             files
                 .cache
-                .write(name, bytes)
+                .write_asset(
+                    name,
+                    bytes,
+                    chunked && matches!(*name, "worker.exe" | "wasmtime.dll"),
+                )
                 .map_err(|_| fail("worker-asset", "code snapshot unavailable"))?;
             write_timing.complete();
         }
@@ -3052,6 +3058,20 @@ mod tests {
         drop((first_code, first_runtime, second_code, second_runtime));
         first.delete().unwrap();
         second.delete().unwrap();
+    }
+    #[test]
+    fn chunked_cache_write_preserves_exact_bytes_and_requires_a_new_file() {
+        let cache =
+            ScopedCache(Cache::new_code_snapshot(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap());
+        let mut bytes = vec![17; 1024 * 1024];
+        bytes.extend_from_slice(&[23, 29, 31]);
+        let path = cache.write_asset("worker.exe", &bytes, true).unwrap();
+        assert!(
+            cache
+                .write_asset("worker.exe", b"replacement", true)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
     #[test]
     fn an_acl_failure_poisoned_code_snapshot_cannot_be_reused() {
