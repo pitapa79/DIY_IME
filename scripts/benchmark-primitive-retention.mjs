@@ -383,6 +383,7 @@ try {
     proof.idleElapsedMs=performance.now()-quietStart;
     assert.deepEqual(proof.idle.retainedWorker.processIds,[]);
     assert.equal(proof.idle.retainedWorker.generation,before.retainedWorker.generation);
+    assert.equal(proof.idle.retainedWorker.startupFailures,0,'idle retirement must not count as a startup failure');
     await host.call({method:'traceStartDetailed'});
     const latest='  ka-recovered🙂漢字  ';
     proof.recoveryOfferedAtMs=performance.now();
