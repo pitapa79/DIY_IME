@@ -11,6 +11,7 @@ import sys
 
 VERIFIED_RUNTIME = "DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE"
 CHUNKED_SNAPSHOT = "DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES"
+ORDERED_STARTUP = "DIY_EXPERIMENT_RETAINED_ORDERED_STARTUP"
 LAUNCH_SPANS = (
     "launchSetup", "createSuspendedProcess", "createdToVerification", "confirmJobAndToken",
     "verifiedToResume", "resumeThread", "resumedToReadiness",
@@ -54,8 +55,11 @@ def main():
                          help="check cancellation, revocation and recovery in the verified retained path")
     variant.add_argument("--chunked-snapshot-writes", action="store_true",
                          help="compare native snapshot writes with the same verified runtime and inputs")
+    variant.add_argument("--ordered-startup", action="store_true",
+                         help="compare dependency-ordered startup against the chunked snapshot candidate")
     args = parser.parse_args()
-    verified_runtime = args.verified_runtime or args.verified_runtime_safety or args.chunked_snapshot_writes
+    chunked_snapshot = args.chunked_snapshot_writes or args.ordered_startup
+    verified_runtime = args.verified_runtime or args.verified_runtime_safety or chunked_snapshot
     root = Path(__file__).resolve().parent.parent
     target = root / "target"
     baseline_output = target / "retained-native-startup-evidence"
@@ -67,6 +71,9 @@ def main():
     if args.chunked_snapshot_writes:
         baseline_output = target / "retained-verified-runtime-evidence"
         output = target / "retained-chunked-snapshot-evidence"
+    if args.ordered_startup:
+        baseline_output = target / "retained-chunked-snapshot-evidence"
+        output = target / "retained-ordered-startup-evidence"
     worker_target = target / "retained-small-worker" if args.small_worker else target
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert source == os.environ["GITHUB_SHA"]
@@ -115,8 +122,10 @@ def main():
     })
     if verified_runtime:
         env[VERIFIED_RUNTIME] = "1"
-    if args.chunked_snapshot_writes:
+    if chunked_snapshot:
         env[CHUNKED_SNAPSHOT] = "1"
+    if args.ordered_startup:
+        env[ORDERED_STARTUP] = "1"
     state["flags"] = {key: val for key, val in env.items()
                       if key.startswith(("DIY_EXPERIMENT_", "DIY_PRIMITIVE_"))}
     if args.verified_runtime_safety:
@@ -136,7 +145,13 @@ def main():
             state["baselineManifestSha256"] = digest(baseline_path)
             assert baseline["source"] == source and baseline["plan"] == [1, 4, 20], "Baseline source or plan differs"
             expected_flags = baseline["flags"].copy()
-            if args.chunked_snapshot_writes:
+            if args.ordered_startup:
+                assert baseline["complete"], "Chunked baseline did not pass"
+                assert expected_flags.get(VERIFIED_RUNTIME) == "1"
+                assert expected_flags.get(CHUNKED_SNAPSHOT) == "1"
+                assert ORDERED_STARTUP not in expected_flags
+                expected_flags[ORDERED_STARTUP] = "1"
+            elif args.chunked_snapshot_writes:
                 assert expected_flags.get(VERIFIED_RUNTIME) == "1"
                 assert CHUNKED_SNAPSHOT not in expected_flags
                 expected_flags[CHUNKED_SNAPSHOT] = "1"
@@ -182,6 +197,7 @@ def main():
             assert report["runtimeBuildSourceCommit"] == source
             assert report["requestedControls"][VERIFIED_RUNTIME] == env.get(VERIFIED_RUNTIME)
             assert report["requestedControls"][CHUNKED_SNAPSHOT] == env.get(CHUNKED_SNAPSHOT)
+            assert report["requestedControls"][ORDERED_STARTUP] == env.get(ORDERED_STARTUP)
             assert all(report["binaries"][key] == files[key] for key in ("host", "manager", "worker", "dll"))
             assert report["workspaceAfterHostExit"] == []
             assert all(row["dropped"] == 0 for row in report["traceCollections"])
@@ -212,6 +228,22 @@ def main():
             assert set(actual_pids) <= {sample["pid"] for sample in native["records"]}
             coverage = launch_span_coverage(report["lifecycle"], set(actual_pids))
             row["launchSpanCoverage"] = coverage
+            if args.ordered_startup:
+                permits = []
+                measured_pids = set(actual_pids)
+                for owner in report["lifecycle"]["owners"]:
+                    matches = [attempt for attempt in owner["attempts"]
+                               if len(attempt["processIds"]) == 1 and attempt["processIds"][0] in measured_pids]
+                    if not matches:
+                        continue
+                    assert len(matches) == 1
+                    attempt = matches[0]
+                    span = attempt["spans"]["startupGate"]
+                    assert span["state"] == "measured"
+                    permits.append({"nodeId": owner["context"][2][0], "pid": attempt["processIds"][0],
+                                    "endNs": span["endNs"], "waitMs": span["ms"]})
+                assert {permit["pid"] for permit in permits} == set(actual_pids) and len(permits) == count
+                row["startupPermits"] = sorted(permits, key=lambda permit: int(permit["endNs"]))
             if count == 1:
                 assert all(value == 1 for value in coverage["measured"].values()), "Missing launch span in one-node canary"
             phases = [json.loads(line) for line in (output / (stem + ".log")).read_text(encoding="utf-8").splitlines()

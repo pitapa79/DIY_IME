@@ -333,7 +333,20 @@ impl PendingPermissionSession {
         }
         let mut ordered = Vec::new();
         if group_size == 1 {
-            ordered.extend(plan.nodes.iter());
+            if crate::isolated_worker::adapter::RetainedOwners::orders_initial_startup() {
+                let compiled = plan.plan.as_ref().ok_or_else(denied)?;
+                // The validated Core order already accounts for system Nodes and joins.
+                for id in compiled.node_order() {
+                    if let Some(node) = plan.nodes.iter().find(|node| node.id == id) {
+                        ordered.push(node);
+                    }
+                }
+                if ordered.len() != plan.nodes.len() {
+                    return Err(denied());
+                }
+            } else {
+                ordered.extend(plan.nodes.iter());
+            }
         } else {
             // Grouping currently evaluates strict linear chains. Never guess an
             // order from array positions or co-load a branch under that promise.

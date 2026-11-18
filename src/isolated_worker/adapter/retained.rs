@@ -229,7 +229,7 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
-        Self::install_stages(host, controller, stages, false, None, None, None)
+        Self::install_stages(host, controller, stages, None, None, None, None)
     }
 
     pub(super) fn install_evaluation(
@@ -237,6 +237,7 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
         startup_gate: Arc<retention_evaluation::StartupGate>,
+        initial_startup: Option<retention_evaluation::InitialStartup>,
         control_probe: Arc<Mutex<()>>,
         diagnostic_origin: Option<std::time::Instant>,
     ) -> Result<Option<Self>, CoreError> {
@@ -251,8 +252,8 @@ impl Owner {
             host,
             controller,
             stages,
-            true,
             Some(startup_gate),
+            initial_startup,
             Some(control_probe),
             diagnostic_origin,
         )
@@ -262,11 +263,12 @@ impl Owner {
         host: ExecutionHost,
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
-        evaluation: bool,
         startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
+        initial_startup: Option<retention_evaluation::InitialStartup>,
         control_probe: Option<Arc<Mutex<()>>>,
         diagnostic_origin: Option<std::time::Instant>,
     ) -> Result<Option<Self>, CoreError> {
+        let evaluation = startup_gate.is_some();
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
         let mut configs = Vec::new();
@@ -369,6 +371,7 @@ impl Owner {
                     configs,
                     worker_shared,
                     receive,
+                    initial_startup,
                 )
             })
             .map_err(|_| fail("worker-thread", "retained Session thread unavailable"))?;
@@ -560,6 +563,7 @@ impl Native {
         ids: &[String],
         configs: &[Value],
         shared: &Arc<Shared>,
+        initial_startup: Option<retention_evaluation::InitialStartup>,
     ) -> Result<Self, CoreError> {
         if let Some(qualifications) = &shared.qualifications {
             for (((qualification, node), id), config) in
@@ -572,11 +576,15 @@ impl Native {
             samples.begin_attempt();
         }
         shared.record_phase("attempt-started");
-        let startup_permit = shared
-            .startup_gate
-            .as_ref()
-            .map(|gate| gate.acquire(&shared.stop))
-            .transpose()?;
+        let startup_permit = if let Some(initial) = initial_startup {
+            Some(initial.acquire(&shared.stop)?)
+        } else {
+            shared
+                .startup_gate
+                .as_ref()
+                .map(|gate| gate.acquire(&shared.stop))
+                .transpose()?
+        };
         shared.record_phase("startup-permit-acquired");
         let state = control_state(shared, controller)?;
         let key = RunKey {
@@ -913,13 +921,22 @@ fn coordinate(
     configs: Vec<Value>,
     shared: Arc<Shared>,
     receive: mpsc::Receiver<Command>,
+    initial_startup: Option<retention_evaluation::InitialStartup>,
 ) {
     let stage_count = nodes.len();
-    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared)
-        .inspect_err(|_| {
-            shared.startup_failures.fetch_add(1, Ordering::AcqRel);
-        })
-        .ok();
+    let mut native = Native::start(
+        &host,
+        &controller,
+        &nodes,
+        &ids,
+        &configs,
+        &shared,
+        initial_startup,
+    )
+    .inspect_err(|_| {
+        shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+    })
+    .ok();
     let mut pending = None;
     while !shared.stop.is_cancelled() && control_state(&shared, &controller).is_ok() {
         let ready = native
@@ -974,7 +991,7 @@ fn coordinate(
             continue;
         }
         if native.is_none() {
-            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared).ok();
+            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None).ok();
         }
         let Some(owner) = native.as_mut() else {
             command.legacy(&shared);
