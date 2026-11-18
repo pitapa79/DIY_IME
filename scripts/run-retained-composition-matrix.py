@@ -25,6 +25,8 @@ def main():
     parser.add_argument('bundle', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('preflight', type=Path)
+    parser.add_argument('--candidate', action='store_true',
+                        help='enable the two snapshot experiments on retained cases only')
     args = parser.parse_args()
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
@@ -42,6 +44,11 @@ def main():
     modules = [repo/'target/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm',
                repo/'target/alternate-wasm/wasm32-unknown-unknown/release/diyime2_fixture_guest.wasm']
     assert all(path.is_file() for path in modules)
+    module_hashes = {str(path.relative_to(repo)): sha(path) for path in modules}
+    if args.candidate:
+        assert len(set(module_hashes.values())) == len(modules), 'Wasm fixtures are not distinct'
+    candidate_controls = ('DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE',
+                          'DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES')
     output.mkdir(parents=True)
     planned = output/'planned-cases.json'
     subprocess.run([str(bundle/'runtime/node.exe'), 'scripts/retained-composition-preflight.mjs',
@@ -50,10 +57,11 @@ def main():
     assert len(cases) == 25
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
-    manifest = {'issue': 135, 'parentGoal': 109, 'sourceCommit': source,
+    manifest = {'issue': 158 if args.candidate else 135, 'parentGoal': 109, 'sourceCommit': source,
+                'profile': 'retained-snapshot-candidate' if args.candidate else 'reference',
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
-                'moduleFiles': {str(path.relative_to(repo)): sha(path) for path in modules},
+                'moduleFiles': module_hashes,
                 'preflightExeSha256': sha(preflight),
                 'harnessFilesSha256': {name: sha(repo/name) for name in [
                     'scripts/run-retained-composition-matrix.py', 'scripts/retained-composition-cases.mjs',
@@ -63,7 +71,7 @@ def main():
                     'scripts/host-input-scenarios.mjs', 'scripts/host-warm-input-observation.mjs', 'scripts/analyze-retained-call-timing.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
                     'editor/src/executionTrace.ts']}, 'plannedCases': cases,
-                'cases': [], 'complete': False, 'notRun': []}
+                'cases': [], 'allCasesPhysicallyReviewed': False, 'complete': False, 'notRun': []}
     def save():
         manifest['evidenceFiles'] = {path.name: sha(path) for path in output.iterdir()
                                    if path.is_file() and path.name != 'manifest.json'}
@@ -99,6 +107,8 @@ def main():
                     env['DIY_EXPERIMENT_'+flag] = '1'
                 env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1'
                 env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = '2'
+                if args.candidate:
+                    env.update(dict.fromkeys(candidate_controls, '1'))
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
@@ -118,11 +128,25 @@ def main():
             assert data['binaries']['host'] == hashes[files[0]]
             assert all(t['dropped'] == 0 for t in data['traceCollections'])
             assert owned['driverExitCode'] == 0 and owned['allDescendantsExited'] and not owned['timedOut']
-            assert owned['missingProcessMemoryReads'] == 0
-            case.update(checksPassed=True, resourcePolicy=data['resourcePolicy'],
+            if args.candidate:
+                expected = {key: env.get(key) for key in data['requestedControls']}
+                assert all(key in expected for key in candidate_controls)
+                assert all(key in expected for key in case['runtimeFlags'])
+                assert data['requestedControls'] == expected
+                assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
+                                                     (hashes[path] for path in files[:4])))
+            missing = owned['missingProcessMemoryReads']
+            case.update(checksPassed=missing == 0, resourcePolicy=data['resourcePolicy'],
                         executedIds=data['executedIds'], unexecutedIds=data['unexecutedIds'],
-                        warm=data.get('warmResultMs'), pacing=data.get('pacing'))
+                        warm=data.get('warmResultMs'), pacing=data.get('pacing'),
+                        missingProcessMemoryReads=missing)
+            if missing:
+                # Actual workspace and Job exit have already been verified.
+                # Continue independent cases, and fail the diagnostic at the end.
+                case['failure'] = 'Windows Job process-memory observation missing'
             save()
+        manifest['allCasesPhysicallyReviewed'] = True
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Job memory gaps preserved'
         manifest['complete'] = True
     except BaseException as error:
         manifest['failure'] = {'type': type(error).__name__, 'message': str(error)}
