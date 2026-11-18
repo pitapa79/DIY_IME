@@ -1,4 +1,5 @@
 """Collect private native startup evidence with the real Windows Host."""
+import argparse
 import hashlib
 import json
 import os
@@ -17,9 +18,15 @@ def load(path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--small-worker", action="store_true",
+                        help="substitute the dev debug=0 Worker and verify the baseline inputs")
+    args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     target = root / "target"
-    output = target / "retained-native-startup-evidence"
+    baseline_output = target / "retained-native-startup-evidence"
+    output = target / "retained-small-worker-evidence" if args.small_worker else baseline_output
+    worker_target = target / "retained-small-worker" if args.small_worker else target
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert source == os.environ["GITHUB_SHA"]
     official = root / "distribution/official"
@@ -28,7 +35,7 @@ def main():
         "node": Path(shutil.which("node")).resolve(strict=True),
         "host": target / "debug/diy-ime2-external-host.exe",
         "manager": target / "debug/diy-ime2-node-manager.exe",
-        "worker": target / "debug/diy-ime2-wasm-worker.exe",
+        "worker": worker_target / "debug/diy-ime2-wasm-worker.exe",
         "dll": target / "tools/wasmtime50/wasmtime-v50.0.1-x86_64-windows-c-api/lib/wasmtime.dll",
         "fixtureA": target / fixture,
         "fixtureB": target / "retained-native-startup-alt" / fixture,
@@ -38,7 +45,18 @@ def main():
     files = {name: digest(path) for name, path in paths.items()}
     output.mkdir()
     plan = [1, 4, 20]
-    state = {"source": source, "files": files, "plan": plan, "results": [], "notRun": plan}
+    state = {
+        "source": source,
+        "files": files,
+        "workerBuild": {
+            "profile": "dev",
+            "debugOverride": 0 if args.small_worker else None,
+            "imageBytes": paths["worker"].stat().st_size,
+        },
+        "plan": plan,
+        "results": [],
+        "notRun": plan,
+    }
     env = {key: value for key, value in os.environ.items() if not key.startswith("DIY_EXPERIMENT_")}
     env.update({
         "DIY_REVIEW_MODULE_A": str(paths["fixtureA"]),
@@ -65,6 +83,19 @@ def main():
 
     save()
     try:
+        if args.small_worker:
+            baseline_path = baseline_output / "manifest.json"
+            baseline = load(baseline_path)
+            state["baselineManifestSha256"] = digest(baseline_path)
+            assert baseline["source"] == source and baseline["plan"] == plan, "Baseline source or plan differs"
+            assert baseline["flags"] == state["flags"], "Baseline runtime flags differ"
+            assert baseline["workerBuild"]["profile"] == "dev", "Baseline Worker was not built in dev profile"
+            assert baseline["workerBuild"]["debugOverride"] is None, "Baseline Worker debug level was overridden"
+            assert baseline["files"].keys() == files.keys(), "Baseline file set differs"
+            for key in files.keys() - {"worker"}:
+                assert baseline["files"][key] == files[key], f"Baseline {key} hash differs"
+            assert baseline["files"]["worker"] != files["worker"], "Worker images are identical"
+            assert state["workerBuild"]["imageBytes"] < baseline["workerBuild"]["imageBytes"], "Worker image did not shrink"
         for count in plan:
             stem = f"cold-paced-{count:02}"
             report_path = output / (stem + ".json")
