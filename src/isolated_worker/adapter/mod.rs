@@ -335,6 +335,8 @@ impl CodeFiles {
         assets: &[(&str, &[u8])],
         budget: &Arc<CodeBudget>,
     ) -> Result<Self, CoreError> {
+        use super::preparation_timing::Span;
+
         let bytes = assets
             .iter()
             .try_fold(0u64, |total, (_, bytes)| {
