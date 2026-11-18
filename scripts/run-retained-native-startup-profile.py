@@ -12,6 +12,7 @@ import sys
 VERIFIED_RUNTIME = "DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE"
 CHUNKED_SNAPSHOT = "DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES"
 ORDERED_STARTUP = "DIY_EXPERIMENT_RETAINED_ORDERED_STARTUP"
+STARTUP_PARALLELISM = "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM"
 LAUNCH_SPANS = (
     "launchSetup", "createSuspendedProcess", "createdToVerification", "confirmJobAndToken",
     "verifiedToResume", "resumeThread", "resumedToReadiness",
@@ -57,8 +58,11 @@ def main():
                          help="compare native snapshot writes with the same verified runtime and inputs")
     variant.add_argument("--ordered-startup", action="store_true",
                          help="compare dependency-ordered startup against the chunked snapshot candidate")
+    variant.add_argument("--ordered-four", action="store_true",
+                         help="change only the ordered candidate startup parallelism from two to four")
     args = parser.parse_args()
-    chunked_snapshot = args.chunked_snapshot_writes or args.ordered_startup
+    ordered = args.ordered_startup or args.ordered_four
+    chunked_snapshot = args.chunked_snapshot_writes or ordered
     verified_runtime = args.verified_runtime or args.verified_runtime_safety or chunked_snapshot
     root = Path(__file__).resolve().parent.parent
     target = root / "target"
@@ -74,6 +78,9 @@ def main():
     if args.ordered_startup:
         baseline_output = target / "retained-chunked-snapshot-evidence"
         output = target / "retained-ordered-startup-evidence"
+    if args.ordered_four:
+        baseline_output = target / "retained-ordered-startup-evidence"
+        output = target / "retained-ordered-four-evidence"
     worker_target = target / "retained-small-worker" if args.small_worker else target
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert source == os.environ["GITHUB_SHA"]
@@ -114,7 +121,7 @@ def main():
         "DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING": "1",
         "DIY_EXPERIMENT_PACKAGE_PREPARATION_TIMING": "1",
         "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
-        "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "2",
+        STARTUP_PARALLELISM: "4" if args.ordered_four else "2",
         "DIY_EXPERIMENT_COMPILED_JIT": "1",
         "DIY_PRIMITIVE_MATRIX": "1",
         "DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK": "1",
@@ -124,7 +131,7 @@ def main():
         env[VERIFIED_RUNTIME] = "1"
     if chunked_snapshot:
         env[CHUNKED_SNAPSHOT] = "1"
-    if args.ordered_startup:
+    if ordered:
         env[ORDERED_STARTUP] = "1"
     state["flags"] = {key: val for key, val in env.items()
                       if key.startswith(("DIY_EXPERIMENT_", "DIY_PRIMITIVE_"))}
@@ -145,7 +152,12 @@ def main():
             state["baselineManifestSha256"] = digest(baseline_path)
             assert baseline["source"] == source and baseline["plan"] == [1, 4, 20], "Baseline source or plan differs"
             expected_flags = baseline["flags"].copy()
-            if args.ordered_startup:
+            if args.ordered_four:
+                assert baseline["complete"], "Two-permit ordered baseline did not pass"
+                assert expected_flags[ORDERED_STARTUP] == "1"
+                assert expected_flags[STARTUP_PARALLELISM] == "2"
+                expected_flags[STARTUP_PARALLELISM] = "4"
+            elif args.ordered_startup:
                 assert baseline["complete"], "Chunked baseline did not pass"
                 assert expected_flags.get(VERIFIED_RUNTIME) == "1"
                 assert expected_flags.get(CHUNKED_SNAPSHOT) == "1"
@@ -198,6 +210,7 @@ def main():
             assert report["requestedControls"][VERIFIED_RUNTIME] == env.get(VERIFIED_RUNTIME)
             assert report["requestedControls"][CHUNKED_SNAPSHOT] == env.get(CHUNKED_SNAPSHOT)
             assert report["requestedControls"][ORDERED_STARTUP] == env.get(ORDERED_STARTUP)
+            assert report["requestedControls"][STARTUP_PARALLELISM] == env[STARTUP_PARALLELISM]
             assert all(report["binaries"][key] == files[key] for key in ("host", "manager", "worker", "dll"))
             assert report["workspaceAfterHostExit"] == []
             assert all(row["dropped"] == 0 for row in report["traceCollections"])
@@ -228,7 +241,7 @@ def main():
             assert set(actual_pids) <= {sample["pid"] for sample in native["records"]}
             coverage = launch_span_coverage(report["lifecycle"], set(actual_pids))
             row["launchSpanCoverage"] = coverage
-            if args.ordered_startup:
+            if ordered:
                 permits = []
                 measured_pids = set(actual_pids)
                 for owner in report["lifecycle"]["owners"]:
