@@ -40,6 +40,16 @@ impl Fixture {
         Self::start_variant(policy, counter_resources, false)
     }
     fn start_variant(policy: DriverPolicy, counter_resources: bool, captured: bool) -> Self {
+        Self::start_observed(policy, counter_resources, captured, None)
+    }
+    fn start_observed(
+        policy: DriverPolicy,
+        counter_resources: bool,
+        captured: bool,
+        observer: Option<crate::isolated_worker::retained_startup::Observer>,
+    ) -> Self {
+        let timed_startup = observer.is_some();
+        assert!(!timed_startup || captured);
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained driver fixture asset"))
         };
@@ -118,7 +128,8 @@ impl Fixture {
         let calls = policy.max_calls;
         let stages = if captured { vec![0] } else { vec![0, 1] };
         let (client, request) =
-            RetainedClient::channel(host.clone(), pin.clone(), stages, policy).unwrap();
+            RetainedClient::channel_observed(host.clone(), pin.clone(), stages, policy, observer)
+                .unwrap();
         let cleanup_pin = pin.clone();
         let owner_host = host.clone();
         let unconfirmed = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -180,7 +191,11 @@ impl Fixture {
                     lease.strict_cleanup = true;
                     compiled_lease = Some(lease);
                     args.truncate(5);
-                    args[0] = "--retained-compiled-resources-v1".into();
+                    args[0] = if timed_startup {
+                        crate::isolated_worker::retained_startup::TIMED_FLAG.into()
+                    } else {
+                        "--retained-compiled-resources-v1".into()
+                    };
                     args.extend([
                         files.cache.path().join("node.cwasm").into_os_string(),
                         length.to_string().into(),
@@ -293,6 +308,32 @@ impl Drop for Fixture {
 }
 fn sdk_request() -> Vec<u8> {
     serde_json::to_vec(&json!({"apiVersion":1,"node":{"kind":"fixture.resource","version":1},"operation":{"method":"executePrepared","config":{},"artifact":{"resource":{"id":1,"length":8},"format":"fixture.sdk-bytes","version":1},"inputs":{}}})).unwrap()
+}
+
+#[test]
+#[ignore = "requires current Windows Worker and pinned Wasmtime DLL"]
+fn real_compiled_retained_startup_reports_before_input_and_reclaims_owner() {
+    let (send, receive) = mpsc::sync_channel(1);
+    let mut fixture = Fixture::start_observed(
+        policy(),
+        false,
+        true,
+        Some(Box::new(move |timing| {
+            let _ = send.send(timing);
+        })),
+    );
+    fixture
+        .client
+        .as_mut()
+        .unwrap()
+        .wait_ready(Duration::from_secs(10))
+        .unwrap();
+    let timing = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(timing.dll_verify_us > 0, "{timing:?}");
+    assert_eq!(fixture.host.usage().physical_jobs, 1);
+    eprintln!("actual retained startup: {timing:?}");
+    let exit = fixture.close();
+    assert!(exit.process_id() > 0);
 }
 fn complete_input(fixture: &mut Fixture, run: u64) -> Value {
     let cancel = CancellationToken::default();

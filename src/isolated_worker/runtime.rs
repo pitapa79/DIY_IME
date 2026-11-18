@@ -153,6 +153,12 @@ fn runtime_only_bootstrap_rejects_a_preselected_module_before_loading() {
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args
         .first()
+        .is_some_and(|arg| arg == super::retained_startup::TIMED_FLAG)
+    {
+        return retained_module::run_compiled_timed(&args[1..]);
+    }
+    if args
+        .first()
         .is_some_and(|arg| arg == "--retained-compiled-resources-v1")
     {
         return retained_module::run_compiled(&args[1..]);
@@ -466,9 +472,13 @@ macro_rules! api {
   ($($field:ident:[$ty:ty] => $name:literal),+ $(,)?)=>{
    struct Api {_library:Library,$($field:$ty),+}
    impl Api {fn load(path:&Path)->Result<Self,String>{
+    Self::load_observed(path, || {})
+   }
+   fn load_observed(path:&Path, verified: impl FnOnce())->Result<Self,String>{
     // Retain the read-only mapping and its deny-write/delete file handle
     // through LoadLibrary and symbol resolution, not just through hashing.
     let _verified_image = verify_runtime(path)?;
+    verified();
     // SAFETY: this is the verified pinned runtime in a Host-owned code snapshot.
     unsafe { Self::load_verified(path) }
    }
