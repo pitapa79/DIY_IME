@@ -335,6 +335,8 @@ impl CodeFiles {
         assets: &[(&str, &[u8])],
         budget: &Arc<CodeBudget>,
     ) -> Result<Self, CoreError> {
+        use super::preparation_timing::Span;
+
         let bytes = assets
             .iter()
             .try_fold(0u64, |total, (_, bytes)| {
@@ -342,28 +344,44 @@ impl CodeFiles {
             })
             .ok_or_else(|| fail("worker-asset", "code size overflow"))?;
         let reservation = budget.reserve(bytes)?;
+        let directory_timing = Span::worker("worker-snapshot-directory");
+        let cache = ScopedCache(
+            Cache::new_code_snapshot(workspace)
+                .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
+        );
+        directory_timing.complete();
         // Own the reservation together with the directory before the first write,
         // so partial construction has the same cleanup/accounting as a live cache.
         let mut files = Self {
             verified_runtime: std::sync::OnceLock::new(),
             reservation: Some(reservation),
             locks: Vec::new(),
-            cache: ScopedCache(
-                Cache::new_code_snapshot(workspace)
-                    .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
-            ),
+            cache,
             healthy: std::sync::Mutex::new(true),
             inherited_acl: std::env::var_os("DIY_EXPERIMENT_INHERITED_CODE_ACL").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
         };
+        let chunked = std::env::var_os("DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
         for (name, bytes) in assets {
+            let write_timing = Span::worker(match *name {
+                "worker.exe" => "worker-snapshot-image-write",
+                "wasmtime.dll" => "worker-snapshot-dll-write",
+                _ => "worker-snapshot-module-write",
+            });
             files
                 .cache
-                .write(name, bytes)
+                .write_asset(
+                    name,
+                    bytes,
+                    chunked && matches!(*name, "worker.exe" | "wasmtime.dll"),
+                )
                 .map_err(|_| fail("worker-asset", "code snapshot unavailable"))?;
+            write_timing.complete();
         }
         // Deny write/delete sharing until every actual invocation has ended.
         use std::os::windows::fs::OpenOptionsExt;
+        let locks_timing = Span::worker("worker-snapshot-locks");
         for (name, _) in assets {
             files.locks.push(
                 std::fs::OpenOptions::new()
@@ -373,6 +391,7 @@ impl CodeFiles {
                     .map_err(|_| fail("worker-asset", "code snapshot lock unavailable"))?,
             );
         }
+        locks_timing.complete();
         Ok(files)
     }
     fn change_access(&self, profile: &Profile, allow: bool) -> Result<(), String> {
@@ -917,6 +936,8 @@ impl WasmArtifact {
         };
         let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let started = std::time::Instant::now();
+        use crate::isolated_worker::preparation_timing::Span;
+        let profile_timing = Span::worker("worker-profile");
         let profile = self
             .0
             .profile_pool
@@ -930,12 +951,16 @@ impl WasmArtifact {
                     "AppContainer unavailable; refusing execution",
                 )
             })?;
+        profile_timing.complete();
+        let asset_timing = Span::worker("worker-assets");
         let mut profile = PreparationProfile {
             profile,
             strict: _compilation_pin.is_some(),
         };
         let runtime_files = self.runtime_code_files()?;
+        let lease_timing = Span::worker("worker-runtime-acl-lease");
         let mut runtime_lease = runtime_files.lease(&profile)?;
+        lease_timing.complete();
         runtime_lease.strict_cleanup = _compilation_pin.is_some();
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");
@@ -1104,6 +1129,7 @@ impl WasmArtifact {
             termination_grace: self.0.policy.termination_grace,
         };
         let staged = elapsed_micros(started);
+        asset_timing.complete();
         drop(staging);
         let process = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerProcess));
         let process_started = std::time::Instant::now();
@@ -1142,10 +1168,13 @@ impl WasmArtifact {
             WorkerRequest::Immediate(bytes) => (scope, bytes),
             WorkerRequest::RetainedCompile(_) => (scope, Vec::new()),
         };
+        let process_timing = Span::worker("worker-launch-and-settle");
         let receipt = settle(
             super::pipe::execute_with_diagnostics(scope, &exe, &args, bytes, &control, detailed)
                 .map_err(|_| fail("worker-start", "isolated Worker could not start"))?,
         );
+        process_timing.complete();
+        let cleanup_timing = Span::worker("worker-cleanup");
         let process_time = elapsed_micros(process_started);
         // Original process and all transport owners have settled. No temporary
         // streamed-code allocation can remain in a running IO closure now.
@@ -1249,6 +1278,7 @@ impl WasmArtifact {
             )
         };
         let cleanup_us = elapsed_micros(cleanup_started);
+        cleanup_timing.complete();
         if let Some(job_close_us) = job_close_us
             && cleanup_us >= 20_000
         {
@@ -1652,15 +1682,17 @@ impl WasmNode {
         completion: CompletionPermit,
         cancel: CancellationToken,
     ) -> Result<(), CoreError> {
-        let node = self.clone();
+        let mut node = self.clone();
         std::thread::Builder::new()
             .name("diyime2-wasm-invocation".into())
             .spawn(move || {
+                let gate = node.gate.clone();
+                let key = invocation.key().clone();
                 let mut deferred_refill = None;
                 let run = || -> Result<(), CoreError> {
                     let request_phase = invocation.trace_host_phase(HostTracePhase::Request);
                     node.validate_config(invocation.config())?;
-                    let key = invocation.key();
+                    let key = &key;
                     let target = node.grant_target(
                         &key.session_epoch,
                         key.plan_version,
@@ -1680,7 +1712,11 @@ impl WasmNode {
                         let wire::ExecutionStep::Outputs(result) = wire::execution_step(&reply, &node.definition)? else {
                             return Err(fail("package-capability", "prepared dictionary cannot request network"));
                         };
-                        node.gate.publish(&lease, key, || {
+                        // Release the cache and graph owners before Core can
+                        // observe the producer ending and the Host can exit.
+                        drop(invocation);
+                        drop(node);
+                        gate.publish(&lease, key, || {
                             if cancel.is_cancelled() {
                                 return Err(fail("worker-cancelled", "invocation cancelled"));
                             }
@@ -1693,10 +1729,13 @@ impl WasmNode {
                     if let Some(plans) = &node.dictionary {
                         request["operation"]["resources"] = plans.payload(invocation.config())?;
                     }
-                    let mut network = node.network.as_ref().map(NetworkPlans::execution).transpose()?;
+                    // The final deadline check needs only the network proof. Move
+                    // it out so it does not keep the Node or its code alive.
+                    let network_plans = node.network.take();
+                    let mut network = network_plans.as_ref().map(NetworkPlans::execution).transpose()?;
                     let mut check = || {
                         if cancel.is_cancelled() { return Err(fail("worker-cancelled", "invocation cancelled")); }
-                        node.gate.publish(&lease, key, || ())
+                        gate.publish(&lease, key, || ())
                     };
                     drop(request_phase);
                     let mut worker_instance = 0u32;
@@ -1755,7 +1794,12 @@ impl WasmNode {
                             && node.gate.publish(&lease, key, || ()).is_ok()
                         {
                             if let Some(controller) = &slot.refill_controller {
-                                deferred_refill = Some((Arc::downgrade(&slot), controller.clone(), lease.clone()));
+                                deferred_refill = Some((
+                                    Arc::downgrade(&slot),
+                                    controller.clone(),
+                                    lease.clone(),
+                                    Arc::downgrade(&node.artifact.0),
+                                ));
                             } else {
                                 slot.refill(&node.artifact);
                             }
@@ -1778,8 +1822,11 @@ impl WasmNode {
                             }
                         }
                     };
-                    // A second policy check is linearized with completion enqueue below.
-                    node.gate.publish(&lease, key, || {
+                    // Release private producer references before publication.
+                    // Policy, cancellation and the deadline still fence the result.
+                    drop(invocation);
+                    drop(node);
+                    gate.publish(&lease, key, || {
                         if cancel.is_cancelled() {
                             return Err(fail("worker-cancelled", "invocation cancelled"));
                         }
@@ -1808,14 +1855,12 @@ impl WasmNode {
                         }
                     }
                 }
-                if let Some((slot, controller, lease)) = deferred_refill {
-                    let key = invocation.key();
-                    if PreparedJitSlot::wait_for_graph_cleanup(&controller, key)
-                        && node.gate.publish(&lease, key, || ()).is_ok()
-                        && let Some(slot) = slot.upgrade()
-                    {
-                        slot.refill(&node.artifact);
-                    }
+                if let Some((slot, controller, lease, artifact)) = deferred_refill
+                    && PreparedJitSlot::wait_for_graph_cleanup(&controller, &key)
+                    && gate.publish(&lease, &key, || ()).is_ok()
+                    && let (Some(slot), Some(artifact)) = (slot.upgrade(), artifact.upgrade())
+                {
+                    slot.refill(&WasmArtifact(artifact));
                 }
             })
             .map_err(|_| fail("worker-thread", "Host execution thread unavailable"))?;
@@ -3028,6 +3073,20 @@ mod tests {
         drop((first_code, first_runtime, second_code, second_runtime));
         first.delete().unwrap();
         second.delete().unwrap();
+    }
+    #[test]
+    fn chunked_cache_write_preserves_exact_bytes_and_requires_a_new_file() {
+        let cache =
+            ScopedCache(Cache::new_code_snapshot(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap());
+        let mut bytes = vec![17; 1024 * 1024];
+        bytes.extend_from_slice(&[23, 29, 31]);
+        let path = cache.write_asset("worker.exe", &bytes, true).unwrap();
+        assert!(
+            cache
+                .write_asset("worker.exe", b"replacement", true)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
     #[test]
     fn an_acl_failure_poisoned_code_snapshot_cannot_be_reused() {

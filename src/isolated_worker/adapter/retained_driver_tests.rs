@@ -5,10 +5,17 @@ use crate::{
     execution_control::{ExecutionHost, ResourceUsage},
     isolated_worker::{
         DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedReservation,
-        execute_retained, resource_transport, runtime,
+        pipe::execute_retained_observed, resource_transport, runtime,
     },
 };
 use std::{sync::mpsc, thread};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeProof {
+    Disabled,
+    Matching,
+    DifferentFile,
+}
 
 struct Fixture {
     client: Option<RetainedClient>,
@@ -40,16 +47,23 @@ impl Fixture {
         Self::start_variant(policy, counter_resources, false)
     }
     fn start_variant(policy: DriverPolicy, counter_resources: bool, captured: bool) -> Self {
-        Self::start_observed(policy, counter_resources, captured, None)
+        Self::start_observed(
+            policy,
+            counter_resources,
+            captured,
+            None,
+            RuntimeProof::Disabled,
+        )
     }
     fn start_observed(
         policy: DriverPolicy,
         counter_resources: bool,
         captured: bool,
         observer: Option<crate::isolated_worker::retained_startup::Observer>,
+        proof: RuntimeProof,
     ) -> Self {
         let timed_startup = observer.is_some();
-        assert!(!timed_startup || captured);
+        assert!(captured || (!timed_startup && proof == RuntimeProof::Disabled));
         let required = |name| {
             PathBuf::from(std::env::var_os(name).expect("explicit retained driver fixture asset"))
         };
@@ -164,6 +178,13 @@ impl Fixture {
                     module1.clone(),
                 ];
                 cache.allow_read_execute(&profile)?;
+                let verified_runtime = match proof {
+                    RuntimeProof::Disabled => None,
+                    RuntimeProof::Matching => {
+                        Some(runtime::VerifiedRuntimeFile::open(&runtime_path)?)
+                    }
+                    RuntimeProof::DifferentFile => Some(runtime::VerifiedRuntimeFile::open(&dll)?),
+                };
                 eprintln!(
                     "retained fixture assets/ACL prepared: {:?}",
                     fixture_preparation_started.elapsed()
@@ -191,11 +212,16 @@ impl Fixture {
                     lease.strict_cleanup = true;
                     compiled_lease = Some(lease);
                     args.truncate(5);
-                    args[0] = if timed_startup {
-                        crate::isolated_worker::retained_startup::TIMED_FLAG.into()
-                    } else {
-                        "--retained-compiled-resources-v1".into()
+                    use crate::isolated_worker::retained_startup::{
+                        TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
                     };
+                    args[0] = match (timed_startup, verified_runtime.is_some()) {
+                        (true, true) => VERIFIED_TIMED_FLAG,
+                        (false, true) => VERIFIED_FLAG,
+                        (true, false) => TIMED_FLAG,
+                        (false, false) => "--retained-compiled-resources-v1",
+                    }
+                    .into();
                     args.extend([
                         files.cache.path().join("node.cwasm").into_os_string(),
                         length.to_string().into(),
@@ -204,8 +230,16 @@ impl Fixture {
                     ]);
                 }
                 let result = {
-                    match execute_retained(
-                        &profile, &job, &cache, &program, &args, request, &control,
+                    match execute_retained_observed(
+                        &profile,
+                        &job,
+                        &cache,
+                        &program,
+                        &args,
+                        request,
+                        &control,
+                        verified_runtime.as_ref(),
+                        None,
                     ) {
                         Err(error) => Err(error),
                         Ok(mut outcome) => {
@@ -235,6 +269,7 @@ impl Fixture {
                         }
                     }
                 };
+                drop(verified_runtime);
                 if let Some(mut lease) = compiled_lease.take() {
                     while lease.release().is_err() {
                         thread::sleep(Duration::from_millis(100));
@@ -323,6 +358,7 @@ fn real_compiled_retained_startup_reports_before_input_and_reclaims_owner() {
         Some(Box::new(move |timing| {
             let _ = send.send(timing);
         })),
+        RuntimeProof::Disabled,
     );
     fixture
         .client
@@ -337,6 +373,41 @@ fn real_compiled_retained_startup_reports_before_input_and_reclaims_owner() {
     eprintln!("actual retained startup: {timing:?}");
     let exit = fixture.close();
     assert!(exit.process_id() > 0);
+}
+
+#[test]
+#[ignore = "requires actual Windows Worker and pinned Wasmtime DLL"]
+fn real_compiled_retained_checks_verified_runtime_identity_and_reclaims_owner() {
+    for proof in [RuntimeProof::Matching, RuntimeProof::DifferentFile] {
+        let (send, receive) = mpsc::sync_channel(1);
+        let mut fixture = Fixture::start_observed(
+            policy(),
+            true,
+            true,
+            Some(Box::new(move |timing| {
+                let _ = send.send(timing);
+            })),
+            proof,
+        );
+        let ready = fixture
+            .client
+            .as_mut()
+            .unwrap()
+            .wait_ready(Duration::from_secs(10));
+        if proof == RuntimeProof::Matching {
+            ready.unwrap();
+            receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(fixture.host.usage().physical_jobs, 1);
+        } else {
+            assert!(ready.is_err());
+        }
+        let exit = fixture.close();
+        assert!(exit.process_id() > 0);
+        if proof == RuntimeProof::DifferentFile {
+            assert!(receive.try_recv().is_err());
+            assert!(exit.exit_code().is_some_and(|code| code != 0));
+        }
+    }
 }
 fn complete_input(fixture: &mut Fixture, run: u64) -> Value {
     let cancel = CancellationToken::default();
@@ -571,13 +642,19 @@ fn real_retained_driver_faults() {
 #[test]
 #[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
 fn real_retained_driver_inflight_cancel_and_deadline() {
-    check_inflight_cancel_and_deadline(false);
+    check_inflight_cancel_and_deadline(false, RuntimeProof::Disabled);
 }
 
 #[test]
 #[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
 fn real_captured_retained_driver_inflight_cancel_and_deadline() {
-    check_inflight_cancel_and_deadline(true);
+    check_inflight_cancel_and_deadline(true, RuntimeProof::Disabled);
+}
+
+#[test]
+#[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
+fn real_verified_runtime_retained_inflight_cancel_and_deadline() {
+    check_inflight_cancel_and_deadline(true, RuntimeProof::Matching);
 }
 
 #[test]
@@ -623,13 +700,13 @@ fn real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget() {
     assert_ne!(exit.process_id(), 0);
 }
 
-fn check_inflight_cancel_and_deadline(captured: bool) {
+fn check_inflight_cancel_and_deadline(captured: bool, proof: RuntimeProof) {
     for deadline in [false, true] {
         let mut p = policy();
         if deadline {
             p.input_timeout = Duration::from_millis(250);
         }
-        let mut fixture = Fixture::start_variant(p, true, captured);
+        let mut fixture = Fixture::start_observed(p, true, captured, None, proof);
         fixture
             .client
             .as_mut()

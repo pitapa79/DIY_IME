@@ -195,6 +195,14 @@ impl Cache {
         Ok(destination)
     }
     pub fn write(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+        self.write_asset(name, bytes, false)
+    }
+    pub(super) fn write_asset(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        chunked: bool,
+    ) -> Result<PathBuf, String> {
         asset_name(name)?;
         let p = self.root.join(name);
         let mut file = std::fs::OpenOptions::new()
@@ -202,7 +210,13 @@ impl Cache {
             .create_new(true)
             .open(&p)
             .map_err(|e| e.to_string())?;
-        std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())?;
+        if chunked {
+            for chunk in bytes.chunks(1024 * 1024) {
+                std::io::Write::write_all(&mut file, chunk).map_err(|e| e.to_string())?;
+            }
+        } else {
+            std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())?;
+        }
         Ok(p)
     }
     pub fn private_canary(&self, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -841,6 +855,7 @@ fn cache_asset_names_reject_windows_path_aliases() {
 }
 
 mod pipe;
+mod preparation_timing;
 #[cfg(target_arch = "x86_64")]
 mod resource_transport;
 #[cfg(target_arch = "x86_64")]

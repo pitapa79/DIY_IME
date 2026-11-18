@@ -150,7 +150,40 @@ fn runtime_only_bootstrap_rejects_a_preselected_module_before_loading() {
     }
 }
 
+#[test]
+fn retained_verified_mode_refuses_missing_or_invalid_proof() {
+    use super::retained_startup::{VERIFIED_FLAG, VERIFIED_TIMED_FLAG};
+    for flag in [VERIFIED_FLAG, VERIFIED_TIMED_FLAG] {
+        for extension in [
+            None,
+            Some("--verified-runtime-file=0:0"),
+            Some("--verified-runtime-file=bad"),
+        ] {
+            let args = [
+                flag, "runtime", "12", "2000", "65536", "module", "20", "digest", "source",
+            ]
+            .into_iter()
+            .chain(extension)
+            .map(std::ffi::OsString::from)
+            .collect();
+            let error = worker_with_args(args).unwrap_err();
+            assert!(
+                error.contains("runtime file proof") || error.contains("runtime file handles"),
+                "{error}"
+            );
+        }
+    }
+}
+
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
+    use super::retained_startup::{VERIFIED_FLAG, VERIFIED_TIMED_FLAG};
+    match args.first().and_then(|arg| arg.to_str()) {
+        Some(VERIFIED_FLAG) => return retained_module::run_compiled_verified(&args[1..], false),
+        Some(VERIFIED_TIMED_FLAG) => {
+            return retained_module::run_compiled_verified(&args[1..], true);
+        }
+        _ => (),
+    }
     if args
         .first()
         .is_some_and(|arg| arg == super::retained_startup::TIMED_FLAG)
@@ -260,16 +293,7 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     let diagnostic_handle = if let Some(value) =
         extension.and_then(|arg| arg.strip_prefix("--verified-runtime-file="))
     {
-        let (file, diagnostic) = value.split_once(':').ok_or("invalid runtime file proof")?;
-        let file = file
-            .parse::<usize>()
-            .map_err(|_| "invalid runtime file handle")?;
-        let diagnostic = diagnostic
-            .parse::<usize>()
-            .map_err(|_| "invalid diagnostic handle")?;
-        if file == 0 || file == usize::MAX || diagnostic == usize::MAX || file == diagnostic {
-            return Err("invalid or aliased runtime file handles".into());
-        }
+        let (file, diagnostic) = parse_runtime_file_handles(value)?;
         use std::os::windows::io::FromRawHandle;
         // SAFETY: private Native bootstrap from the trusted Parent. This file
         // is explicitly allowlisted, read-only and already pinned/fully hashed;
@@ -311,6 +335,20 @@ fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         verified_runtime.as_ref(),
         mode,
     )
+}
+
+fn parse_runtime_file_handles(value: &str) -> Result<(usize, usize), String> {
+    let (file, diagnostic) = value.split_once(':').ok_or("invalid runtime file proof")?;
+    let file = file
+        .parse::<usize>()
+        .map_err(|_| "invalid runtime file handle")?;
+    let diagnostic = diagnostic
+        .parse::<usize>()
+        .map_err(|_| "invalid diagnostic handle")?;
+    if file == 0 || file == usize::MAX || diagnostic == usize::MAX || file == diagnostic {
+        return Err("invalid or aliased runtime file handles".into());
+    }
+    Ok((file, diagnostic))
 }
 use std::{
     ffi::{CStr, OsStr, c_void},

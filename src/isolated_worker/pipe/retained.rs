@@ -160,15 +160,34 @@ impl RetainedReservation {
         })
     }
 }
-struct ProcessPin(RetainedReservation, Option<Arc<AtomicU64>>);
+struct ProcessPin {
+    reservation: RetainedReservation,
+    observation: Option<RetainedObservation>,
+}
 impl ResourceOwner for ProcessPin {
     fn observe_start(&self, process_id: u32) {
-        if let Some(id) = &self.1 {
-            id.store(process_id as u64, Ordering::Release);
+        if let Some(observation) = &self.observation {
+            observation
+                .process_id
+                .store(process_id as u64, Ordering::Release);
+        }
+    }
+    fn observe_launch_phase(&self, phase: &'static str) {
+        if let Some(observer) = self
+            .observation
+            .as_ref()
+            .and_then(|value| value.launch_phase.as_ref())
+        {
+            observer(phase);
         }
     }
     fn observe_exit(&self) {
-        *self.0.inner.ended.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        *self
+            .reservation
+            .inner
+            .ended
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = true;
     }
 }
 impl Drop for ProcessPin {
@@ -194,7 +213,9 @@ pub fn execute_retained<'a>(
     request: RetainedWorkerRequest,
     control: &RunControl,
 ) -> Result<Outcome<'a>, String> {
-    execute_retained_observed(profile, job, cache, program, args, request, control, None)
+    execute_retained_observed(
+        profile, job, cache, program, args, request, control, None, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -206,15 +227,24 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     args: &[OsString],
     request: RetainedWorkerRequest,
     control: &RunControl,
+    verified_runtime: Option<&'a super::super::runtime::VerifiedRuntimeFile>,
     observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
-    if args.first().is_none_or(|arg| {
-        arg != "--retained-resources-v1"
-            && arg != "--retained-compiled-resources-v1"
-            && arg != crate::isolated_worker::retained_startup::TIMED_FLAG
-    }) || control
-        .walltime
-        .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
+    use crate::isolated_worker::retained_startup::{
+        TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
+    };
+
+    let flag = args.first().and_then(|arg| arg.to_str());
+    let expects_proof = matches!(flag, Some(VERIFIED_FLAG | VERIFIED_TIMED_FLAG));
+    if !(expects_proof
+        || matches!(
+            flag,
+            Some("--retained-resources-v1" | "--retained-compiled-resources-v1" | TIMED_FLAG)
+        ))
+        || expects_proof != verified_runtime.is_some()
+        || control
+            .walltime
+            .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
         || control.termination_grace > Duration::from_secs(5)
         || !request
             .reservation
@@ -249,12 +279,12 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
         },
     );
     let deadline = request.reservation.inner.deadline;
-    let (activity, process_id) = observation.map_or((None, None), |value| {
-        (Some(value.activity), Some(value.process_id))
-    });
+    let activity = observation
+        .as_ref()
+        .map(|value| Arc::clone(&value.activity));
     execute_observed(
         WorkerScope {
-            verified_runtime: None,
+            verified_runtime,
             profile,
             job,
             cache,
@@ -262,7 +292,10 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
             resource_deadline: Some(deadline),
             exchange: Some(wrapped),
             jit_run_cancel: None,
-            resource_owner: Some(Box::new(ProcessPin(request.reservation, process_id))),
+            resource_owner: Some(Box::new(ProcessPin {
+                reservation: request.reservation,
+                observation,
+            })),
             #[cfg(test)]
             prepared: false,
         },

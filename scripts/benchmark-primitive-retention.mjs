@@ -17,6 +17,7 @@ import {wasmCodeSha256} from './wasm-host-overhead.mjs';
 import {retainedComposition,fixtureDefinition,fixtureKinds} from './retained-composition-graphs.mjs';
 import {analyzeRetainedGraphCalls,verifyGraphCallCoverage} from './analyze-retained-graph-calls.mjs';
 import {observeWarmInput,warmInputDenominators} from './host-warm-input-observation.mjs';
+import {preparationPhaseReader} from './package-preparation-phases.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed|thirdparty warm|paced');
@@ -86,6 +87,12 @@ class Client {
     this.child=spawn(exe,[path],{windowsHide:true,stdio:'pipe'});
     journal(this.role,'spawn',undefined,this.child.pid);
     this.child.stderr.on('data',data=>this.stderr.push(data));
+    if(process.env.DIY_EXPERIMENT_PACKAGE_PREPARATION_TIMING==='1') {
+      this.child.stderr.on('data',preparationPhaseReader(row=>{
+        writeSync(2,JSON.stringify({diagnostic:'package-preparation-phase',observedMs:performance.now(),
+          role:this.role,pid:this.child.pid,...row})+'\n');
+      }));
+    }
     this.ended=new Promise(done=>this.child.once('close',code=>{
       journal(this.role,'exit',undefined,this.child.pid);
       for(const p of this.pending.values())p.reject(Error(`child exit ${code}`));done(code);
@@ -147,6 +154,15 @@ function verify(s,wanted) {
   }
 }
 let manager,host,revision=0,sequence=0;
+function remainingWorkspaceFiles(folder) {
+  let entries;
+  try {entries=readdirSync(folder,{withFileTypes:true});}
+  catch(error){if(error.code==='ENOENT')return [];throw error;}
+  return entries.flatMap(entry=>{
+    const path=join(folder,entry.name);
+    return entry.isDirectory() && !entry.isSymbolicLink() ? remainingWorkspaceFiles(path) : [path];
+  });
+}
 const records=[],traces=[],statuses=[],warmAttempts=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
@@ -156,7 +172,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
   mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
-  requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
+  requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
@@ -179,6 +195,7 @@ try {
   const review=await manager.call({method:'review'},Buffer.concat([frameCount,...frames]));
   await manager.call({method:'commit',reviewId:review.reviewId,allowDowngrade:false,allowSameVersionRebuild:false});
   await manager.close();manager=undefined;
+  if(matrixMode)report.workspaceAfterManagerExit=remainingWorkspaceFiles(join(root,'workers'));
   host=new Client(hostExe,hostPath,'host');
   report.privateReplyEvidence=host.replyEvidence;
   const preparation=performance.now(),pending=await host.call({method:'prepare',graph});
@@ -462,15 +479,6 @@ try {
     assert(host.replyEvidence.byMethod.getRun?.replies>0,'no ordinary result reply was checked');
   }
   await host.close();host=undefined;
-  function remainingWorkspaceFiles(folder) {
-    let entries;
-    try {entries=readdirSync(folder,{withFileTypes:true});}
-    catch(error){if(error.code==='ENOENT')return [];throw error;}
-    return entries.flatMap(entry=>{
-      const path=join(folder,entry.name);
-      return entry.isDirectory() && !entry.isSymbolicLink() ? remainingWorkspaceFiles(path) : [path];
-    });
-  }
   // Inspect BEFORE test-directory removal: that removal must not hide an
   // execution/code-cache leak after the original Host and Workers have exited.
   journal('driver','check-workspace');

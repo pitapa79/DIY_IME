@@ -801,15 +801,38 @@ impl WasmArtifact {
         let mut runtime_lease = runtime.lease(&profile)?;
         let mut module_leases = Vec::new();
         let receipt = (|| {
+            use crate::isolated_worker::retained_startup::{
+                TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
+            };
+
+            let dll = runtime.cache.path().join("wasmtime.dll");
+            let verified_runtime = if compiled.is_some()
+                && std::env::var_os("DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+            {
+                Some(
+                    runtime
+                        .verified_runtime
+                        .get_or_init(|| super::super::runtime::VerifiedRuntimeFile::open(&dll))
+                        .as_ref()
+                        .map_err(|_| {
+                            fail("worker-identity", "retained runtime file proof unavailable")
+                        })?,
+                )
+            } else {
+                None
+            };
+            let timed = compiled.as_ref().is_some_and(|code| code.timed_startup);
+            let mode = match (compiled.is_some(), timed, verified_runtime.is_some()) {
+                (true, true, true) => VERIFIED_TIMED_FLAG,
+                (true, false, true) => VERIFIED_FLAG,
+                (true, true, false) => TIMED_FLAG,
+                (true, false, false) => "--retained-compiled-resources-v1",
+                (false, _, _) => "--retained-resources-v1",
+            };
             let mut args: Vec<OsString> = vec![
-                if compiled.as_ref().is_some_and(|code| code.timed_startup) {
-                    crate::isolated_worker::retained_startup::TIMED_FLAG.into()
-                } else if compiled.is_some() {
-                    "--retained-compiled-resources-v1".into()
-                } else {
-                    "--retained-resources-v1".into()
-                },
-                runtime.cache.path().join("wasmtime.dll").into_os_string(),
+                mode.into(),
+                dll.into_os_string(),
                 "4096".into(),
                 self.0.policy.fuel_per_call.unwrap().to_string().into(),
                 self.0.policy.wasm_memory_bytes.unwrap().to_string().into(),
@@ -840,9 +863,16 @@ impl WasmArtifact {
                 &args,
                 request,
                 control,
+                verified_runtime,
                 Some(crate::isolated_worker::pipe::RetainedObservation {
                     activity: self.0.activity.clone(),
                     process_id: shared.process_id.clone(),
+                    launch_phase: shared.samples.as_ref().map(|_| {
+                        let shared = Arc::clone(&shared);
+                        let observer: crate::isolated_worker::pipe::LaunchPhaseObserver =
+                            Box::new(move |phase| shared.record_phase(phase));
+                        observer
+                    }),
                 }),
             )
             .map(settle)

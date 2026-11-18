@@ -266,6 +266,12 @@ impl ExecutionService {
         *slot = Arc::downgrade(&shared);
         Ok(Self { shared })
     }
+    /// Wait for the control owner to release plans whose Session handles have closed.
+    /// Standalone Host shutdown uses this after joining its request owners.
+    #[doc(hidden)]
+    pub fn reclaim_closed_sessions(&self) -> Result<(), CoreError> {
+        self.shared.call(None, Actor::close_dead)
+    }
     pub fn same_service(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.shared, &other.shared)
     }
@@ -1011,6 +1017,7 @@ mod tests {
         assert_eq!(controller.control_state().unwrap().revision, 2);
         let clone = controller.clone();
         drop(controller);
+        service.reclaim_closed_sessions().unwrap();
         assert!(pending.upgrade().is_some());
         assert!(clone.activate().unwrap());
         let state = clone.control_state().unwrap();
@@ -1018,7 +1025,8 @@ mod tests {
         assert!(!state.can_rollback);
         assert!(pending.upgrade().is_some());
         drop(clone);
-        until(|| pending.upgrade().is_none());
+        service.reclaim_closed_sessions().unwrap();
+        assert!(pending.upgrade().is_none());
         let unready = service.open_empty().unwrap();
         unready.prepare(plan()).unwrap();
         let lookup = unready.session_epoch().clone();

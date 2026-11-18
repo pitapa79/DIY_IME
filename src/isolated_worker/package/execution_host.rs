@@ -647,6 +647,8 @@ impl Runner {
         Ok(value)
     }
     fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
+        use crate::isolated_worker::preparation_timing::Span;
+        let preparation = Span::start("host-prepare");
         let generation = self
             .controls
             .generation
@@ -668,6 +670,7 @@ impl Runner {
         if cancel.is_cancelled() {
             return Err(error("external-cancelled", "preparation cancelled"));
         }
+        let catalog = Span::start("host-initial-catalog");
         let snapshot = match self.catalog.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -715,6 +718,7 @@ impl Runner {
                     .unwrap_or_else(|| package.manifest().node.default_config.clone()),
             );
         }
+        catalog.complete();
         let preparation_slot = if grouped.is_empty() {
             None
         } else {
@@ -736,6 +740,7 @@ impl Runner {
         }
         // Every isolated validation call returns after its actual exit/cleanup.
         drop(preparation_slot);
+        let plan_timing = Span::start("host-plan-and-catalog-recheck");
         let external = graph
             .nodes
             .iter()
@@ -792,6 +797,8 @@ impl Runner {
                         .map(|_| graph.clone()),
             },
         });
+        plan_timing.complete();
+        preparation.complete();
         Ok(value)
     }
     fn controller(&self) -> Result<&super::super::adapter::GuardedController, CoreError> {
@@ -1364,7 +1371,9 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
     drop(receiver);
     let _ = result_waiter.join();
     let _ = input.join();
-    Ok(())
+    // Zero physical calls does not prove that the control owner has dropped
+    // the closed Sessions' plans. Their code caches belong to this Host.
+    runner.service.reclaim_closed_sessions()
 }
 
 #[cfg(test)]
