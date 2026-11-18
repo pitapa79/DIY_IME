@@ -917,6 +917,8 @@ impl WasmArtifact {
         };
         let staging = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerStaging));
         let started = std::time::Instant::now();
+        use crate::isolated_worker::preparation_timing::Span;
+        let profile_timing = Span::worker("worker-profile");
         let profile = self
             .0
             .profile_pool
@@ -930,6 +932,8 @@ impl WasmArtifact {
                     "AppContainer unavailable; refusing execution",
                 )
             })?;
+        profile_timing.complete();
+        let asset_timing = Span::worker("worker-assets");
         let mut profile = PreparationProfile {
             profile,
             strict: _compilation_pin.is_some(),
@@ -1104,6 +1108,7 @@ impl WasmArtifact {
             termination_grace: self.0.policy.termination_grace,
         };
         let staged = elapsed_micros(started);
+        asset_timing.complete();
         drop(staging);
         let process = invocation.map(|i| i.trace_host_phase(HostTracePhase::WorkerProcess));
         let process_started = std::time::Instant::now();
@@ -1142,10 +1147,13 @@ impl WasmArtifact {
             WorkerRequest::Immediate(bytes) => (scope, bytes),
             WorkerRequest::RetainedCompile(_) => (scope, Vec::new()),
         };
+        let process_timing = Span::worker("worker-launch-and-settle");
         let receipt = settle(
             super::pipe::execute_with_diagnostics(scope, &exe, &args, bytes, &control, detailed)
                 .map_err(|_| fail("worker-start", "isolated Worker could not start"))?,
         );
+        process_timing.complete();
+        let cleanup_timing = Span::worker("worker-cleanup");
         let process_time = elapsed_micros(process_started);
         // Original process and all transport owners have settled. No temporary
         // streamed-code allocation can remain in a running IO closure now.
@@ -1249,6 +1257,7 @@ impl WasmArtifact {
             )
         };
         let cleanup_us = elapsed_micros(cleanup_started);
+        cleanup_timing.complete();
         if let Some(job_close_us) = job_close_us
             && cleanup_us >= 20_000
         {

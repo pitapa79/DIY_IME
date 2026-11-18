@@ -841,6 +841,7 @@ fn cache_asset_names_reject_windows_path_aliases() {
 }
 
 mod pipe;
+mod preparation_timing;
 #[cfg(target_arch = "x86_64")]
 mod resource_transport;
 #[cfg(target_arch = "x86_64")]
