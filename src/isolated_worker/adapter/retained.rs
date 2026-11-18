@@ -936,7 +936,11 @@ fn coordinate(
                 }
             }
             Some(Err(_)) => {
-                shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+                // Readiness can fail after a running driver's lease ends.
+                // Only failures before this owner became ready are startup failures.
+                if !shared.ready.load(Ordering::Acquire) {
+                    shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+                }
                 drop(native.take());
             }
             None => (),
