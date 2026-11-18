@@ -342,28 +342,38 @@ impl CodeFiles {
             })
             .ok_or_else(|| fail("worker-asset", "code size overflow"))?;
         let reservation = budget.reserve(bytes)?;
+        let directory_timing = Span::worker("worker-snapshot-directory");
+        let cache = ScopedCache(
+            Cache::new_code_snapshot(workspace)
+                .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
+        );
+        directory_timing.complete();
         // Own the reservation together with the directory before the first write,
         // so partial construction has the same cleanup/accounting as a live cache.
         let mut files = Self {
             verified_runtime: std::sync::OnceLock::new(),
             reservation: Some(reservation),
             locks: Vec::new(),
-            cache: ScopedCache(
-                Cache::new_code_snapshot(workspace)
-                    .map_err(|_| fail("worker-asset", "runtime cache unavailable"))?,
-            ),
+            cache,
             healthy: std::sync::Mutex::new(true),
             inherited_acl: std::env::var_os("DIY_EXPERIMENT_INHERITED_CODE_ACL").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
         };
         for (name, bytes) in assets {
+            let write_timing = Span::worker(match *name {
+                "worker.exe" => "worker-snapshot-image-write",
+                "wasmtime.dll" => "worker-snapshot-dll-write",
+                _ => "worker-snapshot-module-write",
+            });
             files
                 .cache
                 .write(name, bytes)
                 .map_err(|_| fail("worker-asset", "code snapshot unavailable"))?;
+            write_timing.complete();
         }
         // Deny write/delete sharing until every actual invocation has ended.
         use std::os::windows::fs::OpenOptionsExt;
+        let locks_timing = Span::worker("worker-snapshot-locks");
         for (name, _) in assets {
             files.locks.push(
                 std::fs::OpenOptions::new()
@@ -373,6 +383,7 @@ impl CodeFiles {
                     .map_err(|_| fail("worker-asset", "code snapshot lock unavailable"))?,
             );
         }
+        locks_timing.complete();
         Ok(files)
     }
     fn change_access(&self, profile: &Profile, allow: bool) -> Result<(), String> {
@@ -939,7 +950,9 @@ impl WasmArtifact {
             strict: _compilation_pin.is_some(),
         };
         let runtime_files = self.runtime_code_files()?;
+        let lease_timing = Span::worker("worker-runtime-acl-lease");
         let mut runtime_lease = runtime_files.lease(&profile)?;
+        lease_timing.complete();
         runtime_lease.strict_cleanup = _compilation_pin.is_some();
         let exe = runtime_files.cache.path().join("worker.exe");
         let dll = runtime_files.cache.path().join("wasmtime.dll");

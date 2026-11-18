@@ -133,7 +133,9 @@ def main():
             phases = [json.loads(line) for line in (output / (stem + ".log")).read_text(encoding="utf-8").splitlines()
                       if line.startswith('{"diagnostic":"package-preparation-phase",')]
             common = {"package-verify-node", "package-capture-module", "metadata-describe", "metadata-validate",
-                      "worker-profile", "worker-assets", "worker-launch-and-settle", "worker-cleanup"}
+                      "worker-profile", "worker-assets", "worker-snapshot-directory", "worker-snapshot-image-write",
+                      "worker-snapshot-dll-write", "worker-snapshot-locks", "worker-runtime-acl-lease",
+                      "worker-launch-and-settle", "worker-cleanup"}
             for role, expected in (("manager", common), ("host", common | {
                 "host-prepare", "host-initial-catalog", "host-plan-and-catalog-recheck"
             })):

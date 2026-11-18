@@ -17,3 +17,14 @@ test('does not forward more than the fixed per-process budget',()=>{
   read(Buffer.from('package-preparation id=1 phase=worker-cleanup event=complete us=42\n'.repeat(300)));
   assert.equal(count,256);
 });
+
+test('accepts only named snapshot and ACL phases',()=>{
+  const records=[];
+  const read=preparationPhaseReader(row=>records.push(row));
+  const phases=['worker-snapshot-directory','worker-snapshot-image-write','worker-snapshot-dll-write',
+    'worker-snapshot-module-write','worker-snapshot-locks','worker-runtime-acl-lease'];
+  for(const [id,phase] of [...phases,'worker-snapshot-C:\\private'].entries()) {
+    read(Buffer.from(`package-preparation id=${id} phase=${phase} event=complete us=42\n`));
+  }
+  assert.deepEqual(records,phases.map((phase,id)=>({id,phase,event:'complete',elapsedUs:42})));
+});
