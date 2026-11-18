@@ -38,12 +38,16 @@ Per-call limits and physical ending/accounting are unchanged.
 The ignored real-Windows test
 `isolated_worker::adapter::metadata_preparation::tests::real_metadata_code_cache_reuses_only_code_and_refuses_unavailable_producers`
 requires `DIY_RANGE_WORKER_BINARY`, `DIY_RANGE_RUNTIME_DLL`,
-`DIY_METADATA_FIXTURE_WASM` and the two experiment flags above. It checks a
+`DIY_METADATA_FIXTURE_WASM`, `DIY_METADATA_OFFICIAL_WASM` and the two experiment flags above. It checks a
 third-party fixture even with a shared legacy cell, one compiler over repeated
 describe/validate requests, exact invalid-config refusal, cancelled admission,
 public preparation with default/distinct config validation, independent captured
 cache state, explicit OFF control, zero active processes and final code-budget /
-workspace release. CI adds this canary to the existing runtime-cache segment.
+workspace release. It also checks that the actual pinned official code still
+uses the shared legacy compiled cell while its generic JIT cache stays pending.
+The fixture owns its staging parents; code-cache cleanup must leave them empty
+before the fixture removes those empty directories. CI adds this canary to the
+existing runtime-cache segment.
 
 Timing acceptance still requires same-source, same-binary OFF/ON comparisons for
 1/4/20 nodes, preserving preparation, approval, activation, readiness, first input,

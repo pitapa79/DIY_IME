@@ -127,6 +127,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir(&workspace).unwrap();
+        // Cache owns only its unpredictable child directories, not these
+        // caller-owned staging containers (Cache::new_named contract).
+        let staging = workspace.join("target/appcontainer-probes");
+        std::fs::create_dir_all(&staging).unwrap();
         let artifact = WasmArtifact::capture(
             &workspace,
             &worker,
@@ -285,11 +289,45 @@ mod tests {
             CompiledState::Unavailable
         ));
         drop(broken);
+        let official_bytes = std::fs::read(asset("DIY_METADATA_OFFICIAL_WASM")).unwrap();
+        assert_eq!(
+            sha256(&official_bytes).unwrap(),
+            super::super::super::runtime::OFFICIAL_WASM_HASH
+        );
+        let official = artifact
+            .with_module(official_bytes, artifact.0.policy.clone())
+            .unwrap();
+        let official_describe = wire::request("demo.identity", 1, json!({"method":"describe"}));
+        for round in 0..2 {
+            let reply = official
+                .call_metadata_with_options(
+                    &official_describe,
+                    CancellationToken::default(),
+                    true,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(wire::reply(&reply).unwrap()["kind"], "demo.identity");
+            assert_eq!(official.active_processes(), 0);
+            assert_eq!(official.timings().settled_calls, round + 2);
+            assert!(matches!(
+                *official.0.compiled.as_ref().unwrap().lock().unwrap(),
+                CompiledState::Ready(_)
+            ));
+            assert!(matches!(
+                *official.0.jit_compiled.lock().unwrap(),
+                CompiledState::Pending
+            ));
+        }
+        drop(official);
         let budget = artifact.0.code_budget.clone();
         assert!(budget.used.load(Ordering::Acquire) > 0);
         drop(other);
         drop(artifact);
         assert_eq!(budget.used.load(Ordering::Acquire), 0);
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        std::fs::remove_dir(staging).unwrap();
+        std::fs::remove_dir(workspace.join("target")).unwrap();
         assert_eq!(std::fs::read_dir(&workspace).unwrap().count(), 0);
         std::fs::remove_dir(workspace).unwrap();
     }
