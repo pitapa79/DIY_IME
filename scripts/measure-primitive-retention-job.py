@@ -5,6 +5,7 @@ that race process exit or fail are explicit, never filled with zero.
 """
 import ctypes as c
 from ctypes import wintypes as w
+from contextlib import ExitStack
 import importlib.util
 import json
 from pathlib import Path
@@ -31,44 +32,53 @@ in_job = base.api('IsProcessInJob', w.BOOL, w.HANDLE, w.HANDLE, c.POINTER(w.BOOL
 memory_info = base.api('K32GetProcessMemoryInfo', w.BOOL, w.HANDLE, c.POINTER(Memory), w.DWORD)
 process_times = base.api('GetProcessTimes', w.BOOL, w.HANDLE, *([c.POINTER(w.FILETIME)] * 4))
 
+def read_member_memory(handle, job, row):
+    member = w.BOOL()
+    counters = Memory()
+    counters.cb = c.sizeof(counters)
+    created, exited, kernel, user = (w.FILETIME() for _ in range(4))
+    if not in_job(handle, job, c.byref(member)):
+        row['win32Error'] = c.get_last_error()
+        row['error'] = 'not-current-job-member'
+        row['failureApi'] = 'IsProcessInJob'
+    elif not member.value:
+        row['error'] = 'not-current-job-member'
+    elif not memory_info(handle, c.byref(counters), c.sizeof(counters)):
+        row['error'] = c.get_last_error()
+        row['failureApi'] = 'K32GetProcessMemoryInfo'
+    elif not process_times(handle, c.byref(created), c.byref(exited), c.byref(kernel), c.byref(user)):
+        row['error'] = c.get_last_error()
+        row['failureApi'] = 'GetProcessTimes'
+    else:
+        row.update(available=True, creationFileTime=str((created.dwHighDateTime << 32) | created.dwLowDateTime),
+                   workingSetBytes=counters.ws, peakWorkingSetBytes=counters.peak_ws,
+                   privateCommitBytes=counters.private)
+
+
 def sample(job, origin):
     pids = base.query(job, 3, Pids())
     if pids.assigned > 64 or pids.listed > 64:
         raise RuntimeError('bounded memory sampler PID capacity exceeded')
     rows = []
-    for pid in pids.ids[:pids.listed]:
-        row = dict(pid=pid, available=False)
-        handle = open_process(0x1000, False, pid)
-        if not handle:
-            row['error'] = c.get_last_error()
-            row['failureApi'] = 'OpenProcess'
-        else:
-            try:
-                member = w.BOOL()
-                counters = Memory()
-                counters.cb = c.sizeof(counters)
-                created, exited, kernel, user = (w.FILETIME() for _ in range(4))
-                if not in_job(handle, job, c.byref(member)):
-                    row['win32Error'] = c.get_last_error()
-                    row['error'] = 'not-current-job-member'
-                    row['failureApi'] = 'IsProcessInJob'
-                elif not member.value:
-                    row['error'] = 'not-current-job-member'
-                elif not memory_info(handle, c.byref(counters), c.sizeof(counters)):
-                    row['error'] = c.get_last_error()
-                    row['failureApi'] = 'K32GetProcessMemoryInfo'
-                elif not process_times(handle, c.byref(created), c.byref(exited), c.byref(kernel), c.byref(user)):
-                    row['error'] = c.get_last_error()
-                    row['failureApi'] = 'GetProcessTimes'
-                else:
-                    row.update(available=True, creationFileTime=str((created.dwHighDateTime << 32) | created.dwLowDateTime),
-                               workingSetBytes=counters.ws, peakWorkingSetBytes=counters.peak_ws,
-                               privateCommitBytes=counters.private)
-            finally:
-                base.close(handle)
-        rows.append(row)
+    pending = []
+    with ExitStack() as handles:
+        # Bind every observed PID promptly. Memory queries on earlier handles
+        # should not lengthen the interval before opening later PIDs.
+        for pid in pids.ids[:pids.listed]:
+            row = dict(pid=pid, available=False)
+            handle = open_process(0x1000, False, pid)
+            if handle:
+                handles.callback(base.close, handle)
+                pending.append((handle, row))
+            else:
+                row['error'] = c.get_last_error()
+                row['failureApi'] = 'OpenProcess'
+            rows.append(row)
+        for handle, row in pending:
+            read_member_memory(handle, job, row)
     return dict(elapsedMs=(time.monotonic()-origin)*1000, assigned=pids.assigned,
                 listed=pids.listed, processes=rows)
+
 
 def measure(command):
     job = base.check(base.create_job(None, None))
