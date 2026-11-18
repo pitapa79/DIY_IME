@@ -41,18 +41,25 @@ def sample(job, origin):
         handle = open_process(0x1000, False, pid)
         if not handle:
             row['error'] = c.get_last_error()
+            row['failureApi'] = 'OpenProcess'
         else:
             try:
                 member = w.BOOL()
                 counters = Memory()
                 counters.cb = c.sizeof(counters)
                 created, exited, kernel, user = (w.FILETIME() for _ in range(4))
-                if not in_job(handle, job, c.byref(member)) or not member.value:
+                if not in_job(handle, job, c.byref(member)):
+                    row['win32Error'] = c.get_last_error()
+                    row['error'] = 'not-current-job-member'
+                    row['failureApi'] = 'IsProcessInJob'
+                elif not member.value:
                     row['error'] = 'not-current-job-member'
                 elif not memory_info(handle, c.byref(counters), c.sizeof(counters)):
                     row['error'] = c.get_last_error()
+                    row['failureApi'] = 'K32GetProcessMemoryInfo'
                 elif not process_times(handle, c.byref(created), c.byref(exited), c.byref(kernel), c.byref(user)):
                     row['error'] = c.get_last_error()
+                    row['failureApi'] = 'GetProcessTimes'
                 else:
                     row.update(available=True, creationFileTime=str((created.dwHighDateTime << 32) | created.dwLowDateTime),
                                workingSetBytes=counters.ws, peakWorkingSetBytes=counters.peak_ws,
@@ -117,13 +124,18 @@ def measure(command):
             base.close(process.handle)
         base.close(job)
 
-assert sys.argv[1] == '--command'
-report = Path(sys.argv[2]).resolve()
-assert not report.exists()
-command = [str(Path(sys.argv[3]).resolve(strict=True)), *sys.argv[4:]]
-result = measure(command)
-with report.open('x', encoding='utf-8') as stream:
-    json.dump(result, stream)
-print(json.dumps({k:v for k,v in result.items() if k != 'samples'}), file=sys.stderr)
-if not result['successful']:
-    raise SystemExit(124 if result['timedOut'] else result['driverExitCode'] or 1)
+def main():
+    assert sys.argv[1] == '--command'
+    report = Path(sys.argv[2]).resolve()
+    assert not report.exists()
+    command = [str(Path(sys.argv[3]).resolve(strict=True)), *sys.argv[4:]]
+    result = measure(command)
+    with report.open('x', encoding='utf-8') as stream:
+        json.dump(result, stream)
+    print(json.dumps({k:v for k,v in result.items() if k != 'samples'}), file=sys.stderr)
+    if not result['successful']:
+        raise SystemExit(124 if result['timedOut'] else result['driverExitCode'] or 1)
+
+
+if __name__ == '__main__':
+    main()
