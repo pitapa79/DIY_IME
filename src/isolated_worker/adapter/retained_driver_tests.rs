@@ -316,7 +316,9 @@ fn real_compiled_retained_startup_reports_before_input_and_reclaims_owner() {
     let (send, receive) = mpsc::sync_channel(1);
     let mut fixture = Fixture::start_observed(
         policy(),
-        false,
+        // The shared fixture checks the eight-byte binding stays charged
+        // on an unconfirmed exit. This probe holds it without submitting input.
+        true,
         true,
         Some(Box::new(move |timing| {
             let _ = send.send(timing);
@@ -331,6 +333,7 @@ fn real_compiled_retained_startup_reports_before_input_and_reclaims_owner() {
     let timing = receive.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(timing.dll_verify_us > 0, "{timing:?}");
     assert_eq!(fixture.host.usage().physical_jobs, 1);
+    assert_eq!(fixture.host.usage().retained_bytes, 8);
     eprintln!("actual retained startup: {timing:?}");
     let exit = fixture.close();
     assert!(exit.process_id() > 0);
