@@ -107,6 +107,7 @@ jobs:
           cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_verified_runtime_retained_inflight_cancel_and_deadline -- --exact --ignored --nocapture
           exit $LASTEXITCODE
       - name: Dependency advisories
+        id: dependency_advisories
         run: ./scripts/security-audit.ps1
       - name: Diagnostic retained Native startup profile
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'''
@@ -415,6 +416,33 @@ jobs:
           name: retained-composition-${{ github.sha }}
           path: target/retained-composition-evidence/
           if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+      # Evidence only. Dependency advisories remains required, even if this passes.
+      - name: Diagnostic packaged Windows S1 candidate matrix
+        id: candidate_composition
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.real_wasm.outcome == ''success'' && steps.dependency_advisories.outcome == ''failure'''
+        run: |
+          $nodeRoot = Split-Path (Get-Command node).Source
+          $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE 'target/tools/wasmtime50/wasmtime-v50.0.1-x86_64-windows-c-api'
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'target/windows-app-candidate'
+          ./scripts/build-windows-distribution.ps1 -OutputDirectory $bundle -NodeRuntimeRoot $nodeRoot -WasmtimeRoot $runtimeRoot -SourceCommit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
+          cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:CARGO_PROFILE_RELEASE_OPT_LEVEL
+          cargo build --locked --example retained_composition_preflight
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/run-retained-composition-matrix.py $bundle target/retained-composition-candidate target/debug/examples/retained_composition_preflight.exe --candidate
+          exit $LASTEXITCODE
+      - name: Preserve packaged S1 candidate matrix outcomes
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.candidate_composition.outcome != ''skipped'' && hashFiles(''target/retained-composition-candidate/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-composition-candidate-${{ github.sha }}
+          path: target/retained-composition-candidate/
+          if-no-files-found: error
           retention-days: 30
           compression-level: 0
       - name: Prepared JIT mixed Wasm graph comparison
