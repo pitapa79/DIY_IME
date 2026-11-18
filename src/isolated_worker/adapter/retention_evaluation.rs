@@ -404,7 +404,16 @@ mod tests {
         assert!(gate.acquire(&cancel).is_err());
         assert!(gate.prepare(&cancel).is_err());
         assert_eq!(gate.state.lock().unwrap().busy, 2);
-        assert_eq!(*gate.preparation.as_ref().unwrap().busy.lock().unwrap(), 1);
+        assert_eq!(
+            gate.preparation
+                .as_ref()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .busy,
+            1
+        );
         drop(prepare);
         assert_eq!(
             gate.state.lock().unwrap().busy,

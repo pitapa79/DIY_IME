@@ -367,7 +367,6 @@ impl Owner {
                     host,
                     controller,
                     nodes,
-                    ids,
                     configs,
                     worker_shared,
                     receive,
@@ -917,18 +916,18 @@ fn coordinate(
     host: ExecutionHost,
     controller: GuardedController,
     nodes: Vec<WasmNode>,
-    ids: Vec<String>,
     configs: Vec<Value>,
     shared: Arc<Shared>,
     receive: mpsc::Receiver<Command>,
     initial_startup: Option<retention_evaluation::InitialStartup>,
 ) {
+    let ids = &shared.ids;
     let stage_count = nodes.len();
     let mut native = Native::start(
         &host,
         &controller,
         &nodes,
-        &ids,
+        ids,
         &configs,
         &shared,
         initial_startup,
@@ -991,7 +990,7 @@ fn coordinate(
             continue;
         }
         if native.is_none() {
-            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None).ok();
+            native = Native::start(&host, &controller, &nodes, ids, &configs, &shared, None).ok();
         }
         let Some(owner) = native.as_mut() else {
             command.legacy(&shared);
