@@ -402,6 +402,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
+      - name: Windows Job sampler handle order regression
+        if: matrix.segment == 'retention-graphs'
+        run: |
+          python scripts/test_measure_primitive_retention_job.py
+          exit $LASTEXITCODE
       - name: Actual S1 graph and input matrix
         if: matrix.segment == 'retention-graphs'
         run: |
