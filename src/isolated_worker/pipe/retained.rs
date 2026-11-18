@@ -194,7 +194,9 @@ pub fn execute_retained<'a>(
     request: RetainedWorkerRequest,
     control: &RunControl,
 ) -> Result<Outcome<'a>, String> {
-    execute_retained_observed(profile, job, cache, program, args, request, control, None)
+    execute_retained_observed(
+        profile, job, cache, program, args, request, control, None, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -206,15 +208,24 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     args: &[OsString],
     request: RetainedWorkerRequest,
     control: &RunControl,
+    verified_runtime: Option<&'a super::super::runtime::VerifiedRuntimeFile>,
     observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
-    if args.first().is_none_or(|arg| {
-        arg != "--retained-resources-v1"
-            && arg != "--retained-compiled-resources-v1"
-            && arg != crate::isolated_worker::retained_startup::TIMED_FLAG
-    }) || control
-        .walltime
-        .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
+    use crate::isolated_worker::retained_startup::{
+        TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
+    };
+
+    let flag = args.first().and_then(|arg| arg.to_str());
+    let expects_proof = matches!(flag, Some(VERIFIED_FLAG | VERIFIED_TIMED_FLAG));
+    if !(expects_proof
+        || matches!(
+            flag,
+            Some("--retained-resources-v1" | "--retained-compiled-resources-v1" | TIMED_FLAG)
+        ))
+        || expects_proof != verified_runtime.is_some()
+        || control
+            .walltime
+            .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))
         || control.termination_grace > Duration::from_secs(5)
         || !request
             .reservation
@@ -254,7 +265,7 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     });
     execute_observed(
         WorkerScope {
-            verified_runtime: None,
+            verified_runtime,
             profile,
             job,
             cache,

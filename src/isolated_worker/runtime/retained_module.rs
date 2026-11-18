@@ -147,22 +147,65 @@ fn acknowledge(output: &mut impl Write, sequence: u64, slot: u32, timed: bool) -
 }
 
 pub(super) fn run(args: &[OsString]) -> Result<(), String> {
-    run_modules(args, false, false)
+    run_modules(args, false, false, None)
 }
 
 pub(super) fn run_compiled(args: &[OsString]) -> Result<(), String> {
-    run_modules(args, true, false)
+    run_modules(args, true, false, None)
 }
 
 pub(super) fn run_compiled_timed(args: &[OsString]) -> Result<(), String> {
-    run_modules(args, true, true)
+    run_modules(args, true, true, None)
+}
+
+pub(super) fn run_compiled_verified(args: &[OsString], timed_startup: bool) -> Result<(), String> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, GetFileType};
+
+    let (extension, args) = args
+        .split_last()
+        .ok_or("missing retained runtime file proof")?;
+    let value = extension
+        .to_str()
+        .and_then(|value| value.strip_prefix("--verified-runtime-file="))
+        .ok_or("missing retained runtime file proof")?;
+    let (handle, diagnostic) = super::parse_runtime_file_handles(value)?;
+    let handle = handle as *mut std::ffi::c_void;
+    if diagnostic != 0 || unsafe { GetFileType(handle) } != FILE_TYPE_DISK {
+        return Err("invalid retained runtime file handle".into());
+    }
+    // SAFETY: the retained launcher transfers this file through its private
+    // explicit handle list. Matching the actual DLL path is required below.
+    let file = unsafe { std::fs::File::from_raw_handle(handle) };
+    run_modules(args, true, timed_startup, Some(&file))
+}
+
+fn load_runtime(
+    path: &Path,
+    verified: Option<&std::fs::File>,
+    record_verification: impl FnOnce(),
+) -> Result<Api, String> {
+    if let Some(file) = verified {
+        let _same_file = runtime_image::lock_matching_file(path, file)?;
+        record_verification();
+        // SAFETY: the trusted Host hashed and pinned this exact immutable file.
+        // The inherited file remains owned through the entire retained lifetime.
+        unsafe { Api::load_verified(path) }
+    } else {
+        Api::load_observed(path, record_verification)
+    }
 }
 
 fn micros(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-fn run_modules(args: &[OsString], compiled: bool, timed_startup: bool) -> Result<(), String> {
+fn run_modules(
+    args: &[OsString],
+    compiled: bool,
+    timed_startup: bool,
+    verified_runtime: Option<&std::fs::File>,
+) -> Result<(), String> {
     // runtime calls fuel memory, then 1..4 (module, exact length) pairs.
     // The new compile-cache experiment is restricted to one Node/module.
     let stride = if compiled { 4 } else { 2 };
@@ -185,7 +228,7 @@ fn run_modules(args: &[OsString], compiled: bool, timed_startup: bool) -> Result
         let begin = Instant::now();
         let mut verify_us = 0;
         let mut load_begin = begin;
-        let api = Api::load_observed(path, || {
+        let api = load_runtime(path, verified_runtime, || {
             verify_us = micros(begin);
             load_begin = Instant::now();
         })?;
@@ -199,7 +242,7 @@ fn run_modules(args: &[OsString], compiled: bool, timed_startup: bool) -> Result
             }),
         )
     } else {
-        (Api::load(path)?, None)
+        (load_runtime(path, verified_runtime, || {})?, None)
     };
     let limits = Limits {
         fuel: Some(fuel),

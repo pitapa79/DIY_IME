@@ -9,6 +9,9 @@ import subprocess
 import sys
 
 
+VERIFIED_RUNTIME = "DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE"
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -19,13 +22,18 @@ def load(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--small-worker", action="store_true",
-                        help="substitute the dev debug=0 Worker and verify the baseline inputs")
+    variant = parser.add_mutually_exclusive_group()
+    variant.add_argument("--small-worker", action="store_true",
+                         help="substitute the dev debug=0 Worker and verify the baseline inputs")
+    variant.add_argument("--verified-runtime", action="store_true",
+                         help="compare retained DLL verification using identical baseline inputs")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     target = root / "target"
     baseline_output = target / "retained-native-startup-evidence"
     output = target / "retained-small-worker-evidence" if args.small_worker else baseline_output
+    if args.verified_runtime:
+        output = target / "retained-verified-runtime-evidence"
     worker_target = target / "retained-small-worker" if args.small_worker else target
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert source == os.environ["GITHUB_SHA"]
@@ -72,6 +80,8 @@ def main():
         "DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK": "1",
         "DIY_PRIMITIVE_PHASE_JOURNAL": "1",
     })
+    if args.verified_runtime:
+        env[VERIFIED_RUNTIME] = "1"
     state["flags"] = {key: val for key, val in env.items()
                       if key.startswith(("DIY_EXPERIMENT_", "DIY_PRIMITIVE_"))}
 
@@ -83,12 +93,20 @@ def main():
 
     save()
     try:
-        if args.small_worker:
+        if args.small_worker or args.verified_runtime:
             baseline_path = baseline_output / "manifest.json"
             baseline = load(baseline_path)
             state["baselineManifestSha256"] = digest(baseline_path)
             assert baseline["source"] == source and baseline["plan"] == plan, "Baseline source or plan differs"
-            assert baseline["flags"] == state["flags"], "Baseline runtime flags differ"
+            expected_flags = baseline["flags"].copy()
+            assert VERIFIED_RUNTIME not in expected_flags, "Baseline already requested retained runtime proof"
+            if args.verified_runtime:
+                expected_flags[VERIFIED_RUNTIME] = "1"
+            assert expected_flags == state["flags"], "Baseline runtime flags differ"
+        if args.verified_runtime:
+            assert baseline["files"] == files, "Baseline file hashes differ"
+            assert baseline["workerBuild"] == state["workerBuild"], "Baseline Worker build differs"
+        if args.small_worker:
             assert baseline["workerBuild"]["profile"] == "dev", "Baseline Worker was not built in dev profile"
             assert baseline["workerBuild"]["debugOverride"] is None, "Baseline Worker debug level was overridden"
             assert baseline["files"].keys() == files.keys(), "Baseline file set differs"
@@ -119,6 +137,7 @@ def main():
             report, job = load(report_path), load(job_path)
             assert report["completed"] and report["sourceCommit"] == source
             assert report["runtimeBuildSourceCommit"] == source
+            assert report["requestedControls"][VERIFIED_RUNTIME] == env.get(VERIFIED_RUNTIME)
             assert all(report["binaries"][key] == files[key] for key in ("host", "manager", "worker", "dll"))
             assert report["workspaceAfterHostExit"] == []
             assert all(row["dropped"] == 0 for row in report["traceCollections"])
