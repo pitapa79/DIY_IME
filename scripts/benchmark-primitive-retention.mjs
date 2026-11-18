@@ -24,9 +24,10 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal'].includes(cadence));
+assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime'].includes(cadence));
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
+const lifetime=cadence==='lifetime';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -42,6 +43,11 @@ const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
+if(lifetime) {
+  assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25 && !timing,
+    'lifetime case requires the bounded 20-node compiled fixture');
+  assert.equal(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT,'1');
+}
 const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
 if(thirdparty) {
@@ -321,15 +327,19 @@ try {
     }
   } else {
     if(timing)report.sameCall=[];
+    const sustainedStart=performance.now();
     for(let sample=0;sample<=samples;sample++) {
-      if(sample)await delay(100);
+      if(sample)await delay(lifetime?2500:100);
       await host.call({method:'traceStartDetailed'});
       const text=`  ka${sample}🙂漢字  `;
+      const offeredAtMs=lifetime?performance.now():null;
       const {key,snapshot,resultMs}=await observeWarmInput({sample,attempts:warmAttempts,
         submit:attempt=>submit(text,attempt),read,until,ended,verify,expected:expected(text)});
+      const verifiedAtMs=lifetime?performance.now():null;
       if(sample===0)report.prepareThroughFirstResultMs=performance.now()-preparation;
       const events=await collectTrace();
-      traces.push({sample,key,events});records.push({sample,resultMs});
+      traces.push({sample,key,events});
+      records.push(lifetime?{sample,resultMs,offeredAtMs,verifiedAtMs}:{sample,resultMs});
       const status=await host.call({method:'status'});statuses.push(status);
       await verifySampleRetrieval(status);
       if(timing) {
@@ -341,14 +351,65 @@ try {
       if(mode!=='0') {
         assert.equal(status.retainedWorker.decodedReplies,(sample+1)*executedCount);
         if(!cold)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
+        if(lifetime) {
+          assert.deepEqual(status.retainedWorker.processIds,report.lifetimeReady.retainedWorker.processIds);
+          assert.equal(status.retainedWorker.generation,report.lifetimeReady.retainedWorker.generation);
+        }
         if(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1')assert.equal(status.retainedWorker.compiledGenerations,status.retainedWorker.generation);
       }
     }
+    if(lifetime)report.sustainedWindowMs=performance.now()-sustainedStart;
     report[cold?'followupResultMs':'warmResultMs']=summarize(records.slice(1).map(r=>r.resultMs));
     if(cold)report.followupIsGuaranteedWarm=false;
     if(timing) {
       if(layout==='serial')report[cold?'followupResidualMs':'warmResidualMs']=summarize(report.sameCall.filter(s=>s.sample>0).flatMap(s=>s.rows.filter(r=>r.status==='paired').map(r=>r.nodeResidualMs)));
     }
+  }
+  if(lifetime) {
+    assert(report.sustainedWindowMs>=60000,'sustained input must outlast one idle lifetime');
+    const before=await host.call({method:'status'});
+    const proof={before, recoveryAttempts:[], passed:false};
+    report.retainedLifetime=proof;
+    const quietStart=performance.now();
+    await delay(61000);
+    proof.idle=await until(async()=>{
+      const status=await host.call({method:'status'});
+      assert.equal(status.sessionEpoch,before.sessionEpoch);
+      assert.equal(status.phase,'ready','idle retirement must preserve the Session');
+      return !status.retainedWorker.ready && status.retainedWorker.physicalJobs===0 &&
+        status.workerProcesses===0 && status.physical.physicalJobs===0 &&
+        status.physical.reservedResultBytes===0 ? status : null;
+    });
+    proof.idleElapsedMs=performance.now()-quietStart;
+    assert.deepEqual(proof.idle.retainedWorker.processIds,[]);
+    assert.equal(proof.idle.retainedWorker.generation,before.retainedWorker.generation);
+    await host.call({method:'traceStartDetailed'});
+    const latest='  ka-recovered🙂漢字  ';
+    proof.recoveryOfferedAtMs=performance.now();
+    const recovered=await observeWarmInput({sample:0,attempts:proof.recoveryAttempts,
+      submit:attempt=>submit(latest,attempt),read,until,ended,verify,expected:expected(latest)});
+    proof.recoveryVerifiedAtMs=performance.now();
+    proof.recoveryMs=recovered.resultMs;
+    proof.events=await collectTrace();
+    proof.after=await until(async()=>{
+      const status=await host.call({method:'status'});
+      return status.retainedWorker.ready ? status : null;
+    });
+    const worker=proof.after.retainedWorker;
+    assert.equal(proof.after.sessionEpoch,before.sessionEpoch);
+    assert.equal(worker.generation,before.retainedWorker.generation+count);
+    assert.equal(worker.compiledGenerations,worker.generation);
+    assert.equal(worker.startupFailures,0);
+    assert.equal(worker.physicalJobs,count);
+    assert.equal(new Set(worker.processIds).size,count);
+    assert(worker.processIds.every(pid=>!before.retainedWorker.processIds.includes(pid)));
+    await verifySampleRetrieval(proof.after);
+    const old=await host.send({method:'getRun',key:warmAttempts.at(-1).key});
+    proof.previousInput={ok:old.ok,current:old.data?.snapshot?.current ?? null,errorCode:old.error?.code ?? null};
+    assert(typeof old.ok==='boolean');
+    if(old.ok)assert.equal(proof.previousInput.current,false,'previous input cannot become current after recovery');
+    else assert(['run-unknown','result-gone'].includes(proof.previousInput.errorCode),'unexpected previous input refusal');
+    proof.passed=true;
   }
   if(cadence==='safety') {
     assert.notEqual(mode,'0','retention safety requires an explicit retained route');

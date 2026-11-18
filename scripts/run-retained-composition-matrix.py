@@ -27,7 +27,11 @@ def main():
     parser.add_argument('preflight', type=Path)
     parser.add_argument('--candidate', action='store_true',
                         help='enable the two snapshot experiments on retained cases only')
+    parser.add_argument('--lifetime', action='store_true',
+                        help='exercise the bounded sustained and idle-recovery candidate')
     args = parser.parse_args()
+    if args.lifetime and not args.candidate:
+        parser.error('--lifetime requires --candidate')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -57,8 +61,14 @@ def main():
     assert len(cases) == 25
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
-    manifest = {'issue': 158 if args.candidate else 135, 'parentGoal': 109, 'sourceCommit': source,
-                'profile': 'retained-snapshot-candidate' if args.candidate else 'reference',
+    if args.lifetime:
+        case, = (c for c in cases if c['mode']=='separate' and c['layout']=='serial'
+                 and c['count']==20 and c['cadence']=='warm' and not c['timing'])
+        cases = [dict(case, name='retained-lifetime-20', cadence='lifetime', samples=25)]
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+    manifest = {'issue': 166 if args.lifetime else (158 if args.candidate else 135),
+                'parentGoal': 109, 'sourceCommit': source,
+                'profile': 'retained-lifetime' if args.lifetime else ('retained-snapshot-candidate' if args.candidate else 'reference'),
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
                 'moduleFiles': module_hashes,
@@ -135,6 +145,13 @@ def main():
                 assert data['requestedControls'] == expected
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
+            if args.lifetime:
+                proof = data['retainedLifetime']
+                assert proof['passed'] and proof['idleElapsedMs'] >= 61000
+                assert data['sustainedWindowMs'] >= 60000 and data['warmInputDenominators']['correct'] == 26
+                assert len(proof['recoveryAttempts']) == 1 and proof['recoveryAttempts'][0]['outcome'] == 'correct'
+                case['lifetime'] = {key: proof[key] for key in ('idleElapsedMs', 'recoveryMs', 'previousInput')}
+                case['lifetime']['sustainedWindowMs'] = data['sustainedWindowMs']
             missing = owned['missingProcessMemoryReads']
             case.update(checksPassed=missing == 0, resourcePolicy=data['resourcePolicy'],
                         executedIds=data['executedIds'], unexecutedIds=data['unexecutedIds'],
