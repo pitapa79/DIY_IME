@@ -642,13 +642,19 @@ fn real_retained_driver_faults() {
 #[test]
 #[ignore = "requires actual native Worker, pinned DLL and public SDK consumer"]
 fn real_retained_driver_inflight_cancel_and_deadline() {
-    check_inflight_cancel_and_deadline(false);
+    check_inflight_cancel_and_deadline(false, RuntimeProof::Disabled);
 }
 
 #[test]
 #[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
 fn real_captured_retained_driver_inflight_cancel_and_deadline() {
-    check_inflight_cancel_and_deadline(true);
+    check_inflight_cancel_and_deadline(true, RuntimeProof::Disabled);
+}
+
+#[test]
+#[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
+fn real_verified_runtime_retained_inflight_cancel_and_deadline() {
+    check_inflight_cancel_and_deadline(true, RuntimeProof::Matching);
 }
 
 #[test]
@@ -694,13 +700,13 @@ fn real_captured_retained_call_metrics_keep_callback_wait_and_owned_budget() {
     assert_ne!(exit.process_id(), 0);
 }
 
-fn check_inflight_cancel_and_deadline(captured: bool) {
+fn check_inflight_cancel_and_deadline(captured: bool, proof: RuntimeProof) {
     for deadline in [false, true] {
         let mut p = policy();
         if deadline {
             p.input_timeout = Duration::from_millis(250);
         }
-        let mut fixture = Fixture::start_variant(p, true, captured);
+        let mut fixture = Fixture::start_observed(p, true, captured, None, proof);
         fixture
             .client
             .as_mut()

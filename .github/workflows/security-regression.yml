@@ -95,6 +95,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Retained Worker verified DLL identity and ownership
+        id: retained_verified_identity
         if: matrix.segment == 'primitive-startup'
         env:
           DIY_EXPERIMENT_COMPILED_JIT: '1'
@@ -102,6 +103,8 @@ jobs:
           DIY_RANGE_RUNTIME_DLL: ${{ github.workspace }}/target/tools/wasmtime50/wasmtime-v50.0.1-x86_64-windows-c-api/lib/wasmtime.dll
         run: |
           cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_compiled_retained_checks_verified_runtime_identity_and_reclaims_owner -- --exact --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p diy-ime2-core --lib isolated_worker::adapter::retained_driver_tests::real_verified_runtime_retained_inflight_cancel_and_deadline -- --exact --ignored --nocapture
           exit $LASTEXITCODE
       - name: Dependency advisories
         run: ./scripts/security-audit.ps1
@@ -145,6 +148,19 @@ jobs:
         with:
           name: retained-verified-runtime-${{ github.sha }}
           path: target/retained-verified-runtime-evidence/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Verified retained DLL through Host cancellation and recovery
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_identity.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
+        run: |
+          python scripts/run-retained-native-startup-profile.py --verified-runtime-safety
+          exit $LASTEXITCODE
+      - name: Preserve verified retained Host safety evidence
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-verified-runtime-safety-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-verified-host-safety-${{ github.sha }}
+          path: target/retained-verified-runtime-safety-evidence/
           if-no-files-found: error
           retention-days: 5
       - name: Compare smaller retained Worker image
