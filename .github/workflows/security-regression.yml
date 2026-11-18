@@ -138,6 +138,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
       - name: Compare retained Worker verified DLL
+        id: retained_verified_timing
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
         run: |
           python scripts/run-retained-native-startup-profile.py --verified-runtime
@@ -148,6 +149,19 @@ jobs:
         with:
           name: retained-verified-runtime-${{ github.sha }}
           path: target/retained-verified-runtime-evidence/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Compare chunked native snapshot writes
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_timing.outcome == ''success'''
+        run: |
+          python scripts/run-retained-native-startup-profile.py --chunked-snapshot-writes
+          exit $LASTEXITCODE
+      - name: Preserve chunked native snapshot evidence
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-chunked-snapshot-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-chunked-snapshot-${{ github.sha }}
+          path: target/retained-chunked-snapshot-evidence/
           if-no-files-found: error
           retention-days: 5
       - name: Verified retained DLL through Host cancellation and recovery

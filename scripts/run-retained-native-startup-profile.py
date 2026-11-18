@@ -10,6 +10,7 @@ import sys
 
 
 VERIFIED_RUNTIME = "DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE"
+CHUNKED_SNAPSHOT = "DIY_EXPERIMENT_CHUNKED_SNAPSHOT_WRITES"
 LAUNCH_SPANS = (
     "launchSetup", "createSuspendedProcess", "createdToVerification", "confirmJobAndToken",
     "verifiedToResume", "resumeThread", "resumedToReadiness",
@@ -51,8 +52,10 @@ def main():
                          help="compare retained DLL verification using identical baseline inputs")
     variant.add_argument("--verified-runtime-safety", action="store_true",
                          help="check cancellation, revocation and recovery in the verified retained path")
+    variant.add_argument("--chunked-snapshot-writes", action="store_true",
+                         help="compare native snapshot writes with the same verified runtime and inputs")
     args = parser.parse_args()
-    verified_runtime = args.verified_runtime or args.verified_runtime_safety
+    verified_runtime = args.verified_runtime or args.verified_runtime_safety or args.chunked_snapshot_writes
     root = Path(__file__).resolve().parent.parent
     target = root / "target"
     baseline_output = target / "retained-native-startup-evidence"
@@ -61,6 +64,9 @@ def main():
         output = target / "retained-verified-runtime-evidence"
     if args.verified_runtime_safety:
         output = target / "retained-verified-runtime-safety-evidence"
+    if args.chunked_snapshot_writes:
+        baseline_output = target / "retained-verified-runtime-evidence"
+        output = target / "retained-chunked-snapshot-evidence"
     worker_target = target / "retained-small-worker" if args.small_worker else target
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert source == os.environ["GITHUB_SHA"]
@@ -109,6 +115,8 @@ def main():
     })
     if verified_runtime:
         env[VERIFIED_RUNTIME] = "1"
+    if args.chunked_snapshot_writes:
+        env[CHUNKED_SNAPSHOT] = "1"
     state["flags"] = {key: val for key, val in env.items()
                       if key.startswith(("DIY_EXPERIMENT_", "DIY_PRIMITIVE_"))}
     if args.verified_runtime_safety:
@@ -128,9 +136,14 @@ def main():
             state["baselineManifestSha256"] = digest(baseline_path)
             assert baseline["source"] == source and baseline["plan"] == [1, 4, 20], "Baseline source or plan differs"
             expected_flags = baseline["flags"].copy()
-            assert VERIFIED_RUNTIME not in expected_flags, "Baseline already requested retained runtime proof"
-            if verified_runtime:
-                expected_flags[VERIFIED_RUNTIME] = "1"
+            if args.chunked_snapshot_writes:
+                assert expected_flags.get(VERIFIED_RUNTIME) == "1"
+                assert CHUNKED_SNAPSHOT not in expected_flags
+                expected_flags[CHUNKED_SNAPSHOT] = "1"
+            else:
+                assert VERIFIED_RUNTIME not in expected_flags, "Baseline already requested retained runtime proof"
+                if verified_runtime:
+                    expected_flags[VERIFIED_RUNTIME] = "1"
             assert expected_flags == state["flags"], "Baseline runtime flags differ"
         if verified_runtime:
             assert baseline["files"] == files, "Baseline file hashes differ"
@@ -168,6 +181,7 @@ def main():
             assert report["completed"] and report["sourceCommit"] == source
             assert report["runtimeBuildSourceCommit"] == source
             assert report["requestedControls"][VERIFIED_RUNTIME] == env.get(VERIFIED_RUNTIME)
+            assert report["requestedControls"][CHUNKED_SNAPSHOT] == env.get(CHUNKED_SNAPSHOT)
             assert all(report["binaries"][key] == files[key] for key in ("host", "manager", "worker", "dll"))
             assert report["workspaceAfterHostExit"] == []
             assert all(row["dropped"] == 0 for row in report["traceCollections"])
