@@ -46,6 +46,7 @@ def main():
         "DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION": "separate",
         "DIY_EXPERIMENT_RETAINED_TIMING": "1",
         "DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING": "1",
+        "DIY_EXPERIMENT_PACKAGE_PREPARATION_TIMING": "1",
         "DIY_EXPERIMENT_RETAINED_COMPILED_JIT": "1",
         "DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM": "2",
         "DIY_EXPERIMENT_COMPILED_JIT": "1",
@@ -98,6 +99,18 @@ def main():
             actual_pids = first["status"]["retainedWorker"]["processIds"]
             assert len(set(actual_pids)) == count and all(pid > 0 for pid in actual_pids)
             assert set(actual_pids) <= {sample["pid"] for sample in native["records"]}
+            phases = [json.loads(line) for line in (output / (stem + ".log")).read_text(encoding="utf-8").splitlines()
+                      if line.startswith('{"diagnostic":"package-preparation-phase",')]
+            common = {"package-verify-node", "package-capture-module", "metadata-describe", "metadata-validate",
+                      "worker-profile", "worker-assets", "worker-launch-and-settle", "worker-cleanup"}
+            for role, expected in (("manager", common), ("host", common | {
+                "host-prepare", "host-initial-catalog", "host-plan-and-catalog-recheck"
+            })):
+                started = {(p["pid"], p["id"], p["phase"]) for p in phases
+                           if p["role"] == role and p["event"] == "start"}
+                completed = {p["phase"] for p in phases if p["role"] == role and p["event"] == "complete"
+                             and (p["pid"], p["id"], p["phase"]) in started}
+                assert expected <= completed, f"{role} preparation phases missing: {sorted(expected - completed)}"
             row.update(checksPassed=True, firstLatest=first["latestInput"], rows=len(native["records"]))
             print(json.dumps(row), flush=True)
             save()

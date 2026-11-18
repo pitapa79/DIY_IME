@@ -380,9 +380,13 @@ impl PackageVerifier {
         gate: ExecutionGate,
         cancel: CancellationToken,
     ) -> Result<WasmNode, CoreError> {
+        use crate::isolated_worker::preparation_timing::Span;
+        let verify = Span::start("package-verify-node");
+        let capture = Span::start("package-capture-module");
         let artifact = self
             .runtime
             .with_module(package.module.to_vec(), self.policy.clone())?;
+        capture.complete();
         let node = artifact.prepare(
             &package.manifest.node.kind,
             package.manifest.node.version,
@@ -399,6 +403,7 @@ impl PackageVerifier {
                 "isolated guest definition differs from manifest",
             ));
         }
+        verify.complete();
         Ok(node)
     }
     pub fn verify(

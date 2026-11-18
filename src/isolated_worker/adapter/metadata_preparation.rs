@@ -19,12 +19,19 @@ impl WasmArtifact {
         request: &Value,
         cancel: CancellationToken,
     ) -> Result<Vec<u8>, CoreError> {
-        self.call_metadata_with_options(
-            request,
-            cancel,
-            enabled("DIY_EXPERIMENT_PREPARATION_CODE_CACHE"),
-            enabled("DIY_EXPERIMENT_COMPILED_JIT"),
-        )
+        let phase = if request["operation"]["method"] == "describe" {
+            "metadata-describe"
+        } else {
+            "metadata-validate"
+        };
+        crate::isolated_worker::preparation_timing::metadata(phase, || {
+            self.call_metadata_with_options(
+                request,
+                cancel,
+                enabled("DIY_EXPERIMENT_PREPARATION_CODE_CACHE"),
+                enabled("DIY_EXPERIMENT_COMPILED_JIT"),
+            )
+        })
     }
 
     fn call_metadata_with_options(

@@ -17,6 +17,7 @@ import {wasmCodeSha256} from './wasm-host-overhead.mjs';
 import {retainedComposition,fixtureDefinition,fixtureKinds} from './retained-composition-graphs.mjs';
 import {analyzeRetainedGraphCalls,verifyGraphCallCoverage} from './analyze-retained-graph-calls.mjs';
 import {observeWarmInput,warmInputDenominators} from './host-warm-input-observation.mjs';
+import {preparationPhaseReader} from './package-preparation-phases.mjs';
 
 const [hostArg, managerArg, workerArg, dllArg, officialArg, countArg='2', samplesArg='10', shape='identity', cadence='warm'] = process.argv.slice(2);
 assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mixed|thirdparty warm|paced');
@@ -86,6 +87,12 @@ class Client {
     this.child=spawn(exe,[path],{windowsHide:true,stdio:'pipe'});
     journal(this.role,'spawn',undefined,this.child.pid);
     this.child.stderr.on('data',data=>this.stderr.push(data));
+    if(process.env.DIY_EXPERIMENT_PACKAGE_PREPARATION_TIMING==='1') {
+      this.child.stderr.on('data',preparationPhaseReader(row=>{
+        writeSync(2,JSON.stringify({diagnostic:'package-preparation-phase',observedMs:performance.now(),
+          role:this.role,pid:this.child.pid,...row})+'\n');
+      }));
+    }
     this.ended=new Promise(done=>this.child.once('close',code=>{
       journal(this.role,'exit',undefined,this.child.pid);
       for(const p of this.pending.values())p.reject(Error(`child exit ${code}`));done(code);
