@@ -167,6 +167,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
       - name: Compare dependency-ordered retained startup
+        id: retained_ordered_timing
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_chunked_timing.outcome == ''success'''
         run: |
           python scripts/run-retained-native-startup-profile.py --ordered-startup
@@ -177,6 +178,19 @@ jobs:
         with:
           name: retained-ordered-startup-${{ github.sha }}
           path: target/retained-ordered-startup-evidence/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Compare four dependency-ordered startup permits
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_ordered_timing.outcome == ''success'''
+        run: |
+          python scripts/run-retained-native-startup-profile.py --ordered-four
+          exit $LASTEXITCODE
+      - name: Preserve four-permit ordered startup evidence
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-ordered-four-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-ordered-four-${{ github.sha }}
+          path: target/retained-ordered-four-evidence/
           if-no-files-found: error
           retention-days: 5
       - name: Verified retained DLL through Host cancellation and recovery
