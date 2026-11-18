@@ -867,6 +867,12 @@ impl WasmArtifact {
                 Some(crate::isolated_worker::pipe::RetainedObservation {
                     activity: self.0.activity.clone(),
                     process_id: shared.process_id.clone(),
+                    launch_phase: shared.samples.as_ref().map(|_| {
+                        let shared = Arc::clone(&shared);
+                        let observer: crate::isolated_worker::pipe::LaunchPhaseObserver =
+                            Box::new(move |phase| shared.record_phase(phase));
+                        observer
+                    }),
                 }),
             )
             .map(settle)

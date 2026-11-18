@@ -22,3 +22,15 @@ test('separate contexts and report already-ended or invalid order without negati
   const span=result.owners[0].attempts[0].spans.retirementToOriginalExit;
   assert.equal(span.state,'exit-before-retirement-request');assert.equal(span.ms,undefined);
 });
+test('measure launch stages with observed endpoints and preserve a missing resume result',()=>{
+  const phases=[event('native-launch-started','1000000'),
+    event('native-create-process-started','2000000'),event('native-create-process-finished','7000000'),
+    event('native-job-token-check-started','8000000'),event('native-job-token-confirmed','10000000'),
+    event('native-resume-thread-started','15000000'),event('readiness-observed','35000000')];
+  const spans=analyzeRetainedLifecycle([status(phases)]).owners[0].attempts[0].spans;
+  for(const [name,ms] of Object.entries({launchSetup:1,createSuspendedProcess:5,createdToVerification:1,confirmJobAndToken:2,
+    verifiedToResume:5,launchToReadiness:34})) assert.equal(spans[name].ms,ms);
+  for(const name of ['resumeThread','resumedToReadiness']) assert.equal(spans[name].state,'not-observed');
+  const complete=analyzeRetainedLifecycle([status([...phases,event('native-resume-thread-finished','16000000')])]);
+  assert.equal(complete.owners[0].attempts[0].spans.resumedToReadiness.ms,19);
+});
