@@ -10,6 +10,10 @@ import sys
 
 
 VERIFIED_RUNTIME = "DIY_EXPERIMENT_RETAINED_VERIFIED_RUNTIME_FILE"
+LAUNCH_SPANS = (
+    "launchSetup", "createSuspendedProcess", "createdToVerification", "confirmJobAndToken",
+    "verifiedToResume", "resumeThread", "resumedToReadiness",
+)
 
 
 def digest(path):
@@ -18,6 +22,24 @@ def digest(path):
 
 def load(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def launch_span_coverage(lifecycle, pids):
+    matched = {}
+    for owner in lifecycle["owners"]:
+        for attempt in owner["attempts"]:
+            process_ids = attempt["processIds"]
+            if len(process_ids) == 1 and process_ids[0] in pids:
+                matched.setdefault(process_ids[0], []).append(attempt["spans"])
+    unambiguous = [items[0] for items in matched.values() if len(items) == 1]
+    return {
+        "expected": len(pids),
+        "unambiguousAttempts": len(unambiguous),
+        "measured": {
+            name: sum(spans.get(name, {}).get("state") == "measured" for spans in unambiguous)
+            for name in LAUNCH_SPANS
+        },
+    }
 
 
 def main():
@@ -174,6 +196,10 @@ def main():
             actual_pids = first["status"]["retainedWorker"]["processIds"]
             assert len(set(actual_pids)) == count and all(pid > 0 for pid in actual_pids)
             assert set(actual_pids) <= {sample["pid"] for sample in native["records"]}
+            coverage = launch_span_coverage(report["lifecycle"], set(actual_pids))
+            row["launchSpanCoverage"] = coverage
+            if count == 1:
+                assert all(value == 1 for value in coverage["measured"].values()), "Missing launch span in one-node canary"
             phases = [json.loads(line) for line in (output / (stem + ".log")).read_text(encoding="utf-8").splitlines()
                       if line.startswith('{"diagnostic":"package-preparation-phase",')]
             common = {"package-verify-node", "package-capture-module", "metadata-describe", "metadata-validate",

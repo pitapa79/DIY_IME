@@ -111,7 +111,7 @@ jobs:
       - name: Diagnostic retained Native startup profile
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'''
         run: |
-          node --test scripts/package-preparation-phases.test.mjs
+          node --test scripts/package-preparation-phases.test.mjs scripts/analyze-retained-lifecycle.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/retained-native-startup-alt

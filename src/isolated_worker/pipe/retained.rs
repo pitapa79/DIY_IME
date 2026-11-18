@@ -160,15 +160,34 @@ impl RetainedReservation {
         })
     }
 }
-struct ProcessPin(RetainedReservation, Option<Arc<AtomicU64>>);
+struct ProcessPin {
+    reservation: RetainedReservation,
+    observation: Option<RetainedObservation>,
+}
 impl ResourceOwner for ProcessPin {
     fn observe_start(&self, process_id: u32) {
-        if let Some(id) = &self.1 {
-            id.store(process_id as u64, Ordering::Release);
+        if let Some(observation) = &self.observation {
+            observation
+                .process_id
+                .store(process_id as u64, Ordering::Release);
+        }
+    }
+    fn observe_launch_phase(&self, phase: &'static str) {
+        if let Some(observer) = self
+            .observation
+            .as_ref()
+            .and_then(|value| value.launch_phase.as_ref())
+        {
+            observer(phase);
         }
     }
     fn observe_exit(&self) {
-        *self.0.inner.ended.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        *self
+            .reservation
+            .inner
+            .ended
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = true;
     }
 }
 impl Drop for ProcessPin {
@@ -260,9 +279,9 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
         },
     );
     let deadline = request.reservation.inner.deadline;
-    let (activity, process_id) = observation.map_or((None, None), |value| {
-        (Some(value.activity), Some(value.process_id))
-    });
+    let activity = observation
+        .as_ref()
+        .map(|value| Arc::clone(&value.activity));
     execute_observed(
         WorkerScope {
             verified_runtime,
@@ -273,7 +292,10 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
             resource_deadline: Some(deadline),
             exchange: Some(wrapped),
             jit_run_cancel: None,
-            resource_owner: Some(Box::new(ProcessPin(request.reservation, process_id))),
+            resource_owner: Some(Box::new(ProcessPin {
+                reservation: request.reservation,
+                observation,
+            })),
             #[cfg(test)]
             prepared: false,
         },

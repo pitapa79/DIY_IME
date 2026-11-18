@@ -30,12 +30,16 @@ type ResourcePin = Box<dyn ResourceOwner>;
 #[cfg(target_arch = "x86_64")]
 trait ResourceOwner: Send + Sync {
     fn observe_start(&self, _process_id: u32) {}
+    fn observe_launch_phase(&self, _phase: &'static str) {}
     fn observe_exit(&self) {}
 }
+#[cfg(target_arch = "x86_64")]
+pub(in crate::isolated_worker) type LaunchPhaseObserver = Box<dyn Fn(&'static str) + Send + Sync>;
 #[cfg(target_arch = "x86_64")]
 pub(in crate::isolated_worker) struct RetainedObservation {
     pub activity: Arc<AtomicU64>,
     pub process_id: Arc<AtomicU64>,
+    pub launch_phase: Option<LaunchPhaseObserver>,
 }
 #[cfg(target_arch = "x86_64")]
 impl ResourceOwner for Arc<std::sync::Mutex<adapter::ResourceRangeSession>> {}
@@ -179,6 +183,13 @@ fn milliseconds(value: Duration) -> u32 {
     value.as_millis().min((u32::MAX - 1) as u128) as u32
 }
 impl<'a> Running<'a> {
+    #[cfg(target_arch = "x86_64")]
+    fn observe_launch_phase(&self, phase: &'static str) {
+        if let Some(owner) = &self._resource_owner {
+            owner.observe_launch_phase(phase);
+        }
+    }
+
     pub fn process_id(&self) -> u32 {
         self.process_id
     }
@@ -931,6 +942,10 @@ pub(super) fn execute_with_diagnostics<'a>(
     let directory = wide(root.as_os_str());
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
     // No code runs before AppContainer, handle/env allowlists and Job assignment apply.
+    #[cfg(target_arch = "x86_64")]
+    if let Some(owner) = &resource_owner {
+        owner.observe_launch_phase("native-create-process-started");
+    }
     ok(
         unsafe {
             CreateProcessW(
@@ -957,6 +972,7 @@ pub(super) fn execute_with_diagnostics<'a>(
     #[cfg(target_arch = "x86_64")]
     if let Some(owner) = &resource_owner {
         owner.observe_start(process.dwProcessId);
+        owner.observe_launch_phase("native-create-process-finished");
     }
     drop(write);
     drop(input);
@@ -988,9 +1004,13 @@ pub(super) fn execute_with_diagnostics<'a>(
         #[cfg(test)]
         delivery: prepared.then(|| Arc::new(std::sync::Mutex::new(ProbeClocks::default()))),
     });
+    #[cfg(target_arch = "x86_64")]
+    running.observe_launch_phase("native-job-token-check-started");
     if verify(profile, job, running.process.0).is_err() {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
     }
+    #[cfg(target_arch = "x86_64")]
+    running.observe_launch_phase("native-job-token-confirmed");
     if let Some(read) = diagnostics_read {
         let file = unsafe { std::fs::File::from_raw_handle(read.0) };
         std::mem::forget(read);
@@ -1121,9 +1141,13 @@ pub(super) fn execute_with_diagnostics<'a>(
     if resource_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
         return Ok(running.stop(EndReason::Deadline, control.termination_grace));
     }
+    #[cfg(target_arch = "x86_64")]
+    running.observe_launch_phase("native-resume-thread-started");
     if unsafe { ResumeThread(thread_handle.0) } == u32::MAX {
         return Ok(running.stop(EndReason::StartRejected, control.termination_grace));
     }
+    #[cfg(target_arch = "x86_64")]
+    running.observe_launch_phase("native-resume-thread-finished");
     #[cfg(test)]
     {
         running.resumed = Some(Instant::now());
