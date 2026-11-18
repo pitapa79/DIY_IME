@@ -111,6 +111,18 @@ jobs:
           name: retained-native-startup-${{ github.sha }}
           path: target/retained-native-startup-evidence/
           if-no-files-found: ignore
+      - name: Preserve exact Native startup measurement binaries
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-native-runtime-${{ github.sha }}
+          path: |
+            target/debug/diy-ime2-external-host.exe
+            target/debug/diy-ime2-node-manager.exe
+            target/debug/diy-ime2-wasm-worker.exe
+            target/retained-native-startup-evidence/manifest.json
+          if-no-files-found: error
+          retention-days: 5
       - name: Build standalone Windows application
         run: |
           $nodeRoot = Split-Path (Get-Command node).Source
