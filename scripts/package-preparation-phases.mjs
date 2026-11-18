@@ -1,4 +1,4 @@
-const record=/^package-preparation id=(\d{1,3}) phase=(host-prepare|host-initial-catalog|host-plan-and-catalog-recheck|package-verify-node|package-capture-module|metadata-describe|metadata-validate|worker-profile|worker-assets|worker-launch-and-settle|worker-cleanup) event=(start|complete|aborted) us=(\d{1,15})\r?$/;
+const record=/^package-preparation id=(\d{1,3}) phase=(host-prepare|host-initial-catalog|host-plan-and-catalog-recheck|package-verify-node|package-capture-module|metadata-describe|metadata-validate|worker-profile|worker-assets|worker-snapshot-(?:directory|image-write|dll-write|module-write|locks)|worker-runtime-acl-lease|worker-launch-and-settle|worker-cleanup) event=(start|complete|aborted) us=(\d{1,15})\r?$/;
 
 // Child stderr can be split at arbitrary bytes. Keep at most one short
 // candidate line and forward only the fixed diagnostic schema.
