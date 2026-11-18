@@ -2,6 +2,8 @@
 use std::io::{self, Read, Write};
 
 pub(super) const TIMED_FLAG: &str = "--retained-compiled-startup-timing-v1";
+pub(super) const VERIFIED_FLAG: &str = "--retained-compiled-verified-runtime-v1";
+pub(super) const VERIFIED_TIMED_FLAG: &str = "--retained-compiled-verified-runtime-timing-v1";
 const READY: &[u8; 8] = b"DIYRDY01";
 const TIMED: &[u8; 8] = b"DIYRDY02";
 
