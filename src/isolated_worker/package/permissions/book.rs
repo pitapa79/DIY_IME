@@ -205,17 +205,30 @@ impl PermissionBook {
         }
         let generation = state.generation.clone();
         drop(state);
-        let controller = service.open_ready(
-            plan.plan
-                .take()
-                .ok_or_else(|| err("permission-plan", "compiled plan already consumed"))?,
-            version,
-        )?;
+        let compiled = plan
+            .plan
+            .take()
+            .ok_or_else(|| err("permission-plan", "compiled plan already consumed"))?;
+        // The Core owns the plan after open_ready. Keep only the scheduling
+        // order of the named Workers for the bounded separate experiment.
+        use crate::isolated_worker::adapter::RetainedOwners;
+        let retention_startup_order = (plan.nodes.len() <= 20
+            && RetainedOwners::orders_initial_startup()
+            && matches!(RetainedOwners::evaluation_group_size(), Ok(Some(1))))
+        .then(|| {
+            compiled
+                .node_order()
+                .filter(|id| plan.nodes.iter().any(|node| node.id == *id))
+                .map(str::to_owned)
+                .collect()
+        });
+        let controller = service.open_ready(compiled, version)?;
         Ok(PendingPermissionSession {
             book: self.clone(),
             epoch: controller.session_epoch().clone(),
             controller: Some(controller),
             plan: Some(plan),
+            retention_startup_order,
             generation,
             owns_session: true,
         })
@@ -308,6 +321,7 @@ pub struct PendingPermissionSession {
     epoch: SessionEpoch,
     controller: Option<ExecutionController>,
     plan: Option<PermissionPlan>,
+    retention_startup_order: Option<Vec<String>>,
     generation: Arc<()>,
     owns_session: bool,
 }
@@ -333,7 +347,22 @@ impl PendingPermissionSession {
         }
         let mut ordered = Vec::new();
         if group_size == 1 {
-            ordered.extend(plan.nodes.iter());
+            if let Some(startup_order) = &self.retention_startup_order {
+                // The Core order already accounts for system Nodes and joins.
+                for id in startup_order {
+                    ordered.push(
+                        plan.nodes
+                            .iter()
+                            .find(|node| node.id == *id)
+                            .ok_or_else(denied)?,
+                    );
+                }
+                if ordered.len() != plan.nodes.len() {
+                    return Err(denied());
+                }
+            } else {
+                ordered.extend(plan.nodes.iter());
+            }
         } else {
             // Grouping currently evaluates strict linear chains. Never guess an
             // order from array positions or co-load a branch under that promise.

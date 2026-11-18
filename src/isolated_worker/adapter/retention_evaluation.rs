@@ -1,19 +1,50 @@
 //! Explicit Host-only experiment. No default eligibility or security-policy adoption.
 use super::*;
+use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
 /// Startup scheduling only. Never transfers a process, SID, input or authority.
 pub(super) struct StartupGate {
-    busy: Mutex<usize>,
+    state: Mutex<StartupState>,
     wake: Condvar,
     limit: usize,
     preparation: Option<Arc<StartupGate>>,
 }
+#[derive(Default)]
+struct StartupState {
+    busy: usize,
+    initial_order: VecDeque<usize>,
+}
+
 pub(super) struct StartupPermit(Arc<StartupGate>);
+
+/// A single initial attempt. Abandoning it cannot strand its successors.
+pub(super) struct InitialStartup {
+    gate: Arc<StartupGate>,
+    rank: usize,
+}
+impl InitialStartup {
+    pub(super) fn acquire(self, cancel: &CancellationToken) -> Result<StartupPermit, CoreError> {
+        self.gate.acquire_ranked(cancel, Some(self.rank))
+    }
+}
+impl Drop for InitialStartup {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(position) = state
+            .initial_order
+            .iter()
+            .position(|rank| *rank == self.rank)
+        {
+            state.initial_order.remove(position);
+            self.gate.wake.notify_all();
+        }
+    }
+}
 impl Default for StartupGate {
     fn default() -> Self {
         Self {
-            busy: Mutex::new(0),
+            state: Mutex::new(StartupState::default()),
             wake: Condvar::new(),
             limit: 1,
             preparation: None,
@@ -47,21 +78,34 @@ impl StartupGate {
         self: &Arc<Self>,
         cancel: &CancellationToken,
     ) -> Result<StartupPermit, CoreError> {
-        let mut busy = self
-            .busy
+        self.acquire_ranked(cancel, None)
+    }
+
+    fn acquire_ranked(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        rank: Option<usize>,
+    ) -> Result<StartupPermit, CoreError> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
         loop {
             if cancel.is_cancelled() {
                 return Err(fail("worker-cancelled", "startup cancelled"));
             }
-            if *busy < self.limit {
-                *busy += 1;
+            let next = rank.is_none_or(|rank| state.initial_order.front() == Some(&rank));
+            if state.busy < self.limit && next {
+                state.busy += 1;
+                if rank.is_some() {
+                    state.initial_order.pop_front();
+                    self.wake.notify_all();
+                }
                 return Ok(StartupPermit(self.clone()));
             }
-            busy = self
+            state = self
                 .wake
-                .wait_timeout(busy, Duration::from_millis(5))
+                .wait_timeout(state, Duration::from_millis(5))
                 .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?
                 .0;
         }
@@ -69,8 +113,8 @@ impl StartupGate {
 }
 impl Drop for StartupPermit {
     fn drop(&mut self) {
-        let mut busy = self.0.busy.lock().unwrap_or_else(|p| p.into_inner());
-        *busy = busy.checked_sub(1).expect("owned startup permit");
+        let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.busy = state.busy.checked_sub(1).expect("owned startup permit");
         self.0.wake.notify_all();
     }
 }
@@ -110,6 +154,11 @@ impl Owners {
             ));
         }
         Ok(())
+    }
+
+    pub(in crate::isolated_worker) fn orders_initial_startup() -> bool {
+        std::env::var_os("DIY_EXPERIMENT_RETAINED_ORDERED_STARTUP").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
     }
 
     pub(in crate::isolated_worker) fn evaluation_group_size() -> Result<Option<usize>, CoreError> {
@@ -158,14 +207,26 @@ impl Owners {
         let startup_limit = Self::startup_limit_value(
             std::env::var_os("DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM").as_deref(),
         )?;
-        Self::validate_startup_mode(
-            startup_limit,
-            Self::evaluation_group_size()?,
-            std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
-                == Some(std::ffi::OsStr::new("1")),
-            groups.iter().all(|group| group.len() == 1),
-        )?;
-        let startup_gate = Arc::new(StartupGate::bounded(startup_limit)?);
+        let group_size = Self::evaluation_group_size()?;
+        let compiled = std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        let singleton = groups.iter().all(|group| group.len() == 1);
+        Self::validate_startup_mode(startup_limit, group_size, compiled, singleton)?;
+        let ordered = Self::orders_initial_startup();
+        if ordered && !(group_size == Some(1) && compiled && singleton) {
+            return Err(fail(
+                "retained-startup",
+                "ordered initial startup requires compiled separate evaluation",
+            ));
+        }
+        let mut gate = StartupGate::bounded(startup_limit)?;
+        if ordered {
+            gate.state
+                .get_mut()
+                .expect("new startup gate")
+                .initial_order = (0..groups.len()).collect();
+        }
+        let startup_gate = Arc::new(gate);
         // Twenty idle coordinators must not fill the Core's existing sixteen
         // request permits with simultaneous liveness probes. Keep every check
         // fresh, with one outstanding probe for this evaluation cohort.
@@ -173,13 +234,17 @@ impl Owners {
         let diagnostic_origin = (std::env::var_os("DIY_EXPERIMENT_RETAINED_TIMING").as_deref()
             == Some(std::ffi::OsStr::new("1")))
         .then(std::time::Instant::now);
-        for stages in groups {
+        for (rank, stages) in groups.into_iter().enumerate() {
             result.sizes.push(stages.len());
             let owner = retained::Owner::install_evaluation(
                 host.clone(),
                 controller.clone(),
                 stages,
                 startup_gate.clone(),
+                ordered.then(|| InitialStartup {
+                    gate: startup_gate.clone(),
+                    rank,
+                }),
                 control_probe.clone(),
                 diagnostic_origin,
             )?
@@ -264,6 +329,41 @@ mod tests {
     use std::sync::{atomic::AtomicUsize, mpsc};
 
     #[test]
+    fn initial_startup_releases_abandoned_rank_and_keeps_two_permits() {
+        let mut gate = StartupGate::bounded(2).unwrap();
+        gate.state.get_mut().unwrap().initial_order = (0..4).collect();
+        let gate = Arc::new(gate);
+        let initial = |rank| InitialStartup {
+            gate: gate.clone(),
+            rank,
+        };
+        let (sender, ready) = std::sync::mpsc::channel();
+        let last = initial(3);
+        let stop = CancellationToken::default();
+        let worker_stop = stop.clone();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || sender.send(last.acquire(&worker_stop)));
+            let prefix = initial(0).acquire(&stop).unwrap();
+            // A skipped owner and a cancelled attempt both retire their ranks.
+            drop(initial(1));
+            let cancelled = CancellationToken::default();
+            cancelled.cancel();
+            assert!(initial(2).acquire(&cancelled).is_err());
+            let acquired = ready.recv_timeout(Duration::from_secs(1));
+            stop.cancel();
+            assert!(worker.join().unwrap().is_ok());
+            let last = acquired.unwrap().unwrap();
+            let state = gate.state.lock().unwrap();
+            assert!(state.initial_order.is_empty());
+            assert_eq!(state.busy, 2);
+            drop(state);
+            drop(last);
+            drop(prefix);
+        });
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
+    }
+
+    #[test]
     fn parallel_startup_is_explicit_finite_and_compiled_separate_only() {
         use std::ffi::OsStr;
         assert_eq!(Owners::startup_limit_value(None).unwrap(), 1);
@@ -303,21 +403,30 @@ mod tests {
         cancel.cancel();
         assert!(gate.acquire(&cancel).is_err());
         assert!(gate.prepare(&cancel).is_err());
-        assert_eq!(*gate.busy.lock().unwrap(), 2);
-        assert_eq!(*gate.preparation.as_ref().unwrap().busy.lock().unwrap(), 1);
+        assert_eq!(gate.state.lock().unwrap().busy, 2);
+        assert_eq!(
+            gate.preparation
+                .as_ref()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .busy,
+            1
+        );
         drop(prepare);
         assert_eq!(
-            *gate.busy.lock().unwrap(),
+            gate.state.lock().unwrap().busy,
             2,
             "preparation is scheduling, not a startup refund"
         );
         drop(gate.prepare(&CancellationToken::default()).unwrap());
         drop(second);
         let successor = gate.acquire(&CancellationToken::default()).unwrap();
-        assert_eq!(*gate.busy.lock().unwrap(), 2);
+        assert_eq!(gate.state.lock().unwrap().busy, 2);
         drop(first);
         drop(successor);
-        assert_eq!(*gate.busy.lock().unwrap(), 0);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 
     #[test]
@@ -335,9 +444,9 @@ mod tests {
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
         cancel.cancel();
         assert_eq!(thread.join().unwrap(), "worker-cancelled");
-        assert_eq!(*gate.busy.lock().unwrap(), 1);
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
         drop(held);
-        assert_eq!(*gate.busy.lock().unwrap(), 0);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
         drop(gate.acquire(&CancellationToken::default()).unwrap());
     }
 
@@ -365,7 +474,7 @@ mod tests {
                 thread.join().unwrap();
             }
             assert_eq!(completed.load(Ordering::Acquire), 32);
-            assert_eq!(*gate.busy.lock().unwrap(), 0);
+            assert_eq!(gate.state.lock().unwrap().busy, 0);
         }
     }
 }
