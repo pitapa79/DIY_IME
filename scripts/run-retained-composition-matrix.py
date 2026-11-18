@@ -71,7 +71,7 @@ def main():
                     'scripts/host-input-scenarios.mjs', 'scripts/host-warm-input-observation.mjs', 'scripts/analyze-retained-call-timing.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
                     'editor/src/executionTrace.ts']}, 'plannedCases': cases,
-                'cases': [], 'complete': False, 'notRun': []}
+                'cases': [], 'allCasesPhysicallyReviewed': False, 'complete': False, 'notRun': []}
     def save():
         manifest['evidenceFiles'] = {path.name: sha(path) for path in output.iterdir()
                                    if path.is_file() and path.name != 'manifest.json'}
@@ -136,8 +136,6 @@ def main():
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
             missing = owned['missingProcessMemoryReads']
-            if not args.candidate:
-                assert missing == 0
             case.update(checksPassed=missing == 0, resourcePolicy=data['resourcePolicy'],
                         executedIds=data['executedIds'], unexecutedIds=data['unexecutedIds'],
                         warm=data.get('warmResultMs'), pacing=data.get('pacing'),
@@ -147,6 +145,7 @@ def main():
                 # Continue independent cases, and fail the diagnostic at the end.
                 case['failure'] = 'Windows Job process-memory observation missing'
             save()
+        manifest['allCasesPhysicallyReviewed'] = True
         assert all(case['checksPassed'] for case in manifest['cases']), 'Job memory gaps preserved'
         manifest['complete'] = True
     except BaseException as error:
