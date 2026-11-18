@@ -1682,15 +1682,17 @@ impl WasmNode {
         completion: CompletionPermit,
         cancel: CancellationToken,
     ) -> Result<(), CoreError> {
-        let node = self.clone();
+        let mut node = self.clone();
         std::thread::Builder::new()
             .name("diyime2-wasm-invocation".into())
             .spawn(move || {
+                let gate = node.gate.clone();
+                let key = invocation.key().clone();
                 let mut deferred_refill = None;
                 let run = || -> Result<(), CoreError> {
                     let request_phase = invocation.trace_host_phase(HostTracePhase::Request);
                     node.validate_config(invocation.config())?;
-                    let key = invocation.key();
+                    let key = &key;
                     let target = node.grant_target(
                         &key.session_epoch,
                         key.plan_version,
@@ -1710,7 +1712,11 @@ impl WasmNode {
                         let wire::ExecutionStep::Outputs(result) = wire::execution_step(&reply, &node.definition)? else {
                             return Err(fail("package-capability", "prepared dictionary cannot request network"));
                         };
-                        node.gate.publish(&lease, key, || {
+                        // Release the cache and graph owners before Core can
+                        // observe the producer ending and the Host can exit.
+                        drop(invocation);
+                        drop(node);
+                        gate.publish(&lease, key, || {
                             if cancel.is_cancelled() {
                                 return Err(fail("worker-cancelled", "invocation cancelled"));
                             }
@@ -1723,10 +1729,13 @@ impl WasmNode {
                     if let Some(plans) = &node.dictionary {
                         request["operation"]["resources"] = plans.payload(invocation.config())?;
                     }
-                    let mut network = node.network.as_ref().map(NetworkPlans::execution).transpose()?;
+                    // The final deadline check needs only the network proof. Move
+                    // it out so it does not keep the Node or its code alive.
+                    let network_plans = node.network.take();
+                    let mut network = network_plans.as_ref().map(NetworkPlans::execution).transpose()?;
                     let mut check = || {
                         if cancel.is_cancelled() { return Err(fail("worker-cancelled", "invocation cancelled")); }
-                        node.gate.publish(&lease, key, || ())
+                        gate.publish(&lease, key, || ())
                     };
                     drop(request_phase);
                     let mut worker_instance = 0u32;
@@ -1785,7 +1794,12 @@ impl WasmNode {
                             && node.gate.publish(&lease, key, || ()).is_ok()
                         {
                             if let Some(controller) = &slot.refill_controller {
-                                deferred_refill = Some((Arc::downgrade(&slot), controller.clone(), lease.clone()));
+                                deferred_refill = Some((
+                                    Arc::downgrade(&slot),
+                                    controller.clone(),
+                                    lease.clone(),
+                                    Arc::downgrade(&node.artifact.0),
+                                ));
                             } else {
                                 slot.refill(&node.artifact);
                             }
@@ -1808,8 +1822,11 @@ impl WasmNode {
                             }
                         }
                     };
-                    // A second policy check is linearized with completion enqueue below.
-                    node.gate.publish(&lease, key, || {
+                    // Release private producer references before publication.
+                    // Policy, cancellation and the deadline still fence the result.
+                    drop(invocation);
+                    drop(node);
+                    gate.publish(&lease, key, || {
                         if cancel.is_cancelled() {
                             return Err(fail("worker-cancelled", "invocation cancelled"));
                         }
@@ -1838,14 +1855,12 @@ impl WasmNode {
                         }
                     }
                 }
-                if let Some((slot, controller, lease)) = deferred_refill {
-                    let key = invocation.key();
-                    if PreparedJitSlot::wait_for_graph_cleanup(&controller, key)
-                        && node.gate.publish(&lease, key, || ()).is_ok()
-                        && let Some(slot) = slot.upgrade()
-                    {
-                        slot.refill(&node.artifact);
-                    }
+                if let Some((slot, controller, lease, artifact)) = deferred_refill
+                    && PreparedJitSlot::wait_for_graph_cleanup(&controller, &key)
+                    && gate.publish(&lease, &key, || ()).is_ok()
+                    && let (Some(slot), Some(artifact)) = (slot.upgrade(), artifact.upgrade())
+                {
+                    slot.refill(&WasmArtifact(artifact));
                 }
             })
             .map_err(|_| fail("worker-thread", "Host execution thread unavailable"))?;

@@ -1371,7 +1371,9 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
     drop(receiver);
     let _ = result_waiter.join();
     let _ = input.join();
-    Ok(())
+    // Zero physical calls does not prove that the control owner has dropped
+    // the closed Sessions' plans. Their code caches belong to this Host.
+    runner.service.reclaim_closed_sessions()
 }
 
 #[cfg(test)]

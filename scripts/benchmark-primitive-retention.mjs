@@ -154,6 +154,15 @@ function verify(s,wanted) {
   }
 }
 let manager,host,revision=0,sequence=0;
+function remainingWorkspaceFiles(folder) {
+  let entries;
+  try {entries=readdirSync(folder,{withFileTypes:true});}
+  catch(error){if(error.code==='ENOENT')return [];throw error;}
+  return entries.flatMap(entry=>{
+    const path=join(folder,entry.name);
+    return entry.isDirectory() && !entry.isSymbolicLink() ? remainingWorkspaceFiles(path) : [path];
+  });
+}
 const records=[],traces=[],statuses=[],warmAttempts=[];
 const report={syntheticOnly:true,boundary:'normal External Host consent/Core/AppContainer; client input through terminal and zero input callbacks',
   sourceCommit:process.env.GITHUB_SHA ?? process.env.DIY_MEASUREMENT_SOURCE_SHA ?? null,
@@ -186,6 +195,7 @@ try {
   const review=await manager.call({method:'review'},Buffer.concat([frameCount,...frames]));
   await manager.call({method:'commit',reviewId:review.reviewId,allowDowngrade:false,allowSameVersionRebuild:false});
   await manager.close();manager=undefined;
+  if(matrixMode)report.workspaceAfterManagerExit=remainingWorkspaceFiles(join(root,'workers'));
   host=new Client(hostExe,hostPath,'host');
   report.privateReplyEvidence=host.replyEvidence;
   const preparation=performance.now(),pending=await host.call({method:'prepare',graph});
@@ -469,15 +479,6 @@ try {
     assert(host.replyEvidence.byMethod.getRun?.replies>0,'no ordinary result reply was checked');
   }
   await host.close();host=undefined;
-  function remainingWorkspaceFiles(folder) {
-    let entries;
-    try {entries=readdirSync(folder,{withFileTypes:true});}
-    catch(error){if(error.code==='ENOENT')return [];throw error;}
-    return entries.flatMap(entry=>{
-      const path=join(folder,entry.name);
-      return entry.isDirectory() && !entry.isSymbolicLink() ? remainingWorkspaceFiles(path) : [path];
-    });
-  }
   // Inspect BEFORE test-directory removal: that removal must not hide an
   // execution/code-cache leak after the original Host and Workers have exited.
   journal('driver','check-workspace');
