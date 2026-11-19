@@ -183,6 +183,19 @@ def main():
                 result = subprocess.run(command, cwd=repo, env=env, stdout=log, stderr=log, timeout=330)
             case['exitCode'] = result.returncode
             save()
+            if result.returncode != 0 and args.initial_startup in ('eager', 'deferred'):
+                owned = read(job)
+                failed_report = read(report)
+                assert failed_report['sourceCommit'] == source
+                case.update(checksPassed=False, failure=failed_report.get('failure', 'Native case failed'),
+                            missingProcessMemoryReads=owned['missingProcessMemoryReads'],
+                            workspaceCleanupVerified=failed_report.get('workspaceAfterHostExit') == [])
+                save()
+                # Each case launches its own fixture. Proceed only once this Job
+                # has settled, and preserve the original failure for aggregation.
+                assert owned['allDescendantsExited'] and not owned['timedOut']
+                assert case['workspaceCleanupVerified'], 'Failed case workspace did not settle'
+                continue
             assert result.returncode == 0, 'Failed native case preserved; no retry'
             data, owned = read(report), read(job)
             assert data['completed'] and data['sourceCommit'] == source and data['runtimeBuildSourceCommit'] == source and data['workspaceAfterHostExit'] == []
@@ -249,8 +262,9 @@ def main():
                 # Continue independent cases, and fail the diagnostic at the end.
                 case['failure'] = 'Windows Job process-memory observation missing'
             save()
-        manifest['allCasesPhysicallyReviewed'] = True
-        assert all(case['checksPassed'] for case in manifest['cases']), 'Job memory gaps preserved'
+        manifest['allCasesPhysicallyReviewed'] = all(
+            case.get('workspaceCleanupVerified', True) for case in manifest['cases'])
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Native failures or Job memory gaps preserved'
         manifest['complete'] = True
     except BaseException as error:
         manifest['failure'] = {'type': type(error).__name__, 'message': str(error)}

@@ -164,7 +164,11 @@ const summarize=values=>{
 const ended=s=>s.state==='terminal' && Object.values(s.physical).every(n=>n===0);
 const expected=text=>thirdparty ? composition.expected(text) : shape==='identity' ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
 function verify(s,wanted,requestedTargets=targets) {
-  assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
+  assert.equal(s.current,true);
+  if(s.result.reason!=='completed'||s.result.delivery!=='complete') {
+    const causes=s.result.causes?.map(cause=>cause.diagnostic?.error?.code).filter(Boolean)??[];
+    assert.fail(JSON.stringify({reason:s.result.reason,delivery:s.result.delivery,causes}));
+  }
   for(const target of requestedTargets) {
     const value=s.result.ports.find(p=>p.endpoint.node===target.node&&p.endpoint.port===target.port)?.value;
     if(composition)composition.verify(value?.packet?.root.text,wanted);
@@ -715,7 +719,12 @@ finally {
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
     report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);
-  try {if(manager)await manager.close();if(host)await host.close();}
+  try {
+    if(manager)await manager.close();
+    if(host)await host.close();
+    if(initialStartupComparison && !report.completed)
+      report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
+  }
   finally {
     writeFileSync(reportPath,JSON.stringify(report));
     assert.equal(dirname(realpathSync(root)),parent);assert(root.startsWith(join(parent,'diyime-primitive-retention-')));

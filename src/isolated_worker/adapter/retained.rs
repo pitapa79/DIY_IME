@@ -634,7 +634,13 @@ impl Native {
             demand.validate(shared, controller)?;
             shared.record_run_phase("idle-recovery-demand-validated", Some(demand.key.run_id));
         }
-        let state = control_state(shared, controller)?;
+        let state = control_state(shared, controller).inspect_err(|error| {
+            shared.record_phase(if error.code == "busy" {
+                "startup-control-busy"
+            } else {
+                "startup-control-failed"
+            });
+        })?;
         let key = RunKey {
             session_epoch: controller.session_epoch().clone(),
             plan_version: state
@@ -677,10 +683,17 @@ impl Native {
                     )?,
                 })
             })
-            .collect::<Result<Vec<_>, CoreError>>()?;
+            .collect::<Result<Vec<_>, CoreError>>()
+            .inspect_err(|_| shared.record_phase("startup-scope-failed"))?;
         // Reserve BEFORE any compiler process starts. Preparation and the
         // replacement process never overlap and use this same charged slot.
-        let pin = RetainedReservation::reserve(host, bindings, &cancel)?;
+        let pin = RetainedReservation::reserve(host, bindings, &cancel).inspect_err(|error| {
+            shared.record_phase(if error.code == "busy" {
+                "startup-reservation-busy"
+            } else {
+                "startup-reservation-failed"
+            });
+        })?;
         shared.record_phase("reservation-acquired");
         shared.record_phase("preparation-permit-waiting");
         let preparation_permit = shared
