@@ -769,6 +769,8 @@ try {
     const recovered=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
     faultRecovery.allOwnersReadyObservedMs=elapsed();
     assert(!recovered.retainedWorker.processIds.includes(pid));
+    // Keep both observations before closeSession discards this owner cohort.
+    if(timing)statuses.push(status,recovered);
     report.safety.push({check:'owned-original-process-fault-no-retroactive-result-change-and-recovery',passed:true,pid});
 
     const successor=await correct('ka');await host.call({method:'closeSession'});await drained();
