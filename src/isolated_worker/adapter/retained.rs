@@ -65,6 +65,7 @@ struct Shared {
     process_id: Arc<AtomicU64>,
     generation: AtomicU64,
     start: std::sync::atomic::AtomicBool,
+    eager_startup: bool,
     ids: Vec<String>,
     replies: AtomicU64,
     startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
@@ -331,6 +332,11 @@ impl Owner {
         } else {
             None
         };
+        let defer_startup = evaluation
+            && nodes.len() == 1
+            && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
         let shared = Arc::new(Shared {
             qualifications,
             send,
@@ -342,6 +348,7 @@ impl Owner {
             process_id: Arc::new(AtomicU64::new(0)),
             generation: AtomicU64::new(0),
             start: std::sync::atomic::AtomicBool::new(false),
+            eager_startup: !defer_startup,
             ids: ids.clone(),
             replies: AtomicU64::new(0),
             startup_gate,
@@ -992,11 +999,18 @@ fn coordinate(
     receive: mpsc::Receiver<Command>,
 ) {
     let stage_count = nodes.len();
-    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None)
-        .inspect_err(|_| {
-            shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+    // A deferred coordinator starts through the same qualified invocation
+    // path as an ordinary replacement, after Core has reserved its callback.
+    let mut native = shared
+        .eager_startup
+        .then(|| {
+            Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None)
+                .inspect_err(|_| {
+                    shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+                })
+                .ok()
         })
-        .ok();
+        .flatten();
     let mut pending = None;
     let mut provisional: Option<RecoveryDemand> = None;
     let mut last_demand = None;

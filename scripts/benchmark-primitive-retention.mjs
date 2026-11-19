@@ -29,6 +29,8 @@ const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refu
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
+const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
+const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -51,6 +53,11 @@ if(lifetime) {
 if(overlapAction!==undefined) {
   assert(lifetime && timing && process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1');
   assert(['cancel','protect'].includes(overlapAction));
+}
+if(initialStartupComparison || deferredInitialStartup) {
+  assert(initialStartupComparison && ['cold-paced','safety'].includes(cadence) &&
+    timing && matrixMode && thirdparty && mode==='separate',
+  'initial startup comparison requires timed input and reviewed separate Nodes');
 }
 const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
@@ -156,9 +163,9 @@ const summarize=values=>{
 };
 const ended=s=>s.state==='terminal' && Object.values(s.physical).every(n=>n===0);
 const expected=text=>thirdparty ? composition.expected(text) : shape==='identity' ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
-function verify(s,wanted) {
+function verify(s,wanted,requestedTargets=targets) {
   assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
-  for(const target of targets) {
+  for(const target of requestedTargets) {
     const value=s.result.ports.find(p=>p.endpoint.node===target.node&&p.endpoint.port===target.port)?.value;
     if(composition)composition.verify(value?.packet?.root.text,wanted);
     else assert.equal(value?.packet?.root.text,wanted,`wrong target ${target.node}.${target.port}`);
@@ -181,7 +188,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
-  mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
+  mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold && !deferredInitialStartup,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
@@ -189,6 +196,10 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
 if(lifetime && timing) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;
+}
+if(initialStartupComparison) {
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP=
+    process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP??null;
 }
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
@@ -217,7 +228,20 @@ try {
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
   let version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
-  if(mode!=='0' && !cold) {
+  if(initialStartupComparison) {
+    const receipt=await host.send({method:'run',request:{startKey:String(++sequence),
+      expectedPlanVersion:version,targets:[{node:'absent-stage',port:'out'}],
+      input:{revision:1,text:'rejected fixture',mode:'compose'}}});
+    assert.equal(receipt.ok,false,'an unrecognized target must be rejected');
+    const status=await host.call({method:'status'});
+    report.initialStartupComparison={deferred:deferredInitialStartup,beforeFirstInput:status};
+    if(deferredInitialStartup) {
+      assert.equal(status.workerProcesses,0,'a retained Worker launched before the first input');
+      assert.equal(status.retainedWorker.generation,0);
+      assert.equal(status.physical.physicalJobs,0);
+    }
+  }
+  if(report.readinessBarrierUsed) {
     const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;assert.equal(s.phase,'ready','evaluation Session was retired during startup');assert.equal(s.sessionEpoch,activated.sessionEpoch,'evaluation Session changed during startup');assert.equal(s.retainedWorker.startupFailures ?? 0,0,'retained startup failed before all groups became ready');return s.retainedWorker.ready?s:null;});
     assert.equal(ready.retainedWorker.experimental,true);
     const sizes=mode==='separate'?ids.map(()=>1):Array.from({length:Math.ceil(count/4)},(_,i)=>Math.min(4,count-i*4));
@@ -230,9 +254,10 @@ try {
       assert.equal(ready.retainedWorker.compiledGenerations,ready.retainedWorker.generation,'compiled replacement route must actually be selected');
     }
   }
-  async function submit(text,observation) {
+  async function submit(text,observation,requestedTargets=targets) {
     ++revision;if(revision>1)await host.call({method:'invalidateInput',expectedPlanVersion:version,revision});
-    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,targets,input:{revision,text,mode:'compose'}}});
+    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,
+      targets:requestedTargets,input:{revision,text,mode:'compose'}}});
     if(observation) {
       observation.admitted=typeof reply.ok==='boolean'?reply.ok:null;
       if(!reply.ok)observation.admissionRejected=reply.error?.code??'unknown-rejection';
@@ -359,7 +384,7 @@ try {
       if(sample===0)report.firstResultStatus=status;
       if(mode!=='0') {
         assert.equal(status.retainedWorker.decodedReplies,(sample+1)*executedCount);
-        if(!cold)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
+        if(report.readinessBarrierUsed)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
         if(lifetime) {
           assert.deepEqual(status.retainedWorker.processIds,report.lifetimeReady.retainedWorker.processIds);
           assert.equal(status.retainedWorker.generation,report.lifetimeReady.retainedWorker.generation);
@@ -537,6 +562,7 @@ try {
       if(latestReview.missing.length)await host.call({method:'approve',reviewId:latestReview.reviewId,ids:latestReview.missing.map(r=>r.id),save:false});
       const activated=await host.call({method:'activate',reviewId:latestReview.reviewId});
       version=activated.state.activePlanVersion;revision=0;
+      if(deferredInitialStartup)return;
       return until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
     }
     await correct('');await correct('🙂漢字');
@@ -635,6 +661,34 @@ try {
     assert.equal((await host.send({method:'getRun',key:successor.key})).ok,false);
     await activateFresh();await correct('ka');
     report.safety.push({check:'close-session-and-fresh-reopen',passed:true});
+  }
+  if(initialStartupComparison && layout==='unused') {
+    const before=await host.call({method:'status'});
+    const proof=report.initialStartupComparison;
+    proof.beforeAdditionalTarget=before;
+    const owner=composition.unexecutedIds[0];
+    const samplesFor=(status,node)=>status.retainedWorker.callSamples.find(row=>row.nodeIds[0]===node).calls;
+    if(deferredInitialStartup) {
+      assert(before.workerProcesses<=executedCount,'an unrequested Worker is running');
+      for(const node of composition.unexecutedIds) {
+        assert(!samplesFor(before,node).phases.some(event=>event.phase==='attempt-started'),
+          `unrequested Worker startup: ${node}`);
+      }
+    }
+    const switchedTargets=[{node:owner,port:'out'}];
+    const text='  ka requested later 🙂漢字  ';
+    const key=await submit(text,undefined,switchedTargets);
+    assert(!key.admissionRejected);
+    const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+    verify(snapshot,expected(text),switchedTargets);
+    const after=await host.call({method:'status'});
+    const call=samplesFor(after,owner).phases.find(event=>
+      event.phase==='invocation-call-finished' && event.runId===key.runId);
+    assert(call?.processId>0,'later target must execute in its own retained Worker');
+    if(deferredInitialStartup)assert(samplesFor(after,owner).phases.some(event=>
+      event.phase==='native-launch-started'),'later target did not launch a Worker');
+    proof.additionalTarget={node:owner,key,call,passed:true};
+    statuses.push(before,after);
   }
   report.beforeClose=await host.call({method:'status'});
   report.closeAcknowledged=await host.call({method:'closeSession'});

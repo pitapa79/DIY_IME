@@ -35,6 +35,8 @@ def main():
                         help='enable bounded overlapping replacement in the timed lifetime case')
     parser.add_argument('--ordered-recovery', action='store_true',
                         help='prioritize queued idle replacement starts in dependency order')
+    parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'deferred-safety'),
+                        help='compare initial startup policies on timed cold input fixtures')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
                         help='interrupt a witnessed idle replacement after the measured recovery')
     args = parser.parse_args()
@@ -48,6 +50,8 @@ def main():
         parser.error('--overlap-action requires --idle-overlap')
     if args.ordered_recovery and not args.idle_overlap:
         parser.error('--ordered-recovery requires --idle-overlap')
+    if args.initial_startup and (not args.candidate or args.lifetime):
+        parser.error('--initial-startup requires --candidate and cannot use --lifetime')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -78,6 +82,19 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
+    if args.initial_startup == 'deferred-safety':
+        case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
+                 and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
+        cases = [dict(case, cadence='safety', samples=1)]
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+        issue, profile = 176, 'initial-startup-deferred-safety'
+    elif args.initial_startup:
+        cases = [dict(c, cadence='cold-paced') for c in cases
+                 if c['mode'] == 'separate' and c['timing']
+                 and c['cadence'] in ('cold-paced', 'paced')]
+        assert len(cases) == 8
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+        issue, profile = 176, f'initial-startup-{args.initial_startup}'
     if args.lifetime:
         case, = (c for c in cases if c['mode']=='separate' and c['layout']=='serial'
                  and c['count']==20 and c['cadence']=='warm' and not c['timing'])
@@ -112,6 +129,9 @@ def main():
     base = {key: value for key, value in os.environ.items() if not key.startswith('DIY_EXPERIMENT_')}
     base.pop('GITHUB_SHA', None)
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
+    base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
+    if args.initial_startup:
+        base['DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON'] = '1'
     if args.overlap_action:
         base['DIY_PRIMITIVE_IDLE_OVERLAP_ACTION'] = args.overlap_action
         manifest['overlapAction'] = args.overlap_action
@@ -148,6 +168,8 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
                 if args.ordered_recovery:
                     env['DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER'] = '1'
+                if args.initial_startup in ('deferred', 'deferred-safety'):
+                    env['DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
@@ -174,6 +196,15 @@ def main():
                 assert data['requestedControls'] == expected
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
+            if args.initial_startup:
+                proof = data['initialStartupComparison']
+                assert proof['deferred'] == (args.initial_startup != 'eager')
+                if spec['layout'] == 'unused':
+                    assert proof['additionalTarget']['passed']
+                    assert proof['additionalTarget']['node'] in data['unexecutedIds']
+                if spec['cadence'] == 'safety':
+                    assert data['controlledCancellation']['passed']
+                    assert all(check.get('passed', True) for check in data['safety'])
             if args.lifetime:
                 proof = data['retainedLifetime']
                 assert proof['passed'] and proof['idleElapsedMs'] >= 61000
