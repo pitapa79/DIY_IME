@@ -580,6 +580,26 @@ try {
       const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
       verify(snapshot,expected(text));return {key,snapshot};
     }
+    async function measureRecovery(recovery,elapsed,oldKey) {
+      recovery.attempts=[];
+      recovery.latestInputOfferedMs=elapsed();
+      const freshText='  ka recovery 🙂漢字  ';
+      const {key}=await observeWarmInput({sample:0,attempts:recovery.attempts,
+        submit:attempt=>submit(freshText,attempt),read,until,ended,verify,expected:expected(freshText),
+        clock:elapsed});
+      recovery.latestCorrectVerifiedMs=elapsed();
+      assert.notEqual(key.runId,oldKey.runId);
+      const old=await host.send({method:'getRun',key:oldKey});
+      assert(typeof old.ok==='boolean');
+      if(old.ok) {
+        assert.equal(old.data.snapshot.current,false);
+        assert.equal(old.data.snapshot.result,null);
+        recovery.oldResultFence={current:false,result:null};
+      } else {
+        assert(['run-unknown','result-gone'].includes(old.error?.code),'unexpected old input refusal');
+        recovery.oldResultFence={errorCode:old.error.code};
+      }
+    }
     async function drained() {
       return until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && s.physical.physicalJobs===0 && s.physical.reservedResultBytes===0?s:null;});
     }
@@ -656,17 +676,25 @@ try {
         return status.retainedWorker.activeInput&&snapshot.physical.running>0?{status,snapshot}:null;
       });
       proof.observedActive=true;proof.activePhysical=active.snapshot.physical;
+      const recovery={origin:'before client cancelRun',originalPid:controlledPid};
+      proof.recovery=recovery;
+      const cancellationStart=performance.now();
+      const elapsed=()=>performance.now()-cancellationStart;
       await host.call({method:'cancelRun',key});
+      recovery.cancelAcknowledgedMs=elapsed();
       // Wait for the helper to close its dead-process/thread references before
       // requiring Host ACL/profile reclamation. Extra observer handles can
       // otherwise obstruct that reclamation and change the experiment.
       proof.ending=await control.expectOriginalExit();
+      recovery.originalExitObservedMs=elapsed();
       const snapshot=await until(async()=>{const value=await read(key);return ended(value)?value:null;});
       assert.equal(snapshot.result.reason,'cancelled');
+      recovery.oldRunTerminalObservedMs=elapsed();
       proof.outcome=snapshot.result.reason;proof.finalPhysical=snapshot.physical;
       observedCancelled++;
-      await correct('ka');
+      await measureRecovery(recovery,elapsed,key);
       const restored=await until(async()=>{const status=await host.call({method:'status'});return status.retainedWorker.ready?status:null;});
+      recovery.allOwnersReadyObservedMs=elapsed();
       statuses.push(restored);
       assert(restored.retainedWorker.generation>beforeControlled.retainedWorker.generation);
       assert.equal(restored.retainedWorker.physicalJobs,beforeControlled.retainedWorker.physicalJobs);
@@ -711,10 +739,17 @@ try {
     const beforeFault=await correct('ka'),status=await host.call({method:'status'});
     const pid=status.retainedWorker.processIds.at(-1);assert(pid>0);
     const python=process.env.DIY_PRIMITIVE_PYTHON;assert(python,'explicit Python for original owned-worker fault required');
+    const faultRecovery={origin:'before launching checked fault-injection helper',originalPid:pid};
+    report.workerFaultRecovery=faultRecovery;
+    const faultStart=performance.now();
+    const elapsed=()=>performance.now()-faultStart;
     const fault=spawnSync(python,[resolve('scripts/terminate-owned-retention-worker.py'),String(pid),join(root,'workers'),report.binaries.worker],{encoding:'utf8',windowsHide:true,timeout:10000});
-    assert.equal(fault.status,0,fault.stderr);verify(await read(beforeFault.key),expected('ka'));
-    await correct('ka');
+    assert.equal(fault.status,0,fault.stderr);
+    faultRecovery.originalExitObservedMs=elapsed();
+    verify(await read(beforeFault.key),expected('ka'));
+    await measureRecovery(faultRecovery,elapsed,beforeFault.key);
     const recovered=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    faultRecovery.allOwnersReadyObservedMs=elapsed();
     assert(!recovered.retainedWorker.processIds.includes(pid));
     report.safety.push({check:'owned-original-process-fault-no-retroactive-result-change-and-recovery',passed:true,pid});
 
