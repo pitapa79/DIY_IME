@@ -407,20 +407,22 @@ jobs:
         run: |
           python scripts/test_measure_primitive_retention_job.py
           exit $LASTEXITCODE
-      - name: Compare eager and deferred S1 initial Worker startup
+      - name: Compare eager, demand and scoped S1 initial Worker startup
         if: matrix.segment == 'primitive-startup'
         run: |
           cargo build --locked --example retained_composition_preflight
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $comparisonStatus = 0
           $trial = 0
-          foreach ($mode in @('eager', 'deferred', 'deferred', 'eager')) {
+          foreach ($mode in @('eager', 'deferred', 'scoped', 'scoped', 'deferred', 'eager')) {
             $trial++
             python scripts/run-retained-composition-matrix.py target/windows-app "target/initial-startup-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup $mode
             if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
           }
-          python scripts/run-retained-composition-matrix.py target/windows-app target/initial-startup-safety target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup deferred-safety
-          if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          foreach ($mode in @('deferred-safety', 'scoped-safety')) {
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/initial-startup-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
           exit $comparisonStatus
       - name: Preserve initial Worker startup comparisons
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/initial-startup-*/manifest.json'') != '''''

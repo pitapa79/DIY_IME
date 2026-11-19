@@ -1,5 +1,5 @@
 //! Session-owned fixed-official coordinator. Nodes hold weak links only.
-use super::retention_evaluation::{RecoveryDemand, RecoveryLease, RecoveryStartup};
+use super::retention_evaluation::{StartupDemand, StartupKind, StartupLease, StartupScope};
 use super::*;
 use crate::execution_control::{ExecutionHost, RunDelivery, RunKey, RunPhase, RunSnapshot};
 use crate::isolated_worker::{
@@ -70,8 +70,9 @@ struct Shared {
     ids: Vec<String>,
     replies: AtomicU64,
     startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
-    recovery_startup: Option<RecoveryStartup>,
+    startup_scope: Option<StartupScope>,
     idle_retired: std::sync::atomic::AtomicBool,
+    initial_pending: std::sync::atomic::AtomicBool,
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
     compiled_generations: AtomicU64,
@@ -246,7 +247,7 @@ impl Owner {
         startup_gate: Arc<retention_evaluation::StartupGate>,
         control_probe: Arc<Mutex<()>>,
         diagnostic_origin: Option<std::time::Instant>,
-        recovery_startup: Option<RecoveryStartup>,
+        startup_scope: Option<StartupScope>,
     ) -> Result<Option<Self>, CoreError> {
         let grouped = retention_evaluation::Owners::evaluation_group_size()? == Some(4);
         if stages
@@ -262,7 +263,7 @@ impl Owner {
             Some(startup_gate),
             Some(control_probe),
             diagnostic_origin,
-            recovery_startup,
+            startup_scope,
         )
     }
 
@@ -273,7 +274,7 @@ impl Owner {
         startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
         control_probe: Option<Arc<Mutex<()>>>,
         diagnostic_origin: Option<std::time::Instant>,
-        recovery_startup: Option<RecoveryStartup>,
+        startup_scope: Option<StartupScope>,
     ) -> Result<Option<Self>, CoreError> {
         let evaluation = startup_gate.is_some();
         let mut ids = Vec::new();
@@ -337,8 +338,10 @@ impl Owner {
         let defer_startup = evaluation
             && nodes.len() == 1
             && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
-            && std::env::var_os("DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP").as_deref()
-                == Some(std::ffi::OsStr::new("1"));
+            && retention_evaluation::Owners::deferred_initial_requested();
+        let initial_pending = startup_scope
+            .as_ref()
+            .is_some_and(|scope| defer_startup && scope.initial && scope.rank > 0);
         let shared = Arc::new(Shared {
             qualifications,
             send,
@@ -354,8 +357,9 @@ impl Owner {
             ids: ids.clone(),
             replies: AtomicU64::new(0),
             startup_gate,
-            recovery_startup,
+            startup_scope,
             idle_retired: std::sync::atomic::AtomicBool::new(false),
+            initial_pending: std::sync::atomic::AtomicBool::new(initial_pending),
             control_probe,
             startup_failures: AtomicU64::new(0),
             compiled_generations: AtomicU64::new(0),
@@ -404,6 +408,9 @@ impl Owner {
     }
     pub(super) fn close(&self) {
         self.shared.close();
+    }
+    pub(super) fn initial_pending(&self) -> bool {
+        self.shared.initial_pending.load(Ordering::Acquire)
     }
     pub(super) fn idle_retired(&self) -> bool {
         self.shared.idle_retired.load(Ordering::Acquire)
@@ -486,7 +493,7 @@ impl Drop for Owner {
 }
 
 struct Native {
-    recovery: Option<RecoveryLease>,
+    recovery: Option<StartupLease>,
     client: Option<RetainedClient>,
     cancel: CancellationToken,
     thread: Option<std::thread::JoinHandle<Result<Option<ExitReceipt>, CoreError>>>,
@@ -584,7 +591,7 @@ fn current_run(shared: &Shared, controller: &GuardedController, key: &RunKey) ->
             .is_ok_and(|snapshot| snapshot.current && snapshot.state != RunPhase::Terminal)
 }
 
-impl RecoveryDemand {
+impl StartupDemand {
     fn current(&self, shared: &Shared, controller: &GuardedController) -> bool {
         !self.cancel.is_cancelled()
             && current_run(shared, controller, &self.key)
@@ -596,7 +603,7 @@ impl RecoveryDemand {
         } else {
             Err(fail(
                 "worker-cancelled",
-                "idle startup demand is no longer current",
+                "scoped startup demand is no longer current",
             ))
         }
     }
@@ -604,7 +611,7 @@ impl RecoveryDemand {
 
 enum StartupAttempt<'a> {
     Ordinary,
-    Recovery(&'a RecoveryDemand),
+    Recovery(&'a StartupDemand),
     Retry {
         key: &'a RunKey,
         cancel: &'a CancellationToken,
@@ -642,8 +649,17 @@ impl Native {
             .as_ref()
             .map(|gate| match attempt {
                 StartupAttempt::Recovery(demand) => {
-                    match shared.recovery_startup.as_ref().and_then(|s| s.rank) {
-                        Some(rank) => gate.acquire_recovery(&demand.cancel, &shared.stop, rank),
+                    let rank = shared
+                        .startup_scope
+                        .as_ref()
+                        .filter(|scope| demand.kind == StartupKind::Initial || scope.ordered_idle);
+                    match rank {
+                        Some(scope) => gate.acquire_scoped(
+                            &demand.cancel,
+                            &shared.stop,
+                            demand.kind,
+                            scope.rank,
+                        ),
                         None => gate.acquire(&demand.cancel),
                     }
                 }
@@ -675,7 +691,11 @@ impl Native {
         }
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
-            shared.record_run_phase("idle-recovery-demand-validated", Some(demand.key.run_id));
+            let phase = match demand.kind {
+                StartupKind::Idle => "idle-recovery-demand-validated",
+                StartupKind::Initial => "initial-startup-demand-validated",
+            };
+            shared.record_run_phase(phase, Some(demand.key.run_id));
         }
         let state = control_state(shared, controller).inspect_err(|error| {
             shared.record_phase(if error.code == "busy" {
@@ -1043,7 +1063,10 @@ impl WasmArtifact {
 fn retire_native(native: &mut Option<Native>, shared: &Shared, allow_idle_recovery: bool) {
     let retired = native.take();
     let idle = allow_idle_recovery
-        && shared.recovery_startup.is_some()
+        && shared
+            .startup_scope
+            .as_ref()
+            .is_some_and(|scope| scope.idle)
         && retired.as_ref().is_some_and(|owner| {
             owner.client.as_ref().unwrap().stop_cause() == Some(DriverStop::Idle)
         });
@@ -1084,7 +1107,7 @@ fn coordinate(
         })
         .flatten();
     let mut pending = None;
-    let mut provisional: Option<RecoveryDemand> = None;
+    let mut provisional: Option<StartupDemand> = None;
     let mut last_demand = None;
     while !shared.stop.is_cancelled() && control_state(&shared, &controller).is_ok() {
         if provisional
@@ -1133,16 +1156,19 @@ fn coordinate(
         }
         if native.is_none() {
             provisional = None;
-            let demand = shared.recovery_startup.as_ref().and_then(|startup| {
+            let demand = shared.startup_scope.as_ref().and_then(|startup| {
                 startup
                     .demand
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
             });
-            if shared.idle_retired.load(Ordering::Acquire)
-                && let Some(demand) = demand
+            if let Some(demand) = demand
                 && last_demand != Some(demand.key.run_id)
+                && match demand.kind {
+                    StartupKind::Idle => shared.idle_retired.load(Ordering::Acquire),
+                    StartupKind::Initial => shared.initial_pending.load(Ordering::Acquire),
+                }
             {
                 last_demand = Some(demand.key.run_id);
                 if demand.current(&shared, &controller) {
@@ -1183,6 +1209,7 @@ fn coordinate(
             command.legacy(&shared);
             continue;
         }
+        shared.initial_pending.store(false, Ordering::Release);
         if let Some(demand) = &provisional
             && (&demand.key != command.invocation.key() || !demand.current(&shared, &controller))
         {

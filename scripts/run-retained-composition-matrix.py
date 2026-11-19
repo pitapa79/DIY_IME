@@ -35,7 +35,7 @@ def main():
                         help='enable bounded overlapping replacement in the timed lifetime case')
     parser.add_argument('--ordered-recovery', action='store_true',
                         help='prioritize queued idle replacement starts in dependency order')
-    parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'deferred-safety'),
+    parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'scoped', 'deferred-safety', 'scoped-safety'),
                         help='compare initial startup policies on timed cold input fixtures')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
                         help='interrupt a witnessed idle replacement after the measured recovery')
@@ -82,12 +82,12 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
-    if args.initial_startup == 'deferred-safety':
+    if args.initial_startup in ('deferred-safety', 'scoped-safety'):
         case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
                  and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
         cases = [dict(case, cadence='safety', samples=1)]
         planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
-        issue, profile = 176, 'initial-startup-deferred-safety'
+        issue, profile = 176, f'initial-startup-{args.initial_startup}'
     elif args.initial_startup:
         cases = [dict(c, cadence='cold-paced') for c in cases
                  if c['mode'] == 'separate' and c['timing']
@@ -168,8 +168,10 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
                 if args.ordered_recovery:
                     env['DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER'] = '1'
-                if args.initial_startup in ('deferred', 'deferred-safety'):
+                if args.initial_startup and args.initial_startup != 'eager':
                     env['DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP'] = '1'
+                if args.initial_startup in ('scoped', 'scoped-safety'):
+                    env['DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
@@ -183,7 +185,7 @@ def main():
                 result = subprocess.run(command, cwd=repo, env=env, stdout=log, stderr=log, timeout=330)
             case['exitCode'] = result.returncode
             save()
-            if result.returncode != 0 and args.initial_startup in ('eager', 'deferred'):
+            if result.returncode != 0 and args.initial_startup in ('eager', 'deferred', 'scoped'):
                 owned = read(job)
                 failed_report = read(report)
                 assert failed_report['sourceCommit'] == source
@@ -212,6 +214,10 @@ def main():
             if args.initial_startup:
                 proof = data['initialStartupComparison']
                 assert proof['deferred'] == (args.initial_startup != 'eager')
+                scoped = args.initial_startup in ('scoped', 'scoped-safety')
+                assert proof['scoped'] == scoped
+                if scoped and spec['cadence'] == 'safety':
+                    assert {guard['action'] for guard in proof['guards'] if guard['passed']} == {'cancel', 'protect'}
                 if spec['layout'] == 'unused':
                     assert proof['additionalTarget']['passed']
                     assert proof['additionalTarget']['node'] in data['unexecutedIds']

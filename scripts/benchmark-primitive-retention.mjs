@@ -31,6 +31,7 @@ const lifetime=cadence==='lifetime';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
 const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
+const scopedInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP==='1';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -204,6 +205,8 @@ if(lifetime && timing) {
 if(initialStartupComparison) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP=
     process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP??null;
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP=
+    process.env.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP??null;
 }
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
@@ -238,7 +241,11 @@ try {
       input:{revision:1,text:'rejected fixture',mode:'compose'}}});
     assert.equal(receipt.ok,false,'an unrecognized target must be rejected');
     const status=await host.call({method:'status'});
-    report.initialStartupComparison={deferred:deferredInitialStartup,beforeFirstInput:status};
+    report.initialStartupComparison={
+      deferred:deferredInitialStartup,scoped:scopedInitialStartup,beforeFirstInput:status,
+    };
+    assert.equal(status.retainedWorker.idleRecovery?.scopesInitialStartup,
+      scopedInitialStartup && layout==='serial' && count>1);
     if(deferredInitialStartup) {
       assert.equal(status.workerProcesses,0,'a retained Worker launched before the first input');
       assert.equal(status.retainedWorker.generation,0);
@@ -269,6 +276,23 @@ try {
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
+  async function witnessProvisional(key,phase) {
+    return until(async()=>{
+      const status=await host.call({method:'status'});
+      const snapshot=await read(key);
+      assert(snapshot.current && !ended(snapshot),'the run ended before observing a provisional Worker');
+      const candidates=status.retainedWorker.callSamples.flatMap(({nodeIds:[nodeId],calls})=>{
+        const demand=calls.phases.find(e=>e.phase===phase && e.runId===key.runId);
+        if(!demand)return [];
+        const events=calls.phases.filter(e=>e.attempt===demand.attempt);
+        const resumed=events.find(e=>e.phase==='native-resume-thread-finished');
+        if(!resumed?.processId || !status.retainedWorker.processIds.includes(resumed.processId) ||
+            events.some(e=>e.phase==='owner-joined' || e.phase==='invocation-call-started'))return [];
+        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state}];
+      });
+      return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+    },15000);
+  }
   async function collectTrace() {
     // Freeze after all input callbacks have settled. Paginating a live trace
     // takes its mutex and can itself cause diagnostic try_lock contention.
@@ -348,6 +372,23 @@ try {
         const status=await host.call({method:'status'});
         // Preserve correct/failed/latest outcomes even if diagnostics fail.
         round.status=status;
+        if(initialStartupComparison && cold && intervalMs===20 && round.round===0) {
+          const runId=attempts.at(-1).key.runId;
+          const matched=[];
+          for(const {nodeIds:[node],calls} of status.retainedWorker.callSamples) {
+            for(const phase of calls.phases.filter(e=>e.phase==='initial-startup-demand-validated')) {
+              assert(executedIds.includes(node) && node!==executedIds[0]);
+              if(phase.runId!==runId)continue;
+              if(calls.phases.some(e=>e.phase==='invocation-call-finished' &&
+                e.runId===runId && e.attempt===phase.attempt && e.processId>0))
+                matched.push({node,attempt:phase.attempt,runId});
+            }
+          }
+          report.initialStartupComparison.matchedCalls=matched;
+          if(scopedInitialStartup && layout==='serial' && count===20)
+            assert(matched.length>0,'cold downstream preparation must be adopted by the latest run');
+          if(!scopedInitialStartup || layout!=='serial')assert.equal(matched.length,0);
+        }
         const events=tracePaced ? await collectTrace() : undefined;
         await verifySampleRetrieval(status);
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
@@ -503,25 +544,7 @@ try {
       const key=await submit('synthetic interrupted idle recovery');
       assert(!key.admissionRejected);
       guard.key=key;
-      guard.witness=await until(async()=>{
-        const s=await host.call({method:'status'});
-        const snapshot=await read(key);
-        assert(snapshot.current && snapshot.state!=='terminal',
-          'the input stopped being live before observing a provisional Worker');
-        const candidates=s.retainedWorker.callSamples.flatMap(bundle=>{
-          const events=bundle.calls.phases;
-          const demand=events.find(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId);
-          if(!demand) return [];
-          const attempted=events.filter(e=>e.attempt===demand.attempt);
-          const resumed=attempted.find(e=>e.phase==='native-resume-thread-finished');
-          if(!resumed?.processId || attempted.some(e=>e.phase==='owner-joined' ||
-              (e.phase==='invocation-call-started' && e.runId===key.runId)))return [];
-          return s.retainedWorker.processIds.includes(resumed.processId)
-            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId,
-                runState:snapshot.state}] : [];
-        });
-        return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
-      },15000);
+      guard.witness=await witnessProvisional(key,'idle-recovery-demand-validated');
       if(overlapAction==='cancel') {
         await host.call({method:'cancelRun',key});
         guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
@@ -568,6 +591,40 @@ try {
       version=activated.state.activePlanVersion;revision=0;
       if(deferredInitialStartup)return;
       return until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    }
+    if(scopedInitialStartup) {
+      const proof=report.initialStartupComparison;
+      proof.guards=[];
+      for(const action of ['cancel','protect']) {
+        const key=await submit('0'.repeat(256));
+        assert(!key.admissionRejected);
+        const guard={action,key,passed:false};
+        proof.guards.push(guard);
+        guard.witness=await witnessProvisional(key,'initial-startup-demand-validated');
+        assert.notEqual(guard.witness.nodeId,executedIds[0]);
+        if(action==='cancel') {
+          await host.call({method:'cancelRun',key});
+          guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+          assert.equal(guard.terminal.result.reason,'cancelled');
+          guard.exit=await until(async()=>{
+            const s=await host.call({method:'status'});
+            const row=s.retainedWorker.callSamples.find(r=>r.nodeIds[0]===guard.witness.nodeId);
+            const events=row.calls.phases.filter(e=>e.attempt===guard.witness.attempt);
+            assert(!events.some(e=>e.phase==='invocation-call-started'));
+            return !s.retainedWorker.processIds.includes(guard.witness.pid) &&
+              events.find(e=>e.phase==='owner-joined');
+          });
+        } else {
+          await host.call({method:'protection',enabled:true});
+          guard.terminal=await host.send({method:'getRun',key});
+          assert.equal(guard.terminal.error?.code,'external-protected');
+          guard.exit=await drained();
+          assert.equal(guard.exit.phase,'protected');
+          await host.call({method:'protection',enabled:false});
+        }
+        guard.passed=true;
+        await activateFresh();
+      }
     }
     await correct('');await correct('🙂漢字');
     report.safety.push({check:'empty-and-unicode',passed:true});

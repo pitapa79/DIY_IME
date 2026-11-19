@@ -493,7 +493,7 @@ struct PlanEvidence {
     activities: Vec<super::super::adapter::WasmNode>,
     official: Option<StaticOfficialPipeline>,
     retention_evaluation_graph: Option<Graph>,
-    idle_recovery_chain: Option<(crate::graph::Endpoint, Vec<String>)>,
+    startup_chain: Option<(crate::graph::Endpoint, Vec<String>)>,
 }
 impl PlanEvidence {
     fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
@@ -784,9 +784,10 @@ impl Runner {
             ));
         }
         // The compiled plan moves into the Core when the permission Session opens.
-        let idle_recovery_chain = super::super::adapter::RetainedOwners::idle_overlap_requested()
-            .then(|| plan.idle_recovery_chain(&graph))
-            .flatten();
+        let startup_chain = (super::super::adapter::RetainedOwners::idle_overlap_requested()
+            || super::super::adapter::RetainedOwners::scoped_initial_requested())
+        .then(|| plan.idle_recovery_chain(&graph))
+        .flatten();
         let pending = self
             .book
             .open_session(&self.service, plan, DecimalId::new(1)?)?;
@@ -803,7 +804,7 @@ impl Runner {
                 retention_evaluation_graph:
                     super::super::adapter::RetainedOwners::evaluation_group_size()?
                         .map(|_| graph.clone()),
-                idle_recovery_chain,
+                startup_chain,
             },
         });
         plan_timing.complete();
@@ -1056,7 +1057,7 @@ impl Runner {
                         self.host.clone(),
                         session.controller().clone(),
                         groups,
-                        pending.evidence.idle_recovery_chain.clone(),
+                        pending.evidence.startup_chain.clone(),
                     )?)
                 } else {
                     fixed_retained.map(super::super::adapter::RetainedOwners::fixed)
@@ -1165,10 +1166,10 @@ impl Runner {
                     owner.witness_terminal(active.session.controller());
                     Some(owner)
                 });
-                let prepare = owner.is_some_and(|owner| owner.requests_idle_recovery(&request));
+                let startup = owner.and_then(|owner| owner.startup_kind(&request));
                 let receipt = self.controller()?.start_run(request)?;
                 if let Some(owner) = owner {
-                    owner.observe_start(&receipt, prepare);
+                    owner.observe_start(&receipt, startup);
                 }
                 Ok(json!({"receipt":receipt,"state":self.status()?}))
             }
@@ -1186,7 +1187,7 @@ impl Runner {
                     .as_ref()
                     .and_then(|active| active.retained.as_ref())
                 {
-                    owner.withdraw_idle_recovery(|demand| demand == &key);
+                    owner.withdraw_startup(|demand| demand == &key);
                 }
                 let mut snapshot = serde_json::to_value(self.controller()?.cancel_run(&key)?)
                     .map_err(|_| error("external-result", "snapshot encoding failed"))?;
@@ -1214,7 +1215,7 @@ impl Runner {
                     .as_ref()
                     .and_then(|active| active.retained.as_ref())
                 {
-                    owner.withdraw_idle_recovery(|demand| {
+                    owner.withdraw_startup(|demand| {
                         demand.plan_version == expected_plan_version
                             && demand
                                 .input_revision
