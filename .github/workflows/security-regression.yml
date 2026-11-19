@@ -507,12 +507,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Compare dependency priority for overlapping idle S1 replacements
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.composition_reference.outputs.ready == ''true'''
+        run: |
+          python scripts/run-retained-composition-matrix.py target/windows-app target/retained-lifetime-ordered-overlap-evidence target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --ordered-recovery
+          exit $LASTEXITCODE
+      - name: Preserve dependency-prioritized idle S1 Worker replacement
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && hashFiles(''target/retained-lifetime-ordered-overlap-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-lifetime-ordered-overlap-${{ github.sha }}
+          path: target/retained-lifetime-ordered-overlap-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Interrupt live idle S1 Worker replacements
         if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.composition_reference.outputs.ready == ''true'''
         run: |
           $guardStatus = 0
           foreach ($action in @('cancel', 'protect')) {
-            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-overlap-guard-$action" target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --overlap-action $action
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-overlap-guard-$action" target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --ordered-recovery --overlap-action $action
             if ($LASTEXITCODE -ne 0) { $guardStatus = $LASTEXITCODE }
           }
           exit $guardStatus

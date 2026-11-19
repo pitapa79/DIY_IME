@@ -1,5 +1,5 @@
 //! Session-owned fixed-official coordinator. Nodes hold weak links only.
-use super::retention_evaluation::{RecoveryDemand, RecoveryLease};
+use super::retention_evaluation::{RecoveryDemand, RecoveryLease, RecoveryStartup};
 use super::*;
 use crate::execution_control::{ExecutionHost, RunDelivery, RunKey, RunPhase, RunSnapshot};
 use crate::isolated_worker::{
@@ -68,7 +68,7 @@ struct Shared {
     ids: Vec<String>,
     replies: AtomicU64,
     startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
-    recovery_demand: Option<Arc<Mutex<Option<RecoveryDemand>>>>,
+    recovery_startup: Option<RecoveryStartup>,
     idle_retired: std::sync::atomic::AtomicBool,
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
@@ -243,7 +243,7 @@ impl Owner {
         startup_gate: Arc<retention_evaluation::StartupGate>,
         control_probe: Arc<Mutex<()>>,
         diagnostic_origin: Option<std::time::Instant>,
-        recovery_demand: Option<Arc<Mutex<Option<RecoveryDemand>>>>,
+        recovery_startup: Option<RecoveryStartup>,
     ) -> Result<Option<Self>, CoreError> {
         let grouped = retention_evaluation::Owners::evaluation_group_size()? == Some(4);
         if stages
@@ -259,7 +259,7 @@ impl Owner {
             Some(startup_gate),
             Some(control_probe),
             diagnostic_origin,
-            recovery_demand,
+            recovery_startup,
         )
     }
 
@@ -270,7 +270,7 @@ impl Owner {
         startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
         control_probe: Option<Arc<Mutex<()>>>,
         diagnostic_origin: Option<std::time::Instant>,
-        recovery_demand: Option<Arc<Mutex<Option<RecoveryDemand>>>>,
+        recovery_startup: Option<RecoveryStartup>,
     ) -> Result<Option<Self>, CoreError> {
         let evaluation = startup_gate.is_some();
         let mut ids = Vec::new();
@@ -345,7 +345,7 @@ impl Owner {
             ids: ids.clone(),
             replies: AtomicU64::new(0),
             startup_gate,
-            recovery_demand,
+            recovery_startup,
             idle_retired: std::sync::atomic::AtomicBool::new(false),
             control_probe,
             startup_failures: AtomicU64::new(0),
@@ -614,7 +614,13 @@ impl Native {
         let startup_permit = shared
             .startup_gate
             .as_ref()
-            .map(|gate| gate.acquire(recovery.map_or(&shared.stop, |demand| &demand.cancel)))
+            .map(|gate| match recovery {
+                Some(demand) => match shared.recovery_startup.as_ref().and_then(|s| s.rank) {
+                    Some(rank) => gate.acquire_recovery(&demand.cancel, &shared.stop, rank),
+                    None => gate.acquire(&demand.cancel),
+                },
+                None => gate.acquire(&shared.stop),
+            })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
         if let Some(demand) = recovery {
@@ -966,7 +972,7 @@ impl WasmArtifact {
 fn retire_native(native: &mut Option<Native>, shared: &Shared, allow_idle_recovery: bool) {
     let retired = native.take();
     let idle = allow_idle_recovery
-        && shared.recovery_demand.is_some()
+        && shared.recovery_startup.is_some()
         && retired.as_ref().is_some_and(|owner| {
             owner.client.as_ref().unwrap().stop_cause() == Some(DriverStop::Idle)
         });
@@ -1041,10 +1047,13 @@ fn coordinate(
         }
         if native.is_none() {
             provisional = None;
-            let demand = shared
-                .recovery_demand
-                .as_ref()
-                .and_then(|slot| slot.lock().unwrap_or_else(|p| p.into_inner()).clone());
+            let demand = shared.recovery_startup.as_ref().and_then(|startup| {
+                startup
+                    .demand
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+            });
             if shared.idle_retired.load(Ordering::Acquire)
                 && let Some(demand) = demand
                 && last_demand != Some(demand.key.run_id)

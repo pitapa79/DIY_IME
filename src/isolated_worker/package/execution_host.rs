@@ -493,7 +493,7 @@ struct PlanEvidence {
     activities: Vec<super::super::adapter::WasmNode>,
     official: Option<StaticOfficialPipeline>,
     retention_evaluation_graph: Option<Graph>,
-    idle_recovery_target: Option<crate::graph::Endpoint>,
+    idle_recovery_chain: Option<(crate::graph::Endpoint, Vec<String>)>,
 }
 impl PlanEvidence {
     fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
@@ -784,8 +784,8 @@ impl Runner {
             ));
         }
         // The compiled plan moves into the Core when the permission Session opens.
-        let idle_recovery_target = super::super::adapter::RetainedOwners::idle_overlap_requested()
-            .then(|| plan.idle_recovery_target(&graph))
+        let idle_recovery_chain = super::super::adapter::RetainedOwners::idle_overlap_requested()
+            .then(|| plan.idle_recovery_chain(&graph))
             .flatten();
         let pending = self
             .book
@@ -803,7 +803,7 @@ impl Runner {
                 retention_evaluation_graph:
                     super::super::adapter::RetainedOwners::evaluation_group_size()?
                         .map(|_| graph.clone()),
-                idle_recovery_target,
+                idle_recovery_chain,
             },
         });
         plan_timing.complete();
@@ -1056,7 +1056,7 @@ impl Runner {
                         self.host.clone(),
                         session.controller().clone(),
                         groups,
-                        pending.evidence.idle_recovery_target.clone(),
+                        pending.evidence.idle_recovery_chain.clone(),
                     )?)
                 } else {
                     fixed_retained.map(super::super::adapter::RetainedOwners::fixed)

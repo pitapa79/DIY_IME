@@ -8,16 +8,21 @@ use std::sync::{Condvar, Mutex};
 
 /// Startup scheduling only. Never transfers a process, SID, input or authority.
 pub(super) struct StartupGate {
-    busy: Mutex<usize>,
+    state: Mutex<StartupState>,
     wake: Condvar,
     limit: usize,
     preparation: Option<Arc<StartupGate>>,
+}
+#[derive(Default)]
+struct StartupState {
+    busy: usize,
+    recovery_waiters: std::collections::BTreeSet<usize>,
 }
 pub(super) struct StartupPermit(Arc<StartupGate>);
 impl Default for StartupGate {
     fn default() -> Self {
         Self {
-            busy: Mutex::new(0),
+            state: Mutex::default(),
             wake: Condvar::new(),
             limit: 1,
             preparation: None,
@@ -51,21 +56,52 @@ impl StartupGate {
         self: &Arc<Self>,
         cancel: &CancellationToken,
     ) -> Result<StartupPermit, CoreError> {
-        let mut busy = self
-            .busy
+        self.acquire_with_priority(cancel, None)
+    }
+
+    pub(super) fn acquire_recovery(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        stop: &CancellationToken,
+        rank: usize,
+    ) -> Result<StartupPermit, CoreError> {
+        self.acquire_with_priority(cancel, Some((rank, stop)))
+    }
+
+    fn acquire_with_priority(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        priority: Option<(usize, &CancellationToken)>,
+    ) -> Result<StartupPermit, CoreError> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
+        // A coordinator has at most one startup attempt in this gate.
+        if let Some((rank, _)) = priority
+            && !state.recovery_waiters.insert(rank)
+        {
+            return Err(fail("worker-thread", "duplicate recovery startup rank"));
+        }
         loop {
-            if cancel.is_cancelled() {
-                return Err(fail("worker-cancelled", "startup cancelled"));
-            }
-            if *busy < self.limit {
-                *busy += 1;
+            let cancelled =
+                cancel.is_cancelled() || priority.is_some_and(|(_, stop)| stop.is_cancelled());
+            let available = state.busy < self.limit
+                && priority.is_none_or(|(rank, _)| state.recovery_waiters.first() == Some(&rank));
+            if cancelled || available {
+                if let Some((rank, _)) = priority {
+                    state.recovery_waiters.remove(&rank);
+                    self.wake.notify_all();
+                }
+                if cancelled {
+                    return Err(fail("worker-cancelled", "startup cancelled"));
+                }
+                state.busy += 1;
                 return Ok(StartupPermit(self.clone()));
             }
-            busy = self
+            state = self
                 .wake
-                .wait_timeout(busy, Duration::from_millis(5))
+                .wait_timeout(state, Duration::from_millis(5))
                 .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?
                 .0;
         }
@@ -73,8 +109,8 @@ impl StartupGate {
 }
 impl Drop for StartupPermit {
     fn drop(&mut self) {
-        let mut busy = self.0.busy.lock().unwrap_or_else(|p| p.into_inner());
-        *busy = busy.checked_sub(1).expect("owned startup permit");
+        let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.busy = state.busy.checked_sub(1).expect("owned startup permit");
         self.0.wake.notify_all();
     }
 }
@@ -143,6 +179,12 @@ impl Drop for RecoveryLease {
 struct IdleRecovery {
     target: Endpoint,
     demand: Arc<Mutex<Option<RecoveryDemand>>>,
+    order: Option<Vec<String>>,
+}
+
+pub(super) struct RecoveryStartup {
+    pub(super) demand: Arc<Mutex<Option<RecoveryDemand>>>,
+    pub(super) rank: Option<usize>,
 }
 
 pub(in crate::isolated_worker) struct Owners {
@@ -212,7 +254,7 @@ impl Owners {
         host: ExecutionHost,
         controller: GuardedController,
         groups: Vec<Stages>,
-        idle_target: Option<Endpoint>,
+        idle_chain: Option<(Endpoint, Vec<String>)>,
     ) -> Result<Self, CoreError> {
         if groups.is_empty()
             || groups.len() > 20
@@ -242,10 +284,17 @@ impl Owners {
                 == Some(std::ffi::OsStr::new("1")),
             groups.iter().all(|group| group.len() == 1),
         )?;
-        if startup_limit > 1 && groups.len() > 1 {
-            result.idle_recovery = idle_target.map(|target| IdleRecovery {
+        if startup_limit > 1
+            && groups.len() > 1
+            && let Some((target, order)) = idle_chain
+        {
+            let ordered = std::env::var_os("DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER")
+                .as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+            result.idle_recovery = Some(IdleRecovery {
                 target,
                 demand: Arc::new(Mutex::new(None)),
+                order: ordered.then_some(order),
             });
         }
         let startup_gate = Arc::new(StartupGate::bounded(startup_limit)?);
@@ -258,6 +307,19 @@ impl Owners {
         .then(std::time::Instant::now);
         for stages in groups {
             result.sizes.push(stages.len());
+            let rank = result
+                .idle_recovery
+                .as_ref()
+                .and_then(|idle| idle.order.as_ref())
+                .map(|order| {
+                    order
+                        .iter()
+                        .position(|id| id == &stages[0].0)
+                        .ok_or_else(|| {
+                            fail("retained-evaluation", "recovery startup order lost a stage")
+                        })
+                })
+                .transpose()?;
             let owner = retained::Owner::install_evaluation(
                 host.clone(),
                 controller.clone(),
@@ -265,10 +327,10 @@ impl Owners {
                 startup_gate.clone(),
                 control_probe.clone(),
                 diagnostic_origin,
-                result
-                    .idle_recovery
-                    .as_ref()
-                    .map(|idle| idle.demand.clone()),
+                result.idle_recovery.as_ref().map(|idle| RecoveryStartup {
+                    demand: idle.demand.clone(),
+                    rank,
+                }),
             )?
             .ok_or_else(|| {
                 fail(
@@ -304,6 +366,7 @@ impl Owners {
         json!({
             "eligible": self.idle_recovery.is_some(),
             "idleRetiredOwners": self.owners.iter().filter(|owner| owner.idle_retired()).count(),
+            "prioritizesQueuedStages": self.idle_recovery.as_ref().is_some_and(|idle| idle.order.is_some()),
         })
     }
 
@@ -411,6 +474,7 @@ mod tests {
             idle_recovery: Some(IdleRecovery {
                 target: Endpoint::new("last", "out"),
                 demand: demand.clone(),
+                order: None,
             }),
         };
         let key = RunKey {
@@ -484,21 +548,30 @@ mod tests {
         cancel.cancel();
         assert!(gate.acquire(&cancel).is_err());
         assert!(gate.prepare(&cancel).is_err());
-        assert_eq!(*gate.busy.lock().unwrap(), 2);
-        assert_eq!(*gate.preparation.as_ref().unwrap().busy.lock().unwrap(), 1);
+        assert_eq!(gate.state.lock().unwrap().busy, 2);
+        assert_eq!(
+            gate.preparation
+                .as_ref()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .busy,
+            1
+        );
         drop(prepare);
         assert_eq!(
-            *gate.busy.lock().unwrap(),
+            gate.state.lock().unwrap().busy,
             2,
             "preparation is scheduling, not a startup refund"
         );
         drop(gate.prepare(&CancellationToken::default()).unwrap());
         drop(second);
         let successor = gate.acquire(&CancellationToken::default()).unwrap();
-        assert_eq!(*gate.busy.lock().unwrap(), 2);
+        assert_eq!(gate.state.lock().unwrap().busy, 2);
         drop(first);
         drop(successor);
-        assert_eq!(*gate.busy.lock().unwrap(), 0);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 
     #[test]
@@ -516,10 +589,54 @@ mod tests {
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
         cancel.cancel();
         assert_eq!(thread.join().unwrap(), "worker-cancelled");
-        assert_eq!(*gate.busy.lock().unwrap(), 1);
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
         drop(held);
-        assert_eq!(*gate.busy.lock().unwrap(), 0);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
         drop(gate.acquire(&CancellationToken::default()).unwrap());
+    }
+
+    #[test]
+    fn recovery_startup_prioritizes_queued_stages_and_removes_cancelled_waiters() {
+        let gate = Arc::new(StartupGate::bounded(2).unwrap());
+        let first = gate.acquire(&CancellationToken::default()).unwrap();
+        let second = gate.acquire(&CancellationToken::default()).unwrap();
+        let (send, receive) = mpsc::channel();
+        let mut waiters = Vec::new();
+        for rank in [17, 3, 2] {
+            let controller_stop = CancellationToken::default();
+            let stop = controller_stop.clone();
+            let gate = gate.clone();
+            let worker_gate = gate.clone();
+            let send = send.clone();
+            let worker = std::thread::spawn(move || {
+                let permit =
+                    worker_gate.acquire_recovery(&CancellationToken::default(), &stop, rank);
+                send.send((rank, permit.ok())).unwrap();
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !gate.state.lock().unwrap().recovery_waiters.contains(&rank) {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            waiters.push((controller_stop, worker));
+        }
+        waiters[2].0.cancel();
+        let (cancelled, permit) = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(cancelled, 2);
+        assert!(permit.is_none());
+        drop(first);
+        let (next, permit) = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(next, 3);
+        drop(permit.unwrap());
+        let (last, permit) = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(last, 17);
+        drop(permit.unwrap());
+        for (_, worker) in waiters {
+            worker.join().unwrap();
+        }
+        assert!(gate.state.lock().unwrap().recovery_waiters.is_empty());
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
+        drop(second);
     }
 
     #[test]
@@ -546,7 +663,7 @@ mod tests {
                 thread.join().unwrap();
             }
             assert_eq!(completed.load(Ordering::Acquire), 32);
-            assert_eq!(*gate.busy.lock().unwrap(), 0);
+            assert_eq!(gate.state.lock().unwrap().busy, 0);
         }
     }
 }

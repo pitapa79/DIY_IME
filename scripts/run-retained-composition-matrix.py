@@ -33,6 +33,8 @@ def main():
                         help='capture detailed Native calls and launch phases in the lifetime case')
     parser.add_argument('--idle-overlap', action='store_true',
                         help='enable bounded overlapping replacement in the timed lifetime case')
+    parser.add_argument('--ordered-recovery', action='store_true',
+                        help='prioritize queued idle replacement starts in dependency order')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
                         help='interrupt a witnessed idle replacement after the measured recovery')
     args = parser.parse_args()
@@ -44,6 +46,8 @@ def main():
         parser.error('--idle-overlap requires --lifetime-timing')
     if args.overlap_action and not args.idle_overlap:
         parser.error('--overlap-action requires --idle-overlap')
+    if args.ordered_recovery and not args.idle_overlap:
+        parser.error('--ordered-recovery requires --idle-overlap')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -142,6 +146,8 @@ def main():
                     env.update(dict.fromkeys(candidate_controls, '1'))
                 if args.idle_overlap:
                     env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
+                if args.ordered_recovery:
+                    env['DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',

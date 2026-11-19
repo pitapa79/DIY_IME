@@ -98,10 +98,10 @@ fn not_cancelled(cancel: &CancellationToken) -> Result<(), CoreError> {
     }
 }
 impl PermissionPlan {
-    pub(in crate::isolated_worker) fn idle_recovery_target(
+    pub(in crate::isolated_worker) fn idle_recovery_chain(
         &self,
         graph: &crate::graph::Graph,
-    ) -> Option<crate::graph::Endpoint> {
+    ) -> Option<(crate::graph::Endpoint, Vec<String>)> {
         let order: Vec<_> = self.plan.as_ref()?.node_order().collect();
         let (source, stages) = order.split_first()?;
         if stages.len() != self.nodes.len()
@@ -128,7 +128,10 @@ impl PermissionPlan {
         let [output] = definition.outputs.as_slice() else {
             return None;
         };
-        Some(crate::graph::Endpoint::new(&last.id, &output.id))
+        Some((
+            crate::graph::Endpoint::new(&last.id, &output.id),
+            stages.iter().map(|id| (*id).to_owned()).collect(),
+        ))
     }
 
     pub fn capture(

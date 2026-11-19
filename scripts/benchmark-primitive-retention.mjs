@@ -188,6 +188,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 if(lifetime && timing) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;
 }
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
@@ -379,7 +380,11 @@ try {
     const proof={before, recoveryAttempts:[], passed:false};
     report.retainedLifetime=proof;
     const overlap=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1';
-    if(overlap)assert.equal(before.retainedWorker.idleRecovery?.eligible,true,'idle recovery fixture is not eligible');
+    if(overlap) {
+      assert.equal(before.retainedWorker.idleRecovery?.eligible,true,'idle recovery fixture is not eligible');
+      assert.equal(before.retainedWorker.idleRecovery.prioritizesQueuedStages,
+        process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER==='1','unexpected recovery startup priority');
+    }
     const quietStart=performance.now();
     await delay(61000);
     proof.idle=await until(async()=>{
