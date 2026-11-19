@@ -405,6 +405,11 @@ try {
     assert.equal(new Set(worker.processIds).size,count);
     assert(worker.processIds.every(pid=>!before.retainedWorker.processIds.includes(pid)));
     await verifySampleRetrieval(proof.after);
+    if(timing) {
+      proof.sameCall=analyze([recovered.key],proof.events,proof.after);
+      assert.equal(proof.sameCall.paired,executedCount,'recovery requires every Native call measurement');
+      assert.deepEqual(new Set(proof.sameCall.rows.map(row=>row.processId)),new Set(worker.processIds));
+    }
     const old=await host.send({method:'getRun',key:warmAttempts.at(-1).key});
     proof.previousInput={ok:old.ok,current:old.data?.snapshot?.current ?? null,errorCode:old.error?.code ?? null};
     assert(typeof old.ok==='boolean');
@@ -551,7 +556,8 @@ try {
 finally {
   if(!paced&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
-    ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.beforeClose]);
+    ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
+    report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);
   try {if(manager)await manager.close();if(host)await host.close();}
   finally {
     writeFileSync(reportPath,JSON.stringify(report));
