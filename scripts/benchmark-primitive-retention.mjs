@@ -616,10 +616,22 @@ try {
     if(scopedInitialStartup) {
       const proof=report.initialStartupComparison;
       proof.guards=[];
+      // The earlier measurement has already exercised every owner in its Session.
+      await activateFresh();
       for(const action of ['cancel','protect']) {
+        const status=await host.call({method:'status'});
+        const before={
+          sessionEpoch:status.sessionEpoch,workerProcesses:status.workerProcesses,
+          physicalJobs:status.physical.physicalJobs,generation:status.retainedWorker.generation,
+          eligible:status.retainedWorker.idleRecovery?.scopesInitialStartup,
+        };
+        assert(before.eligible,'a cold scoped fixture must be eligible before admission');
+        assert.equal(before.workerProcesses+before.physicalJobs+before.generation,0,
+          'the interruption witness requires a fresh Session with no Worker startup');
         const key=await submit('0'.repeat(256));
         assert(!key.admissionRejected);
-        const guard={action,key,passed:false};
+        assert.equal(key.sessionEpoch,before.sessionEpoch);
+        const guard={action,key,before,passed:false};
         proof.guards.push(guard);
         guard.witness=await witnessProvisional(key,'initial-startup-demand-validated');
         assert.notEqual(guard.witness.nodeId,executedIds[0]);

@@ -665,8 +665,17 @@ impl Native {
                 }
                 StartupAttempt::Ordinary => gate.acquire(&shared.stop),
                 StartupAttempt::Retry {
-                    cancel, deadline, ..
-                } => gate.acquire_retry(cancel, &shared.stop, deadline),
+                    key,
+                    cancel,
+                    deadline,
+                } => gate
+                    .acquire_retry(cancel, &shared.stop, deadline)
+                    .inspect_err(|error| {
+                        if error.code == "retained-startup-gate-busy" {
+                            shared
+                                .record_run_phase("startup-retry-permit-expired", Some(key.run_id));
+                        }
+                    }),
             })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
@@ -1253,7 +1262,7 @@ fn coordinate(
                     // Core callback charged while older work drains. No input
                     // was delivered, so this only retries Worker preparation.
                     command.startup_retry_until.get_or_insert_with(|| {
-                        std::time::Instant::now() + Duration::from_millis(250)
+                        std::time::Instant::now() + Duration::from_millis(500)
                     });
                     pending = Some(command);
                     std::thread::sleep(Duration::from_millis(5));
