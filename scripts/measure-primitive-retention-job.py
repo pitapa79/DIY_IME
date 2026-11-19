@@ -55,25 +55,23 @@ def read_member_memory(handle, job, row):
                    privateCommitBytes=counters.private)
 
 
-def sample(job, origin):
+def sample(job, origin, previous_pids):
     pids = base.query(job, 3, Pids())
     if pids.assigned > 64 or pids.listed > 64:
         raise RuntimeError('bounded memory sampler PID capacity exceeded')
-    rows = []
+    rows = [dict(pid=pid, available=False) for pid in pids.ids[:pids.listed]]
     pending = []
     with ExitStack() as handles:
-        # Bind every observed PID promptly. Memory queries on earlier handles
-        # should not lengthen the interval before opening later PIDs.
-        for pid in pids.ids[:pids.listed]:
-            row = dict(pid=pid, available=False)
-            handle = open_process(0x1000, False, pid)
+        # Give newly listed processes the earliest open attempt. Keep the
+        # original Job enumeration order in the reported rows.
+        for row in sorted(rows, key=lambda row: row['pid'] in previous_pids):
+            handle = open_process(0x1000, False, row['pid'])
             if handle:
                 handles.callback(base.close, handle)
                 pending.append((handle, row))
             else:
                 row['error'] = c.get_last_error()
                 row['failureApi'] = 'OpenProcess'
-            rows.append(row)
         for handle, row in pending:
             read_member_memory(handle, job, row)
     return dict(elapsedMs=(time.monotonic()-origin)*1000, assigned=pids.assigned,
@@ -86,6 +84,7 @@ def measure(command):
     assigned = False
     origin = time.monotonic()
     samples = []
+    previous_pids = set()
     timed_out = False
     try:
         limits = base.ExtendedLimits()
@@ -101,7 +100,9 @@ def measure(command):
             raise c.WinError(c.get_last_error())
         while True:
             result = base.wait(process.handle, 100)
-            samples.append(sample(job, origin))
+            observation = sample(job, origin, previous_pids)
+            samples.append(observation)
+            previous_pids = {row['pid'] for row in observation['processes']}
             if result == 0:
                 break
             if result != 0x102:
