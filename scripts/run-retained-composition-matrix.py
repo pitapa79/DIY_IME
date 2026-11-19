@@ -20,9 +20,16 @@ def read(path):
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
-def profile_pool_evidence(report):
-    statuses = [report.get('lifetimeReady'), *report['statuses'],
-                *(round.get('status') for round in report.get('pacedRounds', []))]
+def profile_pool_evidence(report, idle_recovery=False):
+    if idle_recovery:
+        proof = report['retainedLifetime']
+        statuses = [proof['after']]
+        recovery, = proof['recoveryAttempts']
+        recovered = {(row['nodeId'], row['processId']) for row in proof['sameCall']['rows']
+                     if row['status'] == 'paired' and row['key'] == recovery['key']}
+    else:
+        statuses = [report.get('lifetimeReady'), *report['statuses'],
+                    *(round.get('status') for round in report.get('pacedRounds', []))]
     consumed, missed, invoked = set(), set(), set()
     for status in filter(None, statuses):
         for owner in status['retainedWorker'].get('callSamples', []):
@@ -39,6 +46,9 @@ def profile_pool_evidence(report):
                     resumed = phases.get('native-resume-thread-finished')
                     finished = phases.get('invocation-call-finished')
                     if resumed and finished and resumed['processId'] == finished['processId'] and resumed['processId']:
+                        if idle_recovery and (finished['runId'] != recovery['key']['runId']
+                                             or (owner['nodeIds'][0], finished['processId']) not in recovered):
+                            continue
                         if int(phases['profile-pool-consumed']['atNs']) <= int(resumed['atNs']) <= int(finished['atNs']):
                             invoked.add(key)
     assert not consumed & missed, 'conflicting profile origins for one Worker attempt'
@@ -79,8 +89,10 @@ def main():
         parser.error('--ordered-recovery requires --idle-overlap')
     if args.initial_startup and (not args.candidate or args.lifetime):
         parser.error('--initial-startup requires --candidate and cannot use --lifetime')
-    if args.profile_pool and (not args.candidate or args.initial_startup or args.lifetime):
-        parser.error('--profile-pool requires --candidate and excludes --initial-startup and --lifetime')
+    if args.profile_pool and (not args.candidate or args.initial_startup):
+        parser.error('--profile-pool requires --candidate and excludes --initial-startup')
+    if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
+        parser.error('idle profile comparisons require --ordered-recovery without --overlap-action')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -111,7 +123,7 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
-    if args.profile_pool:
+    if args.profile_pool and not args.lifetime:
         case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
                  and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
         cases = [case, dict(case, cadence='paced'), dict(case, cadence='safety', samples=1)]
@@ -139,6 +151,8 @@ def main():
         issue, profile = (172, 'retained-lifetime-timing') if args.lifetime_timing else (166, 'retained-lifetime')
         if args.idle_overlap:
             issue, profile = 174, 'retained-lifetime-overlap'
+        if args.profile_pool:
+            issue, profile = 178, f'retained-idle-profile-{args.profile_pool}'
     manifest = {'issue': issue,
                 'parentGoal': 109, 'sourceCommit': source,
                 'profile': profile,
@@ -249,7 +263,7 @@ def main():
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
             if args.profile_pool:
-                profiles = profile_pool_evidence(data)
+                profiles = profile_pool_evidence(data, idle_recovery=args.lifetime)
                 case['preparedProfileEvidence'] = profiles
                 save()
                 if args.profile_pool == 'prepared':

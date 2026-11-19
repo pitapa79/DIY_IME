@@ -461,6 +461,26 @@ jobs:
           path: target/retained-verified-runtime-safety-evidence/
           if-no-files-found: error
           retention-days: 5
+      - name: Compare fresh and prepared profiles during ordered idle recovery
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success'"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($mode in @('fresh', 'prepared', 'prepared', 'fresh')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-idle-profile-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --ordered-recovery --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve S1 ordered idle profile comparison
+        if: ${{ !cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/retained-idle-profile-*/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-idle-profile-${{ github.sha }}
+          path: target/retained-idle-profile-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Actual S1 graph and input matrix
         if: matrix.segment == 'retention-graphs'
         run: |
