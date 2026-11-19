@@ -37,14 +37,13 @@ assert(['0','separate','grouped'].includes(mode));
 const reportPath=process.env.DIY_PRIMITIVE_RETENTION_REPORT;
 assert(reportPath, 'explicit report path required');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
-const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primitive-retention-'));
 const thirdparty=shape==='thirdparty';
 const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
 if(lifetime) {
-  assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25 && !timing,
+  assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
     'lifetime case requires the bounded 20-node compiled fixture');
   assert.equal(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT,'1');
 }
@@ -70,6 +69,7 @@ const executedCount=executedIds.length;
 const contract=JSON.parse(readFileSync(new URL('../tests/contracts/execution_control.json',import.meta.url),'utf8'));
 const resourcePolicy={...contract.resourceProfiles.bounded,maxPhysicalJobs:composition?.maxPhysicalJobs??22,maxQueuedJobs:32,
   maxRetainedBytes:67108864,maxResultBytesPerRun:matrixMode?524288:16384,retentionMs:60000,maxRetainedRuns:32,maxDedupeEntries:32,maxTombstones:32};
+const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primitive-retention-'));
 const packageManager={officialRoot:official,dataRoot:join(root,'data'),workspace:join(root,'workers'),worker,runtimeDll:dll,
   policy:{processMemoryBytes:536870912,wasmMemoryBytes:134217728,fuelPerCall:50000000,walltimeMs:30000,terminationGraceMs:5}};
 const managerPath=join(root,'manager.json'), hostPath=join(root,'host.json');
