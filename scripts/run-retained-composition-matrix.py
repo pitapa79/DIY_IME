@@ -193,7 +193,7 @@ def main():
                 if args.overlap_action:
                     guard = proof['overlapGuard']
                     assert guard['action'] == args.overlap_action and guard['passed']
-                    assert guard['witness']['pid'] > 0
+                    assert guard['witness']['pid'] > 0 and guard['witness']['runState'] in ('accepted', 'running')
                     if args.overlap_action == 'cancel':
                         assert guard['terminal']['result']['reason'] == 'cancelled'
                         assert guard['exit']['phase'] == 'owner-joined'

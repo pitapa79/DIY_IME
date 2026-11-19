@@ -472,7 +472,8 @@ try {
       guard.witness=await until(async()=>{
         const s=await host.call({method:'status'});
         const snapshot=await read(key);
-        assert(!ended(snapshot),'the input ended before observing a provisional Worker');
+        assert(snapshot.current && snapshot.state!=='terminal',
+          'the input stopped being live before observing a provisional Worker');
         const candidates=s.retainedWorker.callSamples.flatMap(bundle=>{
           const events=bundle.calls.phases;
           const demand=events.find(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId);
@@ -482,7 +483,8 @@ try {
           if(!resumed?.processId || attempted.some(e=>e.phase==='owner-joined' ||
               (e.phase==='invocation-call-started' && e.runId===key.runId)))return [];
           return s.retainedWorker.processIds.includes(resumed.processId)
-            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId}] : [];
+            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId,
+                runState:snapshot.state}] : [];
         });
         return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
       },15000);
