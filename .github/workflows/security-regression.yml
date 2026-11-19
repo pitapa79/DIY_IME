@@ -433,6 +433,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Compare fresh and prepared S1 AppContainer profiles
+        if: ${{ !cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/debug/examples/retained_composition_preflight.exe') != '' }}
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($mode in @('fresh', 'prepared', 'prepared', 'fresh')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-profile-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve S1 prepared profile comparison
+        if: ${{ !cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/retained-profile-*/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-prepared-profile-${{ github.sha }}
+          path: target/retained-profile-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Actual S1 graph and input matrix
         if: matrix.segment == 'retention-graphs'
         run: |

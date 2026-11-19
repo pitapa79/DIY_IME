@@ -945,8 +945,30 @@ impl WasmArtifact {
         shared: Arc<Shared>,
     ) -> Result<Option<ExitReceipt>, CoreError> {
         shared.record_phase("profile-create-started");
+        let prepared = if compiled.is_some()
+            && shared
+                .qualifications
+                .as_ref()
+                .is_some_and(|nodes| nodes.len() == 1)
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_PREPARED_PROFILE").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            // The pool only contains unused profiles. Taking one transfers
+            // ownership; this lifetime's existing disposal path deletes it.
+            let profile = self.0.profile_pool.as_ref().and_then(|pool| pool.take());
+            shared.record_phase(if profile.is_some() {
+                "profile-pool-consumed"
+            } else {
+                "profile-pool-miss"
+            });
+            profile
+        } else {
+            None
+        };
         let mut profile = PreparationProfile {
-            profile: Profile::new()
+            profile: prepared
+                .map(Ok)
+                .unwrap_or_else(Profile::new)
                 .map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?,
             strict: compiled.is_some(),
         };
