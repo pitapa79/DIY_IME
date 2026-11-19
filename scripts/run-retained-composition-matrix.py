@@ -29,9 +29,13 @@ def main():
                         help='enable the two snapshot experiments on retained cases only')
     parser.add_argument('--lifetime', action='store_true',
                         help='exercise the bounded sustained and idle-recovery candidate')
+    parser.add_argument('--lifetime-timing', action='store_true',
+                        help='capture detailed Native calls and launch phases in the lifetime case')
     args = parser.parse_args()
     if args.lifetime and not args.candidate:
         parser.error('--lifetime requires --candidate')
+    if args.lifetime_timing and not args.lifetime:
+        parser.error('--lifetime-timing requires --lifetime')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -61,14 +65,17 @@ def main():
     assert len(cases) == 25
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
+    issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
     if args.lifetime:
         case, = (c for c in cases if c['mode']=='separate' and c['layout']=='serial'
                  and c['count']==20 and c['cadence']=='warm' and not c['timing'])
-        cases = [dict(case, name='retained-lifetime-20', cadence='lifetime', samples=25)]
+        cases = [dict(case, name='retained-lifetime-20', cadence='lifetime', samples=25,
+                      timing=args.lifetime_timing)]
         planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
-    manifest = {'issue': 166 if args.lifetime else (158 if args.candidate else 135),
+        issue, profile = (172, 'retained-lifetime-timing') if args.lifetime_timing else (166, 'retained-lifetime')
+    manifest = {'issue': issue,
                 'parentGoal': 109, 'sourceCommit': source,
-                'profile': 'retained-lifetime' if args.lifetime else ('retained-snapshot-candidate' if args.candidate else 'reference'),
+                'profile': profile,
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
                 'moduleFiles': module_hashes,
@@ -152,6 +159,21 @@ def main():
                 assert len(proof['recoveryAttempts']) == 1 and proof['recoveryAttempts'][0]['outcome'] == 'correct'
                 case['lifetime'] = {key: proof[key] for key in ('idleElapsedMs', 'recoveryMs', 'previousInput')}
                 case['lifetime']['sustainedWindowMs'] = data['sustainedWindowMs']
+                if args.lifetime_timing:
+                    recovery = proof['recoveryAttempts'][0]['key']
+                    rows = proof['sameCall']['rows']
+                    assert len(rows) == spec['count'] == proof['sameCall']['paired']
+                    owners = {tuple(owner['context'][2]): owner for owner in data['lifecycle']['owners']
+                              if owner['context'][:2] == [recovery['sessionEpoch'], recovery['planVersion']]}
+                    phases = []
+                    for row in rows:
+                        assert row['key'] == recovery
+                        owner = owners[(row['nodeId'],)]
+                        attempt, = (a for a in owner['attempts'] if row['processId'] in a['processIds'])
+                        invocation, = (i for i in owner['invocations'] if i['runId'] == recovery['runId'])
+                        phases.append({'nodeId': row['nodeId'], 'processId': row['processId'],
+                                       'attempt': attempt, 'invocation': invocation})
+                    case['lifetime']['recoveryPhases'] = phases
             missing = owned['missingProcessMemoryReads']
             case.update(checksPassed=missing == 0, resourcePolicy=data['resourcePolicy'],
                         executedIds=data['executedIds'], unexecutedIds=data['unexecutedIds'],
