@@ -1,8 +1,10 @@
 //! Session-owned fixed-official coordinator. Nodes hold weak links only.
+use super::retention_evaluation::{RecoveryDemand, RecoveryLease, RecoveryStartup};
 use super::*;
 use crate::execution_control::{ExecutionHost, RunDelivery, RunKey, RunPhase, RunSnapshot};
 use crate::isolated_worker::{
-    DriverPolicy, RetainedBinding, RetainedClient, RetainedReservation, RetainedWorkerRequest,
+    DriverPolicy, DriverStop, RetainedBinding, RetainedClient, RetainedReservation,
+    RetainedWorkerRequest,
 };
 use std::sync::{Mutex, Weak, mpsc};
 
@@ -66,6 +68,8 @@ struct Shared {
     ids: Vec<String>,
     replies: AtomicU64,
     startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
+    recovery_startup: Option<RecoveryStartup>,
+    idle_retired: std::sync::atomic::AtomicBool,
     control_probe: Option<Arc<Mutex<()>>>,
     startup_failures: AtomicU64,
     compiled_generations: AtomicU64,
@@ -229,7 +233,7 @@ impl Owner {
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
     ) -> Result<Option<Self>, CoreError> {
-        Self::install_stages(host, controller, stages, false, None, None, None)
+        Self::install_stages(host, controller, stages, None, None, None, None)
     }
 
     pub(super) fn install_evaluation(
@@ -239,6 +243,7 @@ impl Owner {
         startup_gate: Arc<retention_evaluation::StartupGate>,
         control_probe: Arc<Mutex<()>>,
         diagnostic_origin: Option<std::time::Instant>,
+        recovery_startup: Option<RecoveryStartup>,
     ) -> Result<Option<Self>, CoreError> {
         let grouped = retention_evaluation::Owners::evaluation_group_size()? == Some(4);
         if stages
@@ -251,10 +256,10 @@ impl Owner {
             host,
             controller,
             stages,
-            true,
             Some(startup_gate),
             Some(control_probe),
             diagnostic_origin,
+            recovery_startup,
         )
     }
 
@@ -262,11 +267,12 @@ impl Owner {
         host: ExecutionHost,
         controller: GuardedController,
         stages: Vec<(String, WasmNode, Value)>,
-        evaluation: bool,
         startup_gate: Option<Arc<retention_evaluation::StartupGate>>,
         control_probe: Option<Arc<Mutex<()>>>,
         diagnostic_origin: Option<std::time::Instant>,
+        recovery_startup: Option<RecoveryStartup>,
     ) -> Result<Option<Self>, CoreError> {
+        let evaluation = startup_gate.is_some();
         let mut ids = Vec::new();
         let mut nodes = Vec::new();
         let mut configs = Vec::new();
@@ -339,6 +345,8 @@ impl Owner {
             ids: ids.clone(),
             replies: AtomicU64::new(0),
             startup_gate,
+            recovery_startup,
+            idle_retired: std::sync::atomic::AtomicBool::new(false),
             control_probe,
             startup_failures: AtomicU64::new(0),
             compiled_generations: AtomicU64::new(0),
@@ -387,6 +395,9 @@ impl Owner {
     }
     pub(super) fn close(&self) {
         self.shared.close();
+    }
+    pub(super) fn idle_retired(&self) -> bool {
+        self.shared.idle_retired.load(Ordering::Acquire)
     }
     pub(super) fn startup_failures(&self) -> u64 {
         self.shared.startup_failures.load(Ordering::Acquire)
@@ -466,6 +477,7 @@ impl Drop for Owner {
 }
 
 struct Native {
+    recovery: Option<RecoveryLease>,
     client: Option<RetainedClient>,
     cancel: CancellationToken,
     thread: Option<std::thread::JoinHandle<Result<Option<ExitReceipt>, CoreError>>>,
@@ -552,6 +564,32 @@ fn control_state(
     controller.control_state()
 }
 
+impl RecoveryDemand {
+    fn current(&self, shared: &Shared, controller: &GuardedController) -> bool {
+        let _probe = shared
+            .control_probe
+            .as_ref()
+            .map(|probe| probe.lock().unwrap_or_else(|p| p.into_inner()));
+        !self.cancel.is_cancelled()
+            && !shared.stop.is_cancelled()
+            && controller
+                .get_run(&self.key)
+                .is_ok_and(|snapshot| snapshot.current && snapshot.state != RunPhase::Terminal)
+            && !self.cancel.is_cancelled()
+    }
+
+    fn validate(&self, shared: &Shared, controller: &GuardedController) -> Result<(), CoreError> {
+        if self.current(shared, controller) {
+            Ok(())
+        } else {
+            Err(fail(
+                "worker-cancelled",
+                "idle startup demand is no longer current",
+            ))
+        }
+    }
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -560,6 +598,7 @@ impl Native {
         ids: &[String],
         configs: &[Value],
         shared: &Arc<Shared>,
+        recovery: Option<&RecoveryDemand>,
     ) -> Result<Self, CoreError> {
         if let Some(qualifications) = &shared.qualifications {
             for (((qualification, node), id), config) in
@@ -575,9 +614,19 @@ impl Native {
         let startup_permit = shared
             .startup_gate
             .as_ref()
-            .map(|gate| gate.acquire(&shared.stop))
+            .map(|gate| match recovery {
+                Some(demand) => match shared.recovery_startup.as_ref().and_then(|s| s.rank) {
+                    Some(rank) => gate.acquire_recovery(&demand.cancel, &shared.stop, rank),
+                    None => gate.acquire(&demand.cancel),
+                },
+                None => gate.acquire(&shared.stop),
+            })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
+        if let Some(demand) = recovery {
+            demand.validate(shared, controller)?;
+            shared.record_run_phase("idle-recovery-demand-validated", Some(demand.key.run_id));
+        }
         let state = control_state(shared, controller)?;
         let key = RunKey {
             session_epoch: controller.session_epoch().clone(),
@@ -589,6 +638,7 @@ impl Native {
             delivery_generation: state.delivery_generation,
         };
         let cancel = CancellationToken::default();
+        let recovery_lease = recovery.map(|demand| demand.bind(&cancel)).transpose()?;
         *shared.lifetime.lock().unwrap_or_else(|p| p.into_inner()) = Some(cancel.clone());
         if shared.stop.is_cancelled() {
             cancel.cancel();
@@ -633,6 +683,9 @@ impl Native {
             .transpose()?
             .flatten();
         shared.record_phase("preparation-permit-acquired");
+        if let Some(demand) = recovery {
+            demand.validate(shared, controller)?;
+        }
         shared.record_phase("code-preparation-started");
         let compiled = if shared.startup_gate.is_some()
             && nodes.len() == 1
@@ -668,6 +721,9 @@ impl Native {
         // and the same physical pin remains charged through replacement exit.
         // Release scheduling only; never return execution ownership here.
         drop(preparation_permit);
+        if let Some(demand) = recovery {
+            demand.validate(shared, controller)?;
+        }
         if !used_compiled
             && shared
                 .startup_gate
@@ -711,6 +767,7 @@ impl Native {
         shared.process_id.store(0, Ordering::Release);
         let owner_shared = shared.clone();
         let cleanup_pin = pin.clone();
+        let startup_demand = recovery.cloned();
         let control = RunControl {
             cancel: cancel.clone(),
             walltime: Some(Duration::from_secs(600)),
@@ -719,6 +776,12 @@ impl Native {
         let thread = std::thread::Builder::new()
             .name("diyime-retained-native-owner".into())
             .spawn(move || {
+                if startup_demand.is_some_and(|demand| demand.cancel.is_cancelled()) {
+                    return Err(fail(
+                        "worker-cancelled",
+                        "idle startup demand was withdrawn",
+                    ));
+                }
                 artifact.retained_lifetime(
                     &modules,
                     compiled,
@@ -735,6 +798,7 @@ impl Native {
             shared.compiled_generations.fetch_add(1, Ordering::AcqRel);
         }
         Ok(Self {
+            recovery: recovery_lease,
             client: Some(client),
             cancel,
             thread: Some(thread),
@@ -905,6 +969,19 @@ impl WasmArtifact {
     }
 }
 
+fn retire_native(native: &mut Option<Native>, shared: &Shared, allow_idle_recovery: bool) {
+    let retired = native.take();
+    let idle = allow_idle_recovery
+        && shared.recovery_startup.is_some()
+        && retired.as_ref().is_some_and(|owner| {
+            owner.client.as_ref().unwrap().stop_cause() == Some(DriverStop::Idle)
+        });
+    drop(retired);
+    if idle {
+        shared.idle_retired.store(true, Ordering::Release);
+    }
+}
+
 fn coordinate(
     host: ExecutionHost,
     controller: GuardedController,
@@ -915,13 +992,22 @@ fn coordinate(
     receive: mpsc::Receiver<Command>,
 ) {
     let stage_count = nodes.len();
-    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared)
+    let mut native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None)
         .inspect_err(|_| {
             shared.startup_failures.fetch_add(1, Ordering::AcqRel);
         })
         .ok();
     let mut pending = None;
+    let mut provisional: Option<RecoveryDemand> = None;
+    let mut last_demand = None;
     while !shared.stop.is_cancelled() && control_state(&shared, &controller).is_ok() {
+        if provisional
+            .as_ref()
+            .is_some_and(|demand| !demand.current(&shared, &controller))
+        {
+            drop(native.take());
+            provisional = None;
+        }
         let ready = native
             .as_mut()
             .map(|owner| owner.client.as_mut().unwrap().poll_ready());
@@ -941,7 +1027,7 @@ fn coordinate(
                 if !shared.ready.load(Ordering::Acquire) {
                     shared.startup_failures.fetch_add(1, Ordering::AcqRel);
                 }
-                drop(native.take());
+                retire_native(&mut native, &shared, provisional.is_none());
             }
             None => (),
         }
@@ -957,7 +1043,39 @@ fn coordinate(
             .as_ref()
             .is_some_and(|n| n.client.as_ref().unwrap().stop_cause().is_some())
         {
-            drop(native.take());
+            retire_native(&mut native, &shared, provisional.is_none());
+        }
+        if native.is_none() {
+            provisional = None;
+            let demand = shared.recovery_startup.as_ref().and_then(|startup| {
+                startup
+                    .demand
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+            });
+            if shared.idle_retired.load(Ordering::Acquire)
+                && let Some(demand) = demand
+                && last_demand != Some(demand.key.run_id)
+            {
+                last_demand = Some(demand.key.run_id);
+                if demand.current(&shared, &controller) {
+                    shared.idle_retired.store(false, Ordering::Release);
+                    native = Native::start(
+                        &host,
+                        &controller,
+                        &nodes,
+                        &ids,
+                        &configs,
+                        &shared,
+                        Some(&demand),
+                    )
+                    .ok();
+                    if native.is_some() {
+                        provisional = Some(demand);
+                    }
+                }
+            }
         }
         let command = match pending
             .take()
@@ -977,8 +1095,15 @@ fn coordinate(
             command.legacy(&shared);
             continue;
         }
+        if let Some(demand) = &provisional
+            && (&demand.key != command.invocation.key() || !demand.current(&shared, &controller))
+        {
+            drop(native.take());
+            provisional = None;
+        }
         if native.is_none() {
-            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared).ok();
+            shared.idle_retired.store(false, Ordering::Release);
+            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None).ok();
         }
         let Some(owner) = native.as_mut() else {
             command.legacy(&shared);
@@ -992,7 +1117,13 @@ fn coordinate(
             .is_err()
         {
             drop(native.take());
-            command.legacy(&shared);
+            if provisional.take().is_some() {
+                // No input reached this Worker. Use the normal start for the
+                // already admitted invocation if speculative readiness failed.
+                pending = Some(command);
+            } else {
+                command.legacy(&shared);
+            }
             continue;
         }
         if owner.startup_permit.is_some() {
@@ -1007,6 +1138,23 @@ fn coordinate(
             ));
             continue;
         }
+        if provisional
+            .as_ref()
+            .is_some_and(|demand| !demand.current(&shared, &controller))
+        {
+            drop(native.take());
+            provisional = None;
+            pending = Some(command);
+            continue;
+        }
+        // Only the actual authorized invocation adopts a provisional Worker.
+        if owner.recovery.take().is_some_and(|lease| !lease.adopt()) {
+            drop(native.take());
+            provisional = None;
+            pending = Some(command);
+            continue;
+        }
+        provisional = None;
         let key = command.invocation.key().clone();
         let input_cancel = CancellationToken::default();
         *shared.input.lock().unwrap_or_else(|p| p.into_inner()) = Some(ActiveInput {

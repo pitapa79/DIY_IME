@@ -1,7 +1,7 @@
 //! Immutable subjects minted from verified packages and a compiled graph.
 use super::super::{VerifiedPackage, format::digest};
 use crate::{
-    execution_control::{CancellationToken, RunKey},
+    execution_control::{CancellationToken, DeferredNode, RunKey},
     graph::{Endpoint, ExecutionPlan, Graph},
     isolated_worker::adapter::{
         DictionaryCompanions, ExecutionGate, NetworkUseDescription, ResourceDescription, WasmNode,
@@ -98,6 +98,42 @@ fn not_cancelled(cancel: &CancellationToken) -> Result<(), CoreError> {
     }
 }
 impl PermissionPlan {
+    pub(in crate::isolated_worker) fn idle_recovery_chain(
+        &self,
+        graph: &crate::graph::Graph,
+    ) -> Option<(crate::graph::Endpoint, Vec<String>)> {
+        let order: Vec<_> = self.plan.as_ref()?.node_order().collect();
+        let (source, stages) = order.split_first()?;
+        if stages.len() != self.nodes.len()
+            || !graph
+                .nodes
+                .iter()
+                .any(|n| n.id == *source && n.kind == "input.text")
+            || !stages
+                .iter()
+                .all(|id| self.nodes.iter().any(|n| n.id == *id))
+            || graph.edges.len() != stages.len()
+            || !order.windows(2).all(|pair| {
+                graph
+                    .edges
+                    .iter()
+                    .any(|e| e.from.node == pair[0] && e.to.node == pair[1])
+            })
+        {
+            return None;
+        }
+        let last_id = *stages.last()?;
+        let last = self.nodes.iter().find(|node| node.id == last_id)?;
+        let definition = last.node.definition();
+        let [output] = definition.outputs.as_slice() else {
+            return None;
+        };
+        Some((
+            crate::graph::Endpoint::new(&last.id, &output.id),
+            stages.iter().map(|id| (*id).to_owned()).collect(),
+        ))
+    }
+
     pub fn capture(
         graph: &Graph,
         external: &BTreeMap<String, VerifiedPackage>,

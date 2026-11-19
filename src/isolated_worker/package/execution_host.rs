@@ -493,6 +493,7 @@ struct PlanEvidence {
     activities: Vec<super::super::adapter::WasmNode>,
     official: Option<StaticOfficialPipeline>,
     retention_evaluation_graph: Option<Graph>,
+    idle_recovery_chain: Option<(crate::graph::Endpoint, Vec<String>)>,
 }
 impl PlanEvidence {
     fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
@@ -638,6 +639,9 @@ impl Runner {
             // Ordinary request replies still expose ownership/readiness, but
             // must not snapshot/clone the expanding private sample buffer.
             if include_private_samples {
+                if super::super::adapter::RetainedOwners::idle_overlap_requested() {
+                    value["retainedWorker"]["idleRecovery"] = owner.idle_recovery_status();
+                }
                 let samples = owner.call_samples();
                 if !samples.is_empty() {
                     value["retainedWorker"]["callSamples"] = Value::Array(samples);
@@ -779,6 +783,10 @@ impl Runner {
                 "installed implementations changed during preparation",
             ));
         }
+        // The compiled plan moves into the Core when the permission Session opens.
+        let idle_recovery_chain = super::super::adapter::RetainedOwners::idle_overlap_requested()
+            .then(|| plan.idle_recovery_chain(&graph))
+            .flatten();
         let pending = self
             .book
             .open_session(&self.service, plan, DecimalId::new(1)?)?;
@@ -795,6 +803,7 @@ impl Runner {
                 retention_evaluation_graph:
                     super::super::adapter::RetainedOwners::evaluation_group_size()?
                         .map(|_| graph.clone()),
+                idle_recovery_chain,
             },
         });
         plan_timing.complete();
@@ -1047,6 +1056,7 @@ impl Runner {
                         self.host.clone(),
                         session.controller().clone(),
                         groups,
+                        pending.evidence.idle_recovery_chain.clone(),
                     )?)
                 } else {
                     fixed_retained.map(super::super::adapter::RetainedOwners::fixed)
@@ -1150,12 +1160,16 @@ impl Runner {
                 self.status()
             }
             Operation::Run { request } => {
-                if let Some(active) = &self.session
-                    && let Some(owner) = &active.retained
-                {
+                let owner = self.session.as_ref().and_then(|active| {
+                    let owner = active.retained.as_ref()?;
                     owner.witness_terminal(active.session.controller());
-                }
+                    Some(owner)
+                });
+                let prepare = owner.is_some_and(|owner| owner.requests_idle_recovery(&request));
                 let receipt = self.controller()?.start_run(request)?;
+                if let Some(owner) = owner {
+                    owner.observe_start(&receipt, prepare);
+                }
                 Ok(json!({"receipt":receipt,"state":self.status()?}))
             }
             Operation::GetRun { key } => {
@@ -1167,6 +1181,13 @@ impl Runner {
                 Ok(json!({"snapshot":snapshot,"state":self.status()?}))
             }
             Operation::CancelRun { key } => {
+                if let Some(owner) = self
+                    .session
+                    .as_ref()
+                    .and_then(|active| active.retained.as_ref())
+                {
+                    owner.withdraw_idle_recovery(|demand| demand == &key);
+                }
                 let mut snapshot = serde_json::to_value(self.controller()?.cancel_run(&key)?)
                     .map_err(|_| error("external-result", "snapshot encoding failed"))?;
                 if snapshot["current"] == false {
@@ -1188,6 +1209,18 @@ impl Runner {
                 }
                 self.controller()?
                     .invalidate_input(expected_plan_version, revision)?;
+                if let Some(owner) = self
+                    .session
+                    .as_ref()
+                    .and_then(|active| active.retained.as_ref())
+                {
+                    owner.withdraw_idle_recovery(|demand| {
+                        demand.plan_version == expected_plan_version
+                            && demand
+                                .input_revision
+                                .is_some_and(|previous| previous < revision)
+                    });
+                }
                 self.status()
             }
             Operation::CloseSession {} => {

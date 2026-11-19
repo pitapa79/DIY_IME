@@ -28,6 +28,7 @@ assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','saf
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
+const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -46,6 +47,10 @@ if(lifetime) {
   assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
     'lifetime case requires the bounded 20-node compiled fixture');
   assert.equal(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT,'1');
+}
+if(overlapAction!==undefined) {
+  assert(lifetime && timing && process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1');
+  assert(['cancel','protect'].includes(overlapAction));
 }
 const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
@@ -141,8 +146,8 @@ class Client {
     }
   }
 }
-async function until(check) {
-  const end=performance.now()+120000;
+async function until(check,timeoutMs=120000) {
+  const end=performance.now()+timeoutMs;
   for(;;){const value=await check();if(value)return value;assert(performance.now()<end,'bounded observation expired');await delay(1);}
 }
 const summarize=values=>{
@@ -181,6 +186,10 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
+if(lifetime && timing) {
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;
+}
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
   manager=new Client(managerExe,managerPath,'manager');
@@ -370,6 +379,12 @@ try {
     const before=await host.call({method:'status'});
     const proof={before, recoveryAttempts:[], passed:false};
     report.retainedLifetime=proof;
+    const overlap=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1';
+    if(overlap) {
+      assert.equal(before.retainedWorker.idleRecovery?.eligible,true,'idle recovery fixture is not eligible');
+      assert.equal(before.retainedWorker.idleRecovery.prioritizesQueuedStages,
+        process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER==='1','unexpected recovery startup priority');
+    }
     const quietStart=performance.now();
     await delay(61000);
     proof.idle=await until(async()=>{
@@ -384,6 +399,30 @@ try {
     assert.deepEqual(proof.idle.retainedWorker.processIds,[]);
     assert.equal(proof.idle.retainedWorker.generation,before.retainedWorker.generation);
     assert.equal(proof.idle.retainedWorker.startupFailures,0,'idle retirement must not count as a startup failure');
+    if(overlap) {
+      proof.idleRecoveryStatus=await until(async()=>{
+        const status=await host.call({method:'status'});
+        proof.lastIdleRecoveryStatus=status.retainedWorker.idleRecovery;
+        return proof.lastIdleRecoveryStatus?.idleRetiredOwners===count ? proof.lastIdleRecoveryStatus : null;
+      });
+    }
+    if(timing) {
+      const request={expectedPlanVersion:version,targets,input:{revision:revision+1,text:'denied fixture',mode:'compose'}};
+      const replay=await host.send({method:'run',request:{...request,startKey:String(sequence),
+        input:{revision,text:`  ka${samples}🙂漢字  `,mode:'compose'}}});
+      proof.replay={ok:replay.ok,replayed:replay.data?.receipt?.replayed ?? null,code:replay.error?.code};
+      assert(replay.ok===true ? proof.replay.replayed===true : proof.replay.code==='start-key-retired');
+      const reject=async overrides=>host.send({method:'run',request:{...request,startKey:String(++sequence),...overrides}});
+      const wrongPlan=await reject({expectedPlanVersion:String(BigInt(version)+1n)});
+      const wrongTarget=await reject({targets:[{node:'absent-stage',port:'out'}]});
+      const stale=await reject({input:{...request.input,revision:1}});
+      proof.refusals=[wrongPlan,wrongTarget,stale].map(reply=>({ok:reply.ok,code:reply.error?.code}));
+      assert(proof.refusals.every(reply=>reply.ok===false && typeof reply.code==='string'));
+      const stillIdle=await host.call({method:'status'});
+      assert.equal(stillIdle.sessionEpoch,proof.idle.sessionEpoch);
+      assert.equal(stillIdle.retainedWorker.generation,proof.idle.retainedWorker.generation);
+      assert.equal(stillIdle.retainedWorker.physicalJobs,0);
+    }
     await host.call({method:'traceStartDetailed'});
     const latest='  ka-recovered🙂漢字  ';
     proof.recoveryOfferedAtMs=performance.now();
@@ -409,6 +448,12 @@ try {
       proof.sameCall=analyze([recovered.key],proof.events,proof.after);
       assert.equal(proof.sameCall.paired,executedCount,'recovery requires every Native call measurement');
       assert.deepEqual(new Set(proof.sameCall.rows.map(row=>row.processId)),new Set(worker.processIds));
+      if(overlap) {
+        const runId=recovered.key.runId;
+        proof.validatedRecoveryDemands=worker.callSamples.flatMap(bundle=>bundle.calls.phases)
+          .filter(event=>event.phase==='idle-recovery-demand-validated' && event.runId===runId).length;
+        assert(proof.validatedRecoveryDemands>0,'no Worker validated the admitted idle recovery demand');
+      }
     }
     const old=await host.send({method:'getRun',key:warmAttempts.at(-1).key});
     proof.previousInput={ok:old.ok,current:old.data?.snapshot?.current ?? null,errorCode:old.error?.code ?? null};
@@ -416,6 +461,64 @@ try {
     if(old.ok)assert.equal(proof.previousInput.current,false,'previous input cannot become current after recovery');
     else assert(['run-unknown','result-gone'].includes(proof.previousInput.errorCode),'unexpected previous input refusal');
     proof.passed=true;
+    if(overlapAction) {
+      const guard={action:overlapAction,passed:false};
+      proof.overlapGuard=guard;
+      await delay(61000);
+      guard.idle=await until(async()=>{
+        const s=await host.call({method:'status'});
+        assert.equal(s.sessionEpoch,before.sessionEpoch);
+        return s.retainedWorker.idleRecovery?.idleRetiredOwners===count && s.physical.physicalJobs===0
+          ? s : null;
+      },15000);
+      const key=await submit('synthetic interrupted idle recovery');
+      assert(!key.admissionRejected);
+      guard.key=key;
+      guard.witness=await until(async()=>{
+        const s=await host.call({method:'status'});
+        const snapshot=await read(key);
+        assert(snapshot.current && snapshot.state!=='terminal',
+          'the input stopped being live before observing a provisional Worker');
+        const candidates=s.retainedWorker.callSamples.flatMap(bundle=>{
+          const events=bundle.calls.phases;
+          const demand=events.find(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId);
+          if(!demand) return [];
+          const attempted=events.filter(e=>e.attempt===demand.attempt);
+          const resumed=attempted.find(e=>e.phase==='native-resume-thread-finished');
+          if(!resumed?.processId || attempted.some(e=>e.phase==='owner-joined' ||
+              (e.phase==='invocation-call-started' && e.runId===key.runId)))return [];
+          return s.retainedWorker.processIds.includes(resumed.processId)
+            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId,
+                runState:snapshot.state}] : [];
+        });
+        return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+      },15000);
+      if(overlapAction==='cancel') {
+        await host.call({method:'cancelRun',key});
+        guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
+        assert.equal(guard.terminal.result.reason,'cancelled');
+        guard.exit=await until(async()=>{
+          const s=await host.call({method:'status'});
+          assert.equal(s.sessionEpoch,before.sessionEpoch);
+          const {nodeId,attempt,pid}=guard.witness;
+          const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
+          const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
+          assert(!events.some(e=>e.phase==='invocation-call-started' && e.runId===key.runId),
+            'the witnessed Worker had already adopted the input');
+          return !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
+        },15000);
+      } else {
+        await host.call({method:'protection',enabled:true});
+        guard.terminal=await host.send({method:'getRun',key});
+        assert.equal(guard.terminal.ok,false,'protected Host must refuse the old key');
+        guard.exit=await until(async()=>{
+          const s=await host.call({method:'status'});
+          assert.equal(s.phase,'protected');
+          return s.workerProcesses===0 && s.physical.physicalJobs===0 && s.physical.reservedResultBytes===0 ? s : null;
+        },15000);
+      }
+      guard.passed=true;
+    }
   }
   if(cadence==='safety') {
     assert.notEqual(mode,'0','retention safety requires an explicit retained route');
