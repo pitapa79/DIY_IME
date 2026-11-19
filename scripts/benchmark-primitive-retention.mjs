@@ -244,8 +244,9 @@ try {
     report.initialStartupComparison={
       deferred:deferredInitialStartup,scoped:scopedInitialStartup,beforeFirstInput:status,
     };
-    assert.equal(status.retainedWorker.idleRecovery?.scopesInitialStartup,
-      scopedInitialStartup && layout==='serial' && count>1);
+    const scope=status.retainedWorker.idleRecovery?.scopesInitialStartup;
+    if(scopedInitialStartup)assert.equal(scope,layout==='serial' && count>1);
+    else assert.notEqual(scope,true,'scoped startup was selected in a control case');
     if(deferredInitialStartup) {
       assert.equal(status.workerProcesses,0,'a retained Worker launched before the first input');
       assert.equal(status.retainedWorker.generation,0);

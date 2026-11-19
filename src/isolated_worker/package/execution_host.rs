@@ -639,7 +639,9 @@ impl Runner {
             // Ordinary request replies still expose ownership/readiness, but
             // must not snapshot/clone the expanding private sample buffer.
             if include_private_samples {
-                if super::super::adapter::RetainedOwners::idle_overlap_requested() {
+                if super::super::adapter::RetainedOwners::idle_overlap_requested()
+                    || super::super::adapter::RetainedOwners::scoped_initial_requested()
+                {
                     value["retainedWorker"]["idleRecovery"] = owner.idle_recovery_status();
                 }
                 let samples = owner.call_samples();
