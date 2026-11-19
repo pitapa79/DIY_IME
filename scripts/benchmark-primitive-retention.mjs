@@ -28,6 +28,7 @@ assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','saf
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
+const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -46,6 +47,10 @@ if(lifetime) {
   assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
     'lifetime case requires the bounded 20-node compiled fixture');
   assert.equal(process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT,'1');
+}
+if(overlapAction!==undefined) {
+  assert(lifetime && timing && process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1');
+  assert(['cancel','protect'].includes(overlapAction));
 }
 const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
@@ -141,8 +146,8 @@ class Client {
     }
   }
 }
-async function until(check) {
-  const end=performance.now()+120000;
+async function until(check,timeoutMs=120000) {
+  const end=performance.now()+timeoutMs;
   for(;;){const value=await check();if(value)return value;assert(performance.now()<end,'bounded observation expired');await delay(1);}
 }
 const summarize=values=>{
@@ -451,6 +456,62 @@ try {
     if(old.ok)assert.equal(proof.previousInput.current,false,'previous input cannot become current after recovery');
     else assert(['run-unknown','result-gone'].includes(proof.previousInput.errorCode),'unexpected previous input refusal');
     proof.passed=true;
+    if(overlapAction) {
+      const guard={action:overlapAction,passed:false};
+      proof.overlapGuard=guard;
+      await delay(61000);
+      guard.idle=await until(async()=>{
+        const s=await host.call({method:'status'});
+        assert.equal(s.sessionEpoch,before.sessionEpoch);
+        return s.retainedWorker.idleRecovery?.idleRetiredOwners===count && s.physical.physicalJobs===0
+          ? s : null;
+      },15000);
+      const key=await submit('synthetic interrupted idle recovery');
+      assert(!key.admissionRejected);
+      guard.key=key;
+      guard.witness=await until(async()=>{
+        const s=await host.call({method:'status'});
+        const snapshot=await read(key);
+        assert(!ended(snapshot),'the input ended before observing a provisional Worker');
+        const candidates=s.retainedWorker.callSamples.flatMap(bundle=>{
+          const events=bundle.calls.phases;
+          const demand=events.find(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId);
+          if(!demand) return [];
+          const attempted=events.filter(e=>e.attempt===demand.attempt);
+          const resumed=attempted.find(e=>e.phase==='native-resume-thread-finished');
+          if(!resumed?.processId || attempted.some(e=>e.phase==='owner-joined' ||
+              (e.phase==='invocation-call-started' && e.runId===key.runId)))return [];
+          return s.retainedWorker.processIds.includes(resumed.processId)
+            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId}] : [];
+        });
+        return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+      },15000);
+      if(overlapAction==='cancel') {
+        await host.call({method:'cancelRun',key});
+        guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
+        assert.equal(guard.terminal.result.reason,'cancelled');
+        guard.exit=await until(async()=>{
+          const s=await host.call({method:'status'});
+          assert.equal(s.sessionEpoch,before.sessionEpoch);
+          const {nodeId,attempt,pid}=guard.witness;
+          const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
+          const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
+          assert(!events.some(e=>e.phase==='invocation-call-started' && e.runId===key.runId),
+            'the witnessed Worker had already adopted the input');
+          return !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
+        },15000);
+      } else {
+        await host.call({method:'protection',enabled:true});
+        guard.terminal=await host.send({method:'getRun',key});
+        assert.equal(guard.terminal.ok,false,'protected Host must refuse the old key');
+        guard.exit=await until(async()=>{
+          const s=await host.call({method:'status'});
+          assert.equal(s.phase,'protected');
+          return s.workerProcesses===0 && s.physical.physicalJobs===0 && s.physical.reservedResultBytes===0 ? s : null;
+        },15000);
+      }
+      guard.passed=true;
+    }
   }
   if(cadence==='safety') {
     assert.notEqual(mode,'0','retention safety requires an explicit retained route');

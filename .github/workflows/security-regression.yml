@@ -507,6 +507,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Interrupt live idle S1 Worker replacements
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.composition_reference.outputs.ready == ''true'''
+        run: |
+          $guardStatus = 0
+          foreach ($action in @('cancel', 'protect')) {
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-overlap-guard-$action" target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --overlap-action $action
+            if ($LASTEXITCODE -ne 0) { $guardStatus = $LASTEXITCODE }
+          }
+          exit $guardStatus
+      - name: Preserve interrupted idle replacement evidence
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && hashFiles(''target/retained-overlap-guard-*/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-overlap-guards-${{ github.sha }}
+          path: target/retained-overlap-guard-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Prepared JIT mixed Wasm graph comparison
         if: matrix.segment == 'prepared'
         run: |
