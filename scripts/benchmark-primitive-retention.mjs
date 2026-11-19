@@ -587,7 +587,12 @@ try {
       const freshText='  ka recovery 🙂漢字  ';
       const {key}=await observeWarmInput({sample:0,attempts:recovery.attempts,
         submit:attempt=>submit(freshText,attempt),read,until,ended,verify,expected:expected(freshText),
-        clock:elapsed});
+        clock:elapsed}).catch(async error=>{
+        const status=await Promise.race([host.send({method:'status'}),delay(2000,null,{ref:false})])
+          .catch(()=>null);
+        recovery.failureStatus=status?.ok?status.data:null;
+        throw error;
+      });
       recovery.latestCorrectVerifiedMs=elapsed();
       assert.notEqual(key.runId,oldKey.runId);
       const old=await host.send({method:'getRun',key:oldKey});
@@ -827,7 +832,7 @@ finally {
   try {
     if(manager)await manager.close();
     if(host)await host.close();
-    if(initialStartupComparison && !report.completed)
+    if(!report.completed)
       report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
   }
   finally {

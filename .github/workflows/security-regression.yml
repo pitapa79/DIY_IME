@@ -165,19 +165,6 @@ jobs:
           path: target/retained-chunked-snapshot-evidence/
           if-no-files-found: error
           retention-days: 5
-      - name: Verified retained DLL through Host cancellation and recovery
-        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_identity.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
-        run: |
-          python scripts/run-retained-native-startup-profile.py --verified-runtime-safety
-          exit $LASTEXITCODE
-      - name: Preserve verified retained Host safety evidence
-        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-verified-runtime-safety-evidence/manifest.json'') != '''''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: retained-verified-host-safety-${{ github.sha }}
-          path: target/retained-verified-runtime-safety-evidence/
-          if-no-files-found: error
-          retention-days: 5
       - name: Compare smaller retained Worker image
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
         run: |
@@ -453,6 +440,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Verified retained DLL through Host cancellation and recovery
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_identity.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
+        run: |
+          python scripts/run-retained-native-startup-profile.py --verified-runtime-safety
+          exit $LASTEXITCODE
+      - name: Preserve verified retained Host safety evidence
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-verified-runtime-safety-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-verified-host-safety-${{ github.sha }}
+          path: target/retained-verified-runtime-safety-evidence/
+          if-no-files-found: error
+          retention-days: 5
       - name: Actual S1 graph and input matrix
         if: matrix.segment == 'retention-graphs'
         run: |
