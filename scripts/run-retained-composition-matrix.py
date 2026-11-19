@@ -31,11 +31,15 @@ def main():
                         help='exercise the bounded sustained and idle-recovery candidate')
     parser.add_argument('--lifetime-timing', action='store_true',
                         help='capture detailed Native calls and launch phases in the lifetime case')
+    parser.add_argument('--idle-overlap', action='store_true',
+                        help='enable bounded overlapping replacement in the timed lifetime case')
     args = parser.parse_args()
     if args.lifetime and not args.candidate:
         parser.error('--lifetime requires --candidate')
     if args.lifetime_timing and not args.lifetime:
         parser.error('--lifetime-timing requires --lifetime')
+    if args.idle_overlap and not args.lifetime_timing:
+        parser.error('--idle-overlap requires --lifetime-timing')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -73,6 +77,8 @@ def main():
                       timing=args.lifetime_timing)]
         planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
         issue, profile = (172, 'retained-lifetime-timing') if args.lifetime_timing else (166, 'retained-lifetime')
+        if args.idle_overlap:
+            issue, profile = 174, 'retained-lifetime-overlap'
     manifest = {'issue': issue,
                 'parentGoal': 109, 'sourceCommit': source,
                 'profile': profile,
@@ -126,6 +132,8 @@ def main():
                 env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = '2'
                 if args.candidate:
                     env.update(dict.fromkeys(candidate_controls, '1'))
+                if args.idle_overlap:
+                    env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',

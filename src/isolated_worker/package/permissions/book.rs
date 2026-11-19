@@ -6,7 +6,8 @@ use super::super::{
 use super::{ApprovalRequest, ApprovalSubject, PermissionPlan};
 use crate::{
     execution_control::{
-        CancellationToken, DecimalId, ExecutionController, ExecutionService, RunKey, SessionEpoch,
+        CancellationToken, DecimalId, DeferredNode, ExecutionController, ExecutionService, RunKey,
+        SessionEpoch,
     },
     isolated_worker::adapter::{ExecutionGate, GrantTarget, GuardedController},
     node::CoreError,
@@ -312,6 +313,40 @@ pub struct PendingPermissionSession {
     owns_session: bool,
 }
 impl PendingPermissionSession {
+    pub(in crate::isolated_worker) fn idle_recovery_target(
+        &self,
+        graph: &crate::graph::Graph,
+    ) -> Option<crate::graph::Endpoint> {
+        let plan = self.plan.as_ref()?;
+        let order: Vec<_> = plan.plan.as_ref()?.node_order().collect();
+        let (source, stages) = order.split_first()?;
+        if stages.len() != plan.nodes.len()
+            || !graph
+                .nodes
+                .iter()
+                .any(|n| n.id == *source && n.kind == "input.text")
+            || !stages
+                .iter()
+                .all(|id| plan.nodes.iter().any(|n| n.id == *id))
+            || graph.edges.len() != stages.len()
+            || !order.windows(2).all(|pair| {
+                graph
+                    .edges
+                    .iter()
+                    .any(|e| e.from.node == pair[0] && e.to.node == pair[1])
+            })
+        {
+            return None;
+        }
+        let last_id = *stages.last()?;
+        let last = plan.nodes.iter().find(|node| node.id == last_id)?;
+        let definition = last.node.definition();
+        let [output] = definition.outputs.as_slice() else {
+            return None;
+        };
+        Some(crate::graph::Endpoint::new(&last.id, &output.id))
+    }
+
     pub(in crate::isolated_worker) fn retention_evaluation_groups(
         &self,
         graph: &crate::graph::Graph,

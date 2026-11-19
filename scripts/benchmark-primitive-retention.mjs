@@ -181,6 +181,9 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
+if(lifetime && timing) {
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
+}
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
   manager=new Client(managerExe,managerPath,'manager');
@@ -384,6 +387,23 @@ try {
     assert.deepEqual(proof.idle.retainedWorker.processIds,[]);
     assert.equal(proof.idle.retainedWorker.generation,before.retainedWorker.generation);
     assert.equal(proof.idle.retainedWorker.startupFailures,0,'idle retirement must not count as a startup failure');
+    if(timing) {
+      const request={expectedPlanVersion:version,targets,input:{revision:revision+1,text:'denied fixture',mode:'compose'}};
+      const replay=await host.send({method:'run',request:{...request,startKey:String(sequence),
+        input:{revision,text:`  ka${samples}🙂漢字  `,mode:'compose'}}});
+      proof.replay={ok:replay.ok,replayed:replay.data?.receipt?.replayed ?? null,code:replay.error?.code};
+      assert(replay.ok===true ? proof.replay.replayed===true : proof.replay.code==='start-key-retired');
+      const reject=async overrides=>host.send({method:'run',request:{...request,startKey:String(++sequence),...overrides}});
+      const wrongPlan=await reject({expectedPlanVersion:String(BigInt(version)+1n)});
+      const wrongTarget=await reject({targets:[{node:'absent-stage',port:'out'}]});
+      const stale=await reject({input:{...request.input,revision:1}});
+      proof.refusals=[wrongPlan,wrongTarget,stale].map(reply=>({ok:reply.ok,code:reply.error?.code}));
+      assert(proof.refusals.every(reply=>reply.ok===false && typeof reply.code==='string'));
+      const stillIdle=await host.call({method:'status'});
+      assert.equal(stillIdle.sessionEpoch,proof.idle.sessionEpoch);
+      assert.equal(stillIdle.retainedWorker.generation,proof.idle.retainedWorker.generation);
+      assert.equal(stillIdle.retainedWorker.physicalJobs,0);
+    }
     await host.call({method:'traceStartDetailed'});
     const latest='  ka-recovered🙂漢字  ';
     proof.recoveryOfferedAtMs=performance.now();
