@@ -17,6 +17,7 @@ pub(super) struct StartupGate {
 struct StartupState {
     busy: usize,
     recovery_waiters: std::collections::BTreeSet<usize>,
+    retry_waiters: usize,
 }
 pub(super) struct StartupPermit(Arc<StartupGate>);
 impl Default for StartupGate {
@@ -56,7 +57,7 @@ impl StartupGate {
         self: &Arc<Self>,
         cancel: &CancellationToken,
     ) -> Result<StartupPermit, CoreError> {
-        self.acquire_with_priority(cancel, None)
+        self.acquire_with_priority(cancel, None, None, None)
     }
 
     pub(super) fn acquire_recovery(
@@ -65,68 +66,78 @@ impl StartupGate {
         stop: &CancellationToken,
         rank: usize,
     ) -> Result<StartupPermit, CoreError> {
-        self.acquire_with_priority(cancel, Some((rank, stop)))
+        self.acquire_with_priority(cancel, Some(stop), Some(rank), None)
     }
 
-    pub(super) fn try_acquire(
+    pub(super) fn acquire_retry(
         self: &Arc<Self>,
         cancel: &CancellationToken,
         stop: &CancellationToken,
+        deadline: std::time::Instant,
     ) -> Result<StartupPermit, CoreError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
-        if cancel.is_cancelled() || stop.is_cancelled() {
-            return Err(fail("worker-cancelled", "startup cancelled"));
-        }
-        if state.busy == self.limit || !state.recovery_waiters.is_empty() {
-            return Err(fail(
-                "retained-startup-gate-busy",
-                "startup slots are occupied",
-            ));
-        }
-        state.busy += 1;
-        Ok(StartupPermit(self.clone()))
+        self.acquire_with_priority(cancel, Some(stop), None, Some(deadline))
     }
 
     fn acquire_with_priority(
         self: &Arc<Self>,
         cancel: &CancellationToken,
-        priority: Option<(usize, &CancellationToken)>,
+        stop: Option<&CancellationToken>,
+        rank: Option<usize>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<StartupPermit, CoreError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
         // A coordinator has at most one startup attempt in this gate.
-        if let Some((rank, _)) = priority
+        if let Some(rank) = rank
             && !state.recovery_waiters.insert(rank)
         {
             return Err(fail("worker-thread", "duplicate recovery startup rank"));
         }
-        loop {
-            let cancelled =
-                cancel.is_cancelled() || priority.is_some_and(|(_, stop)| stop.is_cancelled());
-            let available = state.busy < self.limit
-                && priority.is_none_or(|(rank, _)| state.recovery_waiters.first() == Some(&rank));
-            if cancelled || available {
-                if let Some((rank, _)) = priority {
-                    state.recovery_waiters.remove(&rank);
-                    self.wake.notify_all();
+        if deadline.is_some() {
+            state.retry_waiters += 1;
+        }
+        let result = loop {
+            if cancel.is_cancelled() || stop.is_some_and(CancellationToken::is_cancelled) {
+                break Err(fail("worker-cancelled", "startup cancelled"));
+            }
+            let mut wait = Duration::from_millis(5);
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break Err(fail(
+                        "retained-startup-gate-busy",
+                        "startup retry window elapsed",
+                    ));
                 }
-                if cancelled {
-                    return Err(fail("worker-cancelled", "startup cancelled"));
-                }
+                wait = wait.min(remaining);
+            }
+            let next = match rank {
+                Some(rank) => state.recovery_waiters.first() == Some(&rank),
+                None if deadline.is_some() => state.recovery_waiters.is_empty(),
+                None => state.retry_waiters == 0,
+            };
+            if state.busy < self.limit && next {
                 state.busy += 1;
-                return Ok(StartupPermit(self.clone()));
+                break Ok(StartupPermit(self.clone()));
             }
             state = self
                 .wake
-                .wait_timeout(state, Duration::from_millis(5))
+                .wait_timeout(state, wait)
                 .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?
                 .0;
+        };
+        if let Some(rank) = rank {
+            state.recovery_waiters.remove(&rank);
         }
+        if deadline.is_some() {
+            state.retry_waiters -= 1;
+        }
+        if rank.is_some() || deadline.is_some() {
+            self.wake.notify_all();
+        }
+        result
     }
 }
 impl Drop for StartupPermit {
@@ -662,24 +673,66 @@ mod tests {
     }
 
     #[test]
-    fn nonblocking_startup_permit_preserves_capacity_and_cancellation() {
-        let gate = Arc::new(StartupGate::bounded(2).unwrap());
+    fn startup_retry_honors_deadline_and_cancellation() {
+        let gate = Arc::new(StartupGate::default());
         let cancel = CancellationToken::default();
         let stop = CancellationToken::default();
         let first = gate.acquire(&cancel).unwrap();
-        let second = gate.try_acquire(&cancel, &stop).unwrap();
         assert_eq!(
-            gate.try_acquire(&cancel, &stop).err().unwrap().code,
+            gate.acquire_retry(&cancel, &stop, std::time::Instant::now())
+                .err()
+                .unwrap()
+                .code,
             "retained-startup-gate-busy"
         );
-        drop(second);
         stop.cancel();
         assert_eq!(
-            gate.try_acquire(&cancel, &stop).err().unwrap().code,
+            gate.acquire_retry(
+                &cancel,
+                &stop,
+                std::time::Instant::now() + Duration::from_secs(1)
+            )
+            .err()
+            .unwrap()
+            .code,
             "worker-cancelled"
         );
         assert_eq!(gate.state.lock().unwrap().busy, 1);
+        assert_eq!(gate.state.lock().unwrap().retry_waiters, 0);
         drop(first);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
+    }
+
+    #[test]
+    fn startup_retry_uses_the_next_open_slot_before_eager_start() {
+        let gate = Arc::new(StartupGate::default());
+        let first = gate.acquire(&CancellationToken::default()).unwrap();
+        let priority = gate.clone();
+        let now = std::time::Instant::now();
+        let deadline = now + Duration::from_secs(2);
+        let retry = std::thread::spawn(move || {
+            priority.acquire_retry(
+                &CancellationToken::default(),
+                &CancellationToken::default(),
+                deadline,
+            )
+        });
+        while gate.state.lock().unwrap().retry_waiters == 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ordinary = gate.clone();
+        let cancel = CancellationToken::default();
+        let token = cancel.clone();
+        let eager = std::thread::spawn(move || ordinary.acquire(&token));
+        drop(first);
+        let replacement = retry.join().unwrap().unwrap();
+        cancel.cancel();
+        assert_eq!(
+            eager.join().unwrap().err().unwrap().code,
+            "worker-cancelled"
+        );
+        drop(replacement);
         assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 

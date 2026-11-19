@@ -608,6 +608,7 @@ enum StartupAttempt<'a> {
     Retry {
         key: &'a RunKey,
         cancel: &'a CancellationToken,
+        deadline: std::time::Instant,
     },
 }
 
@@ -647,10 +648,31 @@ impl Native {
                     }
                 }
                 StartupAttempt::Ordinary => gate.acquire(&shared.stop),
-                StartupAttempt::Retry { cancel, .. } => gate.try_acquire(cancel, &shared.stop),
+                StartupAttempt::Retry {
+                    cancel, deadline, ..
+                } => gate.acquire_retry(cancel, &shared.stop, deadline),
             })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
+        if let StartupAttempt::Retry {
+            key,
+            cancel,
+            deadline,
+        } = attempt
+        {
+            if cancel.is_cancelled() || !current_run(shared, controller, key) {
+                return Err(fail(
+                    "worker-cancelled",
+                    "startup retry is no longer current",
+                ));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(fail(
+                    "retained-startup-gate-busy",
+                    "startup retry window elapsed",
+                ));
+            }
+        }
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
             shared.record_run_phase("idle-recovery-demand-validated", Some(demand.key.run_id));
@@ -1184,6 +1206,7 @@ fn coordinate(
                 StartupAttempt::Retry {
                     key: command.invocation.key(),
                     cancel: &command.cancel,
+                    deadline,
                 }
             } else {
                 StartupAttempt::Ordinary
