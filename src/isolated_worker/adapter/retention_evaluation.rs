@@ -300,6 +300,13 @@ impl Owners {
         })
     }
 
+    pub(in crate::isolated_worker) fn idle_recovery_status(&self) -> Value {
+        json!({
+            "eligible": self.idle_recovery.is_some(),
+            "idleRetiredOwners": self.owners.iter().filter(|owner| owner.idle_retired()).count(),
+        })
+    }
+
     pub(in crate::isolated_worker) fn observe_start(&self, receipt: &StartReceipt, prepare: bool) {
         if receipt.replayed {
             return;

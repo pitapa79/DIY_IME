@@ -373,6 +373,8 @@ try {
     const before=await host.call({method:'status'});
     const proof={before, recoveryAttempts:[], passed:false};
     report.retainedLifetime=proof;
+    const overlap=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1';
+    if(overlap)assert.equal(before.retainedWorker.idleRecovery?.eligible,true,'idle recovery fixture is not eligible');
     const quietStart=performance.now();
     await delay(61000);
     proof.idle=await until(async()=>{
@@ -387,6 +389,13 @@ try {
     assert.deepEqual(proof.idle.retainedWorker.processIds,[]);
     assert.equal(proof.idle.retainedWorker.generation,before.retainedWorker.generation);
     assert.equal(proof.idle.retainedWorker.startupFailures,0,'idle retirement must not count as a startup failure');
+    if(overlap) {
+      proof.idleRecoveryStatus=await until(async()=>{
+        const status=await host.call({method:'status'});
+        proof.lastIdleRecoveryStatus=status.retainedWorker.idleRecovery;
+        return proof.lastIdleRecoveryStatus?.idleRetiredOwners===count ? proof.lastIdleRecoveryStatus : null;
+      });
+    }
     if(timing) {
       const request={expectedPlanVersion:version,targets,input:{revision:revision+1,text:'denied fixture',mode:'compose'}};
       const replay=await host.send({method:'run',request:{...request,startKey:String(sequence),
@@ -429,6 +438,12 @@ try {
       proof.sameCall=analyze([recovered.key],proof.events,proof.after);
       assert.equal(proof.sameCall.paired,executedCount,'recovery requires every Native call measurement');
       assert.deepEqual(new Set(proof.sameCall.rows.map(row=>row.processId)),new Set(worker.processIds));
+      if(overlap) {
+        const runId=recovered.key.runId;
+        proof.validatedRecoveryDemands=worker.callSamples.flatMap(bundle=>bundle.calls.phases)
+          .filter(event=>event.phase==='idle-recovery-demand-validated' && event.runId===runId).length;
+        assert(proof.validatedRecoveryDemands>0,'no Worker validated the admitted idle recovery demand');
+      }
     }
     const old=await host.send({method:'getRun',key:warmAttempts.at(-1).key});
     proof.previousInput={ok:old.ok,current:old.data?.snapshot?.current ?? null,errorCode:old.error?.code ?? null};

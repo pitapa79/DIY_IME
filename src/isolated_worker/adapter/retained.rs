@@ -963,6 +963,19 @@ impl WasmArtifact {
     }
 }
 
+fn retire_native(native: &mut Option<Native>, shared: &Shared, allow_idle_recovery: bool) {
+    let retired = native.take();
+    let idle = allow_idle_recovery
+        && shared.recovery_demand.is_some()
+        && retired.as_ref().is_some_and(|owner| {
+            owner.client.as_ref().unwrap().stop_cause() == Some(DriverStop::Idle)
+        });
+    drop(retired);
+    if idle {
+        shared.idle_retired.store(true, Ordering::Release);
+    }
+}
+
 fn coordinate(
     host: ExecutionHost,
     controller: GuardedController,
@@ -989,10 +1002,6 @@ fn coordinate(
             drop(native.take());
             provisional = None;
         }
-        let idle_exit = shared.recovery_demand.is_some()
-            && native.as_ref().is_some_and(|owner| {
-                owner.client.as_ref().unwrap().stop_cause() == Some(DriverStop::Idle)
-            });
         let ready = native
             .as_mut()
             .map(|owner| owner.client.as_mut().unwrap().poll_ready());
@@ -1012,7 +1021,7 @@ fn coordinate(
                 if !shared.ready.load(Ordering::Acquire) {
                     shared.startup_failures.fetch_add(1, Ordering::AcqRel);
                 }
-                drop(native.take());
+                retire_native(&mut native, &shared, provisional.is_none());
             }
             None => (),
         }
@@ -1028,10 +1037,7 @@ fn coordinate(
             .as_ref()
             .is_some_and(|n| n.client.as_ref().unwrap().stop_cause().is_some())
         {
-            drop(native.take());
-        }
-        if idle_exit && provisional.is_none() {
-            shared.idle_retired.store(true, Ordering::Release);
+            retire_native(&mut native, &shared, provisional.is_none());
         }
         if native.is_none() {
             provisional = None;
