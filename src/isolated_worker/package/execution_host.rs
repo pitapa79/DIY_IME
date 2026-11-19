@@ -493,6 +493,7 @@ struct PlanEvidence {
     activities: Vec<super::super::adapter::WasmNode>,
     official: Option<StaticOfficialPipeline>,
     retention_evaluation_graph: Option<Graph>,
+    idle_recovery_target: Option<crate::graph::Endpoint>,
 }
 impl PlanEvidence {
     fn current(&self, catalog: &CatalogSnapshot, generation: &Arc<()>) -> bool {
@@ -782,6 +783,10 @@ impl Runner {
                 "installed implementations changed during preparation",
             ));
         }
+        // The compiled plan moves into the Core when the permission Session opens.
+        let idle_recovery_target = super::super::adapter::RetainedOwners::idle_overlap_requested()
+            .then(|| plan.idle_recovery_target(&graph))
+            .flatten();
         let pending = self
             .book
             .open_session(&self.service, plan, DecimalId::new(1)?)?;
@@ -798,6 +803,7 @@ impl Runner {
                 retention_evaluation_graph:
                     super::super::adapter::RetainedOwners::evaluation_group_size()?
                         .map(|_| graph.clone()),
+                idle_recovery_target,
             },
         });
         plan_timing.complete();
@@ -1014,16 +1020,6 @@ impl Runner {
                         )
                     })
                     .transpose()?;
-                let idle_target = if super::super::adapter::RetainedOwners::idle_overlap_requested()
-                {
-                    pending
-                        .evidence
-                        .retention_evaluation_graph
-                        .as_ref()
-                        .and_then(|graph| pending.session.idle_recovery_target(graph))
-                } else {
-                    None
-                };
                 let wait_for_jit = std::env::var_os("DIY_EXPERIMENT_JIT_ACTIVATION_READY")
                     .as_deref()
                     == Some(std::ffi::OsStr::new("1"));
@@ -1060,7 +1056,7 @@ impl Runner {
                         self.host.clone(),
                         session.controller().clone(),
                         groups,
-                        idle_target,
+                        pending.evidence.idle_recovery_target.clone(),
                     )?)
                 } else {
                     fixed_retained.map(super::super::adapter::RetainedOwners::fixed)
