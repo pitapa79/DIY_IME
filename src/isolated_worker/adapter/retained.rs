@@ -21,6 +21,7 @@ struct Command {
     completion: CompletionPermit,
     cancel: CancellationToken,
     done: mpsc::SyncSender<()>,
+    startup_retry_until: Option<std::time::Instant>,
 }
 impl Command {
     fn fail(self, error: CoreError) {
@@ -176,6 +177,7 @@ impl NodeLink {
             completion,
             cancel,
             done,
+            startup_retry_until: None,
         };
         // A failed thread creation must return ownership to the caller.
         let owned = Arc::new(Mutex::new(Some(command)));
@@ -571,20 +573,23 @@ fn control_state(
     controller.control_state()
 }
 
+fn current_run(shared: &Shared, controller: &GuardedController, key: &RunKey) -> bool {
+    let _probe = shared
+        .control_probe
+        .as_ref()
+        .map(|probe| probe.lock().unwrap_or_else(|p| p.into_inner()));
+    !shared.stop.is_cancelled()
+        && controller
+            .get_run(key)
+            .is_ok_and(|snapshot| snapshot.current && snapshot.state != RunPhase::Terminal)
+}
+
 impl RecoveryDemand {
     fn current(&self, shared: &Shared, controller: &GuardedController) -> bool {
-        let _probe = shared
-            .control_probe
-            .as_ref()
-            .map(|probe| probe.lock().unwrap_or_else(|p| p.into_inner()));
         !self.cancel.is_cancelled()
-            && !shared.stop.is_cancelled()
-            && controller
-                .get_run(&self.key)
-                .is_ok_and(|snapshot| snapshot.current && snapshot.state != RunPhase::Terminal)
+            && current_run(shared, controller, &self.key)
             && !self.cancel.is_cancelled()
     }
-
     fn validate(&self, shared: &Shared, controller: &GuardedController) -> Result<(), CoreError> {
         if self.current(shared, controller) {
             Ok(())
@@ -597,6 +602,15 @@ impl RecoveryDemand {
     }
 }
 
+enum StartupAttempt<'a> {
+    Ordinary,
+    Recovery(&'a RecoveryDemand),
+    Retry {
+        key: &'a RunKey,
+        cancel: &'a CancellationToken,
+    },
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -605,8 +619,12 @@ impl Native {
         ids: &[String],
         configs: &[Value],
         shared: &Arc<Shared>,
-        recovery: Option<&RecoveryDemand>,
+        attempt: StartupAttempt<'_>,
     ) -> Result<Self, CoreError> {
+        let recovery = match attempt {
+            StartupAttempt::Recovery(demand) => Some(demand),
+            _ => None,
+        };
         if let Some(qualifications) = &shared.qualifications {
             for (((qualification, node), id), config) in
                 qualifications.iter().zip(nodes).zip(ids).zip(configs)
@@ -621,12 +639,15 @@ impl Native {
         let startup_permit = shared
             .startup_gate
             .as_ref()
-            .map(|gate| match recovery {
-                Some(demand) => match shared.recovery_startup.as_ref().and_then(|s| s.rank) {
-                    Some(rank) => gate.acquire_recovery(&demand.cancel, &shared.stop, rank),
-                    None => gate.acquire(&demand.cancel),
-                },
-                None => gate.acquire(&shared.stop),
+            .map(|gate| match attempt {
+                StartupAttempt::Recovery(demand) => {
+                    match shared.recovery_startup.as_ref().and_then(|s| s.rank) {
+                        Some(rank) => gate.acquire_recovery(&demand.cancel, &shared.stop, rank),
+                        None => gate.acquire(&demand.cancel),
+                    }
+                }
+                StartupAttempt::Ordinary => gate.acquire(&shared.stop),
+                StartupAttempt::Retry { cancel, .. } => gate.try_acquire(cancel, &shared.stop),
             })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
@@ -687,14 +708,22 @@ impl Native {
             .inspect_err(|_| shared.record_phase("startup-scope-failed"))?;
         // Reserve BEFORE any compiler process starts. Preparation and the
         // replacement process never overlap and use this same charged slot.
-        let pin = RetainedReservation::reserve(host, bindings, &cancel).inspect_err(|error| {
-            shared.record_phase(if error.code == "busy" {
-                "startup-reservation-busy"
+        let pin = RetainedReservation::reserve(host, bindings, &cancel).map_err(|error| {
+            if error.code == "busy" {
+                shared.record_phase("startup-reservation-busy");
+                fail(
+                    "retained-startup-reservation-busy",
+                    "retained Worker reservation is full",
+                )
             } else {
-                "startup-reservation-failed"
-            });
+                shared.record_phase("startup-reservation-failed");
+                error
+            }
         })?;
         shared.record_phase("reservation-acquired");
+        if let StartupAttempt::Retry { key, .. } = attempt {
+            shared.record_run_phase("startup-reservation-retry-admitted", Some(key.run_id));
+        }
         shared.record_phase("preparation-permit-waiting");
         let preparation_permit = shared
             .startup_gate
@@ -1017,11 +1046,19 @@ fn coordinate(
     let mut native = shared
         .eager_startup
         .then(|| {
-            Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None)
-                .inspect_err(|_| {
-                    shared.startup_failures.fetch_add(1, Ordering::AcqRel);
-                })
-                .ok()
+            Native::start(
+                &host,
+                &controller,
+                &nodes,
+                &ids,
+                &configs,
+                &shared,
+                StartupAttempt::Ordinary,
+            )
+            .inspect_err(|_| {
+                shared.startup_failures.fetch_add(1, Ordering::AcqRel);
+            })
+            .ok()
         })
         .flatten();
     let mut pending = None;
@@ -1095,7 +1132,7 @@ fn coordinate(
                         &ids,
                         &configs,
                         &shared,
-                        Some(&demand),
+                        StartupAttempt::Recovery(&demand),
                     )
                     .ok();
                     if native.is_some() {
@@ -1104,7 +1141,7 @@ fn coordinate(
                 }
             }
         }
-        let command = match pending
+        let mut command = match pending
             .take()
             .map(Ok)
             .unwrap_or_else(|| receive.recv_timeout(Duration::from_millis(5)))
@@ -1113,7 +1150,9 @@ fn coordinate(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        shared.record_run_phase("invocation-dequeued", Some(command.invocation.key().run_id));
+        if command.startup_retry_until.is_none() {
+            shared.record_run_phase("invocation-dequeued", Some(command.invocation.key().run_id));
+        }
         if command.cancel.is_cancelled() {
             command.fail(fail("worker-cancelled", "invocation cancelled"));
             continue;
@@ -1130,7 +1169,51 @@ fn coordinate(
         }
         if native.is_none() {
             shared.idle_retired.store(false, Ordering::Release);
-            native = Native::start(&host, &controller, &nodes, &ids, &configs, &shared, None).ok();
+            let attempt = if let Some(deadline) = command.startup_retry_until {
+                if !current_run(&shared, &controller, command.invocation.key()) {
+                    command.fail(fail(
+                        "worker-cancelled",
+                        "startup retry is no longer current",
+                    ));
+                    continue;
+                }
+                if std::time::Instant::now() >= deadline {
+                    command.legacy(&shared);
+                    continue;
+                }
+                StartupAttempt::Retry {
+                    key: command.invocation.key(),
+                    cancel: &command.cancel,
+                }
+            } else {
+                StartupAttempt::Ordinary
+            };
+            match Native::start(&host, &controller, &nodes, &ids, &configs, &shared, attempt) {
+                Ok(owner) => native = Some(owner),
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        "retained-startup-reservation-busy" | "retained-startup-gate-busy"
+                    ) && shared
+                        .startup_gate
+                        .as_ref()
+                        .is_some_and(|gate| gate.requires_compiled()) =>
+                {
+                    // Native::start has released its permit. Keep the exact
+                    // Core callback charged while older work drains. No input
+                    // was delivered, so this only retries Worker preparation.
+                    command.startup_retry_until.get_or_insert_with(|| {
+                        std::time::Instant::now() + Duration::from_millis(250)
+                    });
+                    pending = Some(command);
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => {
+                    command.legacy(&shared);
+                    continue;
+                }
+            }
         }
         let Some(owner) = native.as_mut() else {
             command.legacy(&shared);

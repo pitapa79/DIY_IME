@@ -68,6 +68,28 @@ impl StartupGate {
         self.acquire_with_priority(cancel, Some((rank, stop)))
     }
 
+    pub(super) fn try_acquire(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        stop: &CancellationToken,
+    ) -> Result<StartupPermit, CoreError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
+        if cancel.is_cancelled() || stop.is_cancelled() {
+            return Err(fail("worker-cancelled", "startup cancelled"));
+        }
+        if state.busy == self.limit || !state.recovery_waiters.is_empty() {
+            return Err(fail(
+                "retained-startup-gate-busy",
+                "startup slots are occupied",
+            ));
+        }
+        state.busy += 1;
+        Ok(StartupPermit(self.clone()))
+    }
+
     fn acquire_with_priority(
         self: &Arc<Self>,
         cancel: &CancellationToken,
@@ -637,6 +659,28 @@ mod tests {
         assert!(gate.state.lock().unwrap().recovery_waiters.is_empty());
         assert_eq!(gate.state.lock().unwrap().busy, 1);
         drop(second);
+    }
+
+    #[test]
+    fn nonblocking_startup_permit_preserves_capacity_and_cancellation() {
+        let gate = Arc::new(StartupGate::bounded(2).unwrap());
+        let cancel = CancellationToken::default();
+        let stop = CancellationToken::default();
+        let first = gate.acquire(&cancel).unwrap();
+        let second = gate.try_acquire(&cancel, &stop).unwrap();
+        assert_eq!(
+            gate.try_acquire(&cancel, &stop).err().unwrap().code,
+            "retained-startup-gate-busy"
+        );
+        drop(second);
+        stop.cancel();
+        assert_eq!(
+            gate.try_acquire(&cancel, &stop).err().unwrap().code,
+            "worker-cancelled"
+        );
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
+        drop(first);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 
     #[test]
