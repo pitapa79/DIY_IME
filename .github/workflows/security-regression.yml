@@ -317,6 +317,28 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
+      - name: Compare metadata preparation cache on the bundled Windows Host
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && hashFiles(''target/windows-app/bundle-manifest.json'') != '''''
+        run: |
+          cargo build --locked --example retained_composition_preflight
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $status = 0
+          $trial = 0
+          foreach ($mode in @('baseline', 'cached', 'cached', 'baseline')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/metadata-preparation-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --metadata-preparation $mode
+            if ($LASTEXITCODE -ne 0) { $status = $LASTEXITCODE }
+          }
+          exit $status
+      - name: Preserve the metadata preparation comparison
+        if: '!cancelled() && matrix.segment == ''retention-graphs'' && hashFiles(''target/metadata-preparation-*/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-metadata-preparation-${{ github.sha }}
+          path: target/metadata-preparation-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Prepared JIT mixed Wasm graph comparison
         if: matrix.segment == 'prepared'
         run: |

@@ -49,11 +49,23 @@ The fixture owns its staging parents; code-cache cleanup must leave them empty
 before the fixture removes those empty directories. CI adds this canary to the
 existing runtime-cache segment.
 
-Timing acceptance still requires same-source, same-binary OFF/ON comparisons for
-1/4/20 nodes, preserving preparation, approval, activation, readiness, first input,
-whole sample denominators, CPU/RAM, failures and final original-owner cleanup.
-Compiler-count tests alone do not prove a speedup. Guest ABI spans are not pure
-Node semantics, and percentiles from independent samples must not be subtracted.
+The packaged Windows Host comparison uses the same source, fixtures and binaries
+in OFF → ON → ON → OFF order. Each arm runs fresh Host sessions for 1, 4 and 20
+serial stages, with 20 ms, 100 ms and sequential input. The only experiment flag
+changed between arms is `DIY_EXPERIMENT_PREPARATION_CODE_CACHE`.
+
+The report keeps manager review and commit, Host prepare, approve and activate,
+latency of the first burst's latest correct input, and elapsed time from the
+Host prepare request to that same correct observation. The readiness endpoint is
+the first positive status observed after an input burst. The first input follows
+activation and trace setup. Readiness may have been reached before the status
+observation. The report
+preserves all input outcomes, Job CPU and memory, source and binary hashes and
+final Job and workspace cleanup. A missing Job memory read keeps the arm failed.
+
+The latest validation is pending on Windows. The comparison measures both setup
+and input response because reuse may shift preparation cost from the first
+input into setup. Compare the recorded endpoints within their own trials.
 
 The serious latest-input recovery tails, broader #109 boundary/long-run coverage,
 normal-path integration and the dependency audit blocker #137 remain separate

@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,7 @@ def main():
     parser.add_argument('bundle', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('preflight', type=Path)
+    parser.add_argument('--metadata-preparation', choices=('baseline', 'cached'))
     args = parser.parse_args()
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
@@ -50,7 +52,12 @@ def main():
     assert len(cases) == 25
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
-    manifest = {'issue': 135, 'parentGoal': 109, 'sourceCommit': source,
+    if args.metadata_preparation:
+        cases = [c for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'
+                 and c['cadence'] == 'cold-paced' and c['timing']]
+        assert [c['count'] for c in cases] == [1, 4, 20]
+        planned.write_text(json.dumps(cases), encoding='utf-8')
+    manifest = {'issue': 140 if args.metadata_preparation else 135, 'parentGoal': 109, 'sourceCommit': source,
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
                 'moduleFiles': {str(path.relative_to(repo)): sha(path) for path in modules},
@@ -64,6 +71,8 @@ def main():
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
                     'editor/src/executionTrace.ts']}, 'plannedCases': cases,
                 'cases': [], 'complete': False, 'notRun': []}
+    if args.metadata_preparation:
+        manifest['metadataPreparationArm'] = args.metadata_preparation
     def save():
         manifest['evidenceFiles'] = {path.name: sha(path) for path in output.iterdir()
                                    if path.is_file() and path.name != 'manifest.json'}
@@ -72,6 +81,11 @@ def main():
         (output/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     base = {key: value for key, value in os.environ.items() if not key.startswith('DIY_EXPERIMENT_')}
     base.pop('GITHUB_SHA', None)
+    base.pop('DIY_PRIMITIVE_METADATA_PREPARATION_COMPARISON', None)
+    if args.metadata_preparation:
+        base['DIY_PRIMITIVE_METADATA_PREPARATION_COMPARISON'] = '1'
+    if args.metadata_preparation == 'cached':
+        base['DIY_EXPERIMENT_PREPARATION_CODE_CACHE'] = '1'
     base.update({'DIY_REVIEW_MODULE_A': str(modules[0]), 'DIY_REVIEW_MODULE_B': str(modules[1]),
                  'DIY_PRIMITIVE_MATRIX': '1', 'DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK': '1',
                  'DIY_PRIMITIVE_PYTHON': sys.executable, 'DIY_MEASUREMENT_SOURCE_SHA': source,
@@ -118,11 +132,33 @@ def main():
             assert data['binaries']['host'] == hashes[files[0]]
             assert all(t['dropped'] == 0 for t in data['traceCollections'])
             assert owned['driverExitCode'] == 0 and owned['allDescendantsExited'] and not owned['timedOut']
-            assert owned['missingProcessMemoryReads'] == 0
-            case.update(checksPassed=True, resourcePolicy=data['resourcePolicy'],
+            missing = owned['missingProcessMemoryReads']
+            if args.metadata_preparation:
+                flag = 'DIY_EXPERIMENT_PREPARATION_CODE_CACHE'
+                assert data['requestedControls'][flag] == env.get(flag)
+                assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
+                                                     (hashes[path] for path in files[:4]), strict=True))
+                evidence = data['metadataPreparation']
+                assert evidence['cacheRequested'] == (args.metadata_preparation == 'cached')
+                for field in ('managerReviewAndCommitMs', 'hostPrepareMs', 'hostApproveMs', 'hostActivateMs',
+                              'firstLatestResponseMs', 'hostPrepareThroughFirstLatestMs',
+                              'hostPrepareThroughReadinessObservationMs'):
+                    assert math.isfinite(evidence[field]) and evidence[field] >= 0, field
+                host_setup = sum(evidence[k] for k in ('hostPrepareMs', 'hostApproveMs', 'hostActivateMs'))
+                assert math.isclose(host_setup, data['prepareAndActivateMs'], rel_tol=0, abs_tol=1e-6)
+                assert evidence['hostPrepareThroughFirstLatestMs'] >= data['prepareAndActivateMs']
+                assert evidence['hostPrepareThroughReadinessObservationMs'] >= evidence['hostPrepareThroughFirstLatestMs']
+                case['metadataPreparation'] = evidence
+                case['missingProcessMemoryReads'] = missing
+                if missing:
+                    case['failure'] = 'Windows Job process-memory observation missing'
+            else:
+                assert missing == 0
+            case.update(checksPassed=missing == 0, resourcePolicy=data['resourcePolicy'],
                         executedIds=data['executedIds'], unexecutedIds=data['unexecutedIds'],
                         warm=data.get('warmResultMs'), pacing=data.get('pacing'))
             save()
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Native case memory gaps preserved'
         manifest['complete'] = True
     except BaseException as error:
         manifest['failure'] = {'type': type(error).__name__, 'message': str(error)}
