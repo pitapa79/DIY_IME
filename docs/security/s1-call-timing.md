@@ -184,6 +184,12 @@ CI 44758981867の同一バイナリの構成試験では、参照・候補とも
 並列側のPID 8092には前後の計測値がなく、合流側のPID 5632は750msと875msに同じ作成時刻で読み取れたが、968msの値は欠測した。
 [参照の成果物](https://github.com/pitapa79/DIY_IME/actions/runs/44758981867/artifacts/14640584687)・[候補の成果物](https://github.com/pitapa79/DIY_IME/actions/runs/44758981867/artifacts/14642040688)
 
+同じCIの通常Host資格・失効検査は6/6件で合格した。レビュー済みの単段コンパイル経路では4,097/4,097入力が正答した。
+4,096件目までのWorker（PID 3492）は、プロセスとI/Oの終了から5.015ms後にOwnerのjoinを完了した。
+その61.578ms後に後継Worker（PID 7520）で4,097件目の呼出しが始まり、最新入力の投入から77.256msで正答を確認した。
+旧キーは非currentで結果なし。trace dropとメモリ欠測は0件で、全子孫と作業領域を回収した。上限到達の計測は単段1試行。
+[通常Hostの資格・呼出し上限の成果物](https://github.com/pitapa79/DIY_IME/actions/runs/44758981867/artifacts/14642415792)
+
 ## 未完了
 
 Wasm API内の意味的処理区間の分離、受付・公開を含む基盤追加遅延の評価、通常HostのCore計測が残る。
