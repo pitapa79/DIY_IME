@@ -1072,12 +1072,22 @@ impl WasmArtifact {
         // Keep the original pin on this same thread until actual exit/IO and ACL
         // cleanup. A cleanup retry cannot mint a successor or refund ownership.
         shared.record_phase("acl-release-started");
+        let mut observed_module_retry = false;
         for mut lease in module_leases {
             while lease.release().is_err() {
+                if !observed_module_retry {
+                    shared.record_phase("module-acl-release-retry");
+                    observed_module_retry = true;
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+        let mut observed_runtime_retry = false;
         while runtime_lease.release().is_err() {
+            if !observed_runtime_retry {
+                shared.record_phase("runtime-acl-release-retry");
+                observed_runtime_retry = true;
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
         drop(runtime_lease);
