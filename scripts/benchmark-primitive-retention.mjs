@@ -24,10 +24,11 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime'].includes(cadence));
+assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime','call-limit'].includes(cadence));
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
+const callLimit=cadence==='call-limit';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
 const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
@@ -46,6 +47,11 @@ const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
+if(callLimit) {
+  assert(thirdparty && layout==='serial' && mode==='separate' && count===1 && samples===1 && timing &&
+    process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1',
+    'call-limit case requires one reviewed compiled Worker with lifecycle diagnostics');
+}
 if(lifetime) {
   assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
     'lifetime case requires the bounded 20-node compiled fixture');
@@ -195,7 +201,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
   mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold && !deferredInitialStartup,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
-  requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
+  requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','RETAINED_PREPARED_PROFILE','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 if(lifetime && timing) {
@@ -277,21 +283,27 @@ try {
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
-  async function witnessProvisional(key,phase) {
+  const startupAdopted=e=>e.phase==='startup-owner-adopted' || e.phase==='invocation-call-started';
+  async function witnessProvisionalWorkers(key,phase) {
     return until(async()=>{
-      const status=await host.call({method:'status'});
       const snapshot=await read(key);
       assert(snapshot.current && !ended(snapshot),'the run ended before observing a provisional Worker');
+      // Observe the real Worker immediately before requesting the interruption.
+      const status=await host.call({method:'status'});
+      assert.equal(status.sessionEpoch,key.sessionEpoch);
       const candidates=status.retainedWorker.callSamples.flatMap(({nodeIds:[nodeId],calls})=>{
         const demand=calls.phases.find(e=>e.phase===phase && e.runId===key.runId);
         if(!demand)return [];
         const events=calls.phases.filter(e=>e.attempt===demand.attempt);
         const resumed=events.find(e=>e.phase==='native-resume-thread-finished');
         if(!resumed?.processId || !status.retainedWorker.processIds.includes(resumed.processId) ||
-            events.some(e=>e.phase==='owner-joined' || e.phase==='invocation-call-started'))return [];
-        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state}];
+            events.some(e=>e.phase==='owner-joined' || startupAdopted(e)))return [];
+        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state,
+          resumeObservedAtNs:resumed.atNs}];
       });
-      return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+      return candidates.length
+        ? candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))
+        : null;
     },15000);
   }
   async function collectTrace() {
@@ -362,6 +374,68 @@ try {
     assert.equal(status.retainedWorker.compiledGenerations,0);
     assert.equal(status.workerProcesses,0);
     report.startupRefusalVerified=true;
+  } else if(callLimit) {
+    const callBudget = 4096;
+    const baseline = report.lifetimeReady.retainedWorker;
+    const [originalPid] = baseline.processIds;
+    assert(originalPid > 0 && baseline.decodedReplies === 0);
+    const proof = {callBudget, originalPid, inputsVerified:0, passed:false};
+    report.retainedCallLimit = proof;
+    const offer = async sample => {
+      const text = `  ka${sample}🙂漢字  `;
+      const key = await submit(text);
+      assert(!key.admissionRejected, 'the latest input must be admitted');
+      const snapshot = await until(async () => {
+        const value = await read(key);
+        return ended(value) ? value : null;
+      });
+      verify(snapshot, expected(text));
+      proof.inputsVerified++;
+      return key;
+    };
+    for(let index=0; index<callBudget-1; ++index) await offer(index);
+    const beforeLimit = await host.call({method:'status'});
+    assert.equal(beforeLimit.retainedWorker.decodedReplies, callBudget-1);
+    assert.equal(beforeLimit.retainedWorker.generation, baseline.generation);
+    assert.deepEqual(beforeLimit.retainedWorker.processIds, [originalPid]);
+    proof.oldKey = await offer(callBudget-1);
+    const exhausted = await host.call({method:'status'});
+    assert.equal(exhausted.retainedWorker.decodedReplies, callBudget);
+    assert.equal(exhausted.retainedWorker.generation, baseline.generation);
+    assert(exhausted.retainedWorker.processIds.every(pid=>pid===originalPid));
+    assert.equal(exhausted.retainedWorker.activeInput, false);
+    proof.exhausted = exhausted;
+    statuses.push(exhausted);
+    await host.call({method:'traceStartDetailed'});
+    const latestOffered = performance.now();
+    proof.latestKey = await offer(callBudget);
+    proof.latestInputToVerifiedMs = performance.now()-latestOffered;
+    const replaced = await host.call({method:'status'});
+    const [newPid] = replaced.retainedWorker.processIds;
+    assert(newPid > 0 && newPid !== originalPid);
+    assert.equal(replaced.retainedWorker.generation, baseline.generation + 1);
+    assert.equal(replaced.retainedWorker.compiledGenerations, replaced.retainedWorker.generation);
+    assert.equal(replaced.retainedWorker.decodedReplies, callBudget + 1);
+    assert.equal(replaced.retainedWorker.physicalJobs, 1);
+    assert.equal(replaced.workerProcesses, 1);
+    const phases = replaced.retainedWorker.callSamples[0].calls.phases;
+    const previousExit = phases.find(e => e.phase === 'original-process-io-ended' && e.processId === originalPid);
+    const joined = phases.find(e => e.phase === 'owner-joined' && e.processId === originalPid);
+    const latest = phases.find(e => e.phase === 'invocation-call-started' && e.processId === newPid &&
+      e.runId === proof.latestKey.runId);
+    for(const phase of [previousExit, joined, latest]) assert(phase?.atNs);
+    assert.equal(previousExit.attempt, joined.attempt);
+    assert(BigInt(previousExit.atNs) <= BigInt(joined.atNs) && BigInt(joined.atNs) <= BigInt(latest.atNs));
+    const old = await host.send({method:'getRun',key:proof.oldKey});
+    proof.oldResultFence = old.ok ? {current:old.data.snapshot.current,result:old.data.snapshot.result} :
+      {errorCode:old.error?.code};
+    assert(old.ok ? proof.oldResultFence.current === false && proof.oldResultFence.result === null :
+      ['result-gone', 'run-unknown'].includes(proof.oldResultFence.errorCode));
+    proof.replaced = replaced;
+    statuses.push(replaced);
+    traces.push({key:proof.latestKey,events:await collectTrace()});
+    await verifySampleRetrieval(replaced);
+    proof.passed = true;
   } else if(paced) {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
     report.pacedRounds=[];
@@ -545,20 +619,37 @@ try {
       const key=await submit('synthetic interrupted idle recovery');
       assert(!key.admissionRejected);
       guard.key=key;
-      guard.witness=await witnessProvisional(key,'idle-recovery-demand-validated');
+      const witnesses=await witnessProvisionalWorkers(key,'idle-recovery-demand-validated');
+      guard.witness=witnesses[0];
       if(overlapAction==='cancel') {
+        guard.witnessCandidates=witnesses;
         await host.call({method:'cancelRun',key});
         guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
         assert.equal(guard.terminal.result.reason,'cancelled');
         guard.exit=await until(async()=>{
           const s=await host.call({method:'status'});
           assert.equal(s.sessionEpoch,before.sessionEpoch);
-          const {nodeId,attempt,pid}=guard.witness;
-          const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
-          const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
-          assert(!events.some(e=>e.phase==='invocation-call-started' && e.runId===key.runId),
-            'the witnessed Worker had already adopted the input');
-          return !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
+          // The graph can advance during the cancel RPC. Require a real witnessed
+          // replacement that was reclaimed without ever adopting an input.
+          guard.witnessOutcomes=witnesses.map(witness=>{
+            const {nodeId,attempt,pid}=witness;
+            const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
+            const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
+            return {
+              witness,
+              adoption:events.find(startupAdopted)??null,
+              joined:events.find(e=>e.phase==='owner-joined')??null,
+              demandMatched:events.some(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId),
+              processStillListed:s.retainedWorker.processIds.includes(pid),
+            };
+          });
+          assert(guard.witnessOutcomes.some(outcome=>!outcome.adoption),
+            'every witnessed Worker had already adopted an input');
+          const reclaimed=guard.witnessOutcomes.find(outcome=>
+            !outcome.adoption && outcome.joined && outcome.demandMatched && !outcome.processStillListed);
+          if(!reclaimed)return null;
+          guard.witness=reclaimed.witness;
+          return reclaimed.joined;
         },15000);
       } else {
         await host.call({method:'protection',enabled:true});
@@ -587,7 +678,12 @@ try {
       const freshText='  ka recovery 🙂漢字  ';
       const {key}=await observeWarmInput({sample:0,attempts:recovery.attempts,
         submit:attempt=>submit(freshText,attempt),read,until,ended,verify,expected:expected(freshText),
-        clock:elapsed});
+        clock:elapsed}).catch(async error=>{
+        const status=await Promise.race([host.send({method:'status'}),delay(2000,null,{ref:false})])
+          .catch(()=>null);
+        recovery.failureStatus=status?.ok?status.data:null;
+        throw error;
+      });
       recovery.latestCorrectVerifiedMs=elapsed();
       assert.notEqual(key.runId,oldKey.runId);
       const old=await host.send({method:'getRun',key:oldKey});
@@ -633,7 +729,7 @@ try {
         assert.equal(key.sessionEpoch,before.sessionEpoch);
         const guard={action,key,before,passed:false};
         proof.guards.push(guard);
-        guard.witness=await witnessProvisional(key,'initial-startup-demand-validated');
+        [guard.witness]=await witnessProvisionalWorkers(key,'initial-startup-demand-validated');
         assert.notEqual(guard.witness.nodeId,executedIds[0]);
         if(action==='cancel') {
           await host.call({method:'cancelRun',key});
@@ -643,8 +739,11 @@ try {
             const s=await host.call({method:'status'});
             const row=s.retainedWorker.callSamples.find(r=>r.nodeIds[0]===guard.witness.nodeId);
             const events=row.calls.phases.filter(e=>e.attempt===guard.witness.attempt);
-            assert(!events.some(e=>e.phase==='invocation-call-started'));
-            return !s.retainedWorker.processIds.includes(guard.witness.pid) &&
+            const adoption=events.find(startupAdopted);
+            if(adoption)guard.adoptionBeforeReclaim=adoption;
+            assert(!adoption,'the witnessed Worker had already adopted an input');
+            return events.some(e=>e.phase==='initial-startup-demand-validated' && e.runId===key.runId) &&
+              !s.retainedWorker.processIds.includes(guard.witness.pid) &&
               events.find(e=>e.phase==='owner-joined');
           });
         } else {
@@ -764,6 +863,8 @@ try {
     const recovered=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
     faultRecovery.allOwnersReadyObservedMs=elapsed();
     assert(!recovered.retainedWorker.processIds.includes(pid));
+    // Keep both observations before closeSession discards this owner cohort.
+    if(timing)statuses.push(status,recovered);
     report.safety.push({check:'owned-original-process-fault-no-retroactive-result-change-and-recovery',passed:true,pid});
 
     const successor=await correct('ka');await host.call({method:'closeSession'});await drained();
@@ -820,14 +921,14 @@ try {
   report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
-  if(!paced&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
+  if(!paced&&!callLimit&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
     report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);
   try {
     if(manager)await manager.close();
     if(host)await host.close();
-    if(initialStartupComparison && !report.completed)
+    if(!report.completed)
       report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
   }
   finally {

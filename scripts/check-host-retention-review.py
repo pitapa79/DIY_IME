@@ -58,11 +58,14 @@ def main():
         for index, (mode, count, cadence) in enumerate([
             ('0', 1, 'warm'), ('separate', 1, 'warm'), ('separate', 4, 'warm'),
             ('separate', 20, 'warm'), ('separate', 20, 'safety'),
+            ('separate', 1, 'call-limit'),
         ]):
             name = f'{index:02}-{mode}-{count}-{cadence}'
             report, job = output/(name+'.json'), output/(name+'.job.json')
             env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
             env['DIY_EXPERIMENT_RETAINED_TIMING'] = '0' if mode == '0' else '1'
+            env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if cadence == 'call-limit' else '0'
+            env['DIY_EXPERIMENT_COMPILED_JIT'] = env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT']
             env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(report)
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
@@ -85,6 +88,9 @@ def main():
             assert owned['allDescendantsExited'] and not owned['timedOut']
             assert owned['driverExitCode'] == 0 and owned['missingProcessMemoryReads'] == 0
             assert all(trace['dropped'] == 0 for trace in data['traceCollections'])
+            if cadence == 'call-limit':
+                proof = data['retainedCallLimit']
+                assert proof['passed'] and proof['inputsVerified'] == proof['callBudget'] + 1 == 4097
             case['checksPassed'] = True
             save()
         manifest['complete'] = True

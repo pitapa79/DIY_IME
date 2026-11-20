@@ -20,6 +20,41 @@ def read(path):
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
+def profile_pool_evidence(report, idle_recovery=False):
+    if idle_recovery:
+        proof = report['retainedLifetime']
+        statuses = [proof['after']]
+        recovery, = proof['recoveryAttempts']
+        recovered = {(row['nodeId'], row['processId']) for row in proof['sameCall']['rows']
+                     if row['status'] == 'paired' and row['key'] == recovery['key']}
+    else:
+        statuses = [report.get('lifetimeReady'), *report['statuses'],
+                    *(round.get('status') for round in report.get('pacedRounds', []))]
+    consumed, missed, invoked = set(), set(), set()
+    for status in filter(None, statuses):
+        for owner in status['retainedWorker'].get('callSamples', []):
+            by_attempt = {}
+            for phase in owner['calls']['phases']:
+                if phase['attempt'] is not None:
+                    by_attempt.setdefault(phase['attempt'], {})[phase['phase']] = phase
+            for attempt, phases in by_attempt.items():
+                key = (status['sessionEpoch'], *owner['nodeIds'], attempt)
+                if 'profile-pool-miss' in phases:
+                    missed.add(key)
+                if 'profile-pool-consumed' in phases:
+                    consumed.add(key)
+                    resumed = phases.get('native-resume-thread-finished')
+                    finished = phases.get('invocation-call-finished')
+                    if resumed and finished and resumed['processId'] == finished['processId'] and resumed['processId']:
+                        if idle_recovery and (finished['runId'] != recovery['key']['runId']
+                                             or (owner['nodeIds'][0], finished['processId']) not in recovered):
+                            continue
+                        if int(phases['profile-pool-consumed']['atNs']) <= int(resumed['atNs']) <= int(finished['atNs']):
+                            invoked.add(key)
+    assert not consumed & missed, 'conflicting profile origins for one Worker attempt'
+    return {'consumed': sorted(consumed), 'fallback': sorted(missed), 'invoked': sorted(invoked)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('bundle', type=Path)
@@ -37,6 +72,8 @@ def main():
                         help='prioritize queued idle replacement starts in dependency order')
     parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'scoped', 'deferred-safety', 'scoped-safety'),
                         help='compare initial startup policies on timed cold input fixtures')
+    parser.add_argument('--profile-pool', choices=('fresh', 'prepared'),
+                        help='compare fresh and unused prepared AppContainer profiles')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
                         help='interrupt a witnessed idle replacement after the measured recovery')
     args = parser.parse_args()
@@ -52,6 +89,10 @@ def main():
         parser.error('--ordered-recovery requires --idle-overlap')
     if args.initial_startup and (not args.candidate or args.lifetime):
         parser.error('--initial-startup requires --candidate and cannot use --lifetime')
+    if args.profile_pool and (not args.candidate or args.initial_startup):
+        parser.error('--profile-pool requires --candidate and excludes --initial-startup')
+    if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
+        parser.error('idle profile comparisons require --ordered-recovery without --overlap-action')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -82,6 +123,12 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
+    if args.profile_pool and not args.lifetime:
+        case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
+                 and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
+        cases = [case, dict(case, cadence='paced'), dict(case, cadence='safety', samples=1)]
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+        issue, profile = 178, f'retained-profile-{args.profile_pool}'
     if args.initial_startup in ('deferred-safety', 'scoped-safety'):
         case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
                  and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
@@ -104,6 +151,8 @@ def main():
         issue, profile = (172, 'retained-lifetime-timing') if args.lifetime_timing else (166, 'retained-lifetime')
         if args.idle_overlap:
             issue, profile = 174, 'retained-lifetime-overlap'
+        if args.profile_pool:
+            issue, profile = 178, f'retained-idle-profile-{args.profile_pool}'
     manifest = {'issue': issue,
                 'parentGoal': 109, 'sourceCommit': source,
                 'profile': profile,
@@ -165,6 +214,8 @@ def main():
                 env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = '2'
                 if args.candidate:
                     env.update(dict.fromkeys(candidate_controls, '1'))
+                if args.profile_pool == 'prepared':
+                    env['DIY_EXPERIMENT_RETAINED_PREPARED_PROFILE'] = '1'
                 if args.idle_overlap:
                     env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
                 if args.ordered_recovery:
@@ -186,7 +237,7 @@ def main():
                 result = subprocess.run(command, cwd=repo, env=env, stdout=log, stderr=log, timeout=330)
             case['exitCode'] = result.returncode
             save()
-            if result.returncode != 0 and args.initial_startup in ('eager', 'deferred', 'scoped'):
+            if result.returncode != 0 and (args.profile_pool or args.initial_startup in ('eager', 'deferred', 'scoped')):
                 owned = read(job)
                 failed_report = read(report)
                 assert failed_report['sourceCommit'] == source
@@ -212,6 +263,17 @@ def main():
                 assert data['requestedControls'] == expected
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
+            if args.profile_pool:
+                profiles = profile_pool_evidence(data, idle_recovery=args.lifetime)
+                case['preparedProfileEvidence'] = profiles
+                save()
+                if args.profile_pool == 'prepared':
+                    assert profiles['invoked'], 'no actual call used a prepared profile'
+                else:
+                    assert not any(profiles.values()), 'fresh control touched the prepared profile pool'
+                if spec['cadence'] == 'safety':
+                    assert data['controlledCancellation']['passed']
+                    assert data['workerFaultRecovery']['oldResultFence']
             if args.initial_startup:
                 proof = data['initialStartupComparison']
                 assert proof['deferred'] == (args.initial_startup != 'eager')
@@ -254,6 +316,11 @@ def main():
                     if args.overlap_action == 'cancel':
                         assert guard['terminal']['result']['reason'] == 'cancelled'
                         assert guard['exit']['phase'] == 'owner-joined'
+                        assert guard['witness'] in guard['witnessCandidates']
+                        outcome, = (row for row in guard['witnessOutcomes']
+                                    if row['witness'] == guard['witness'])
+                        assert outcome['joined'] == guard['exit'] and outcome['demandMatched']
+                        assert outcome['adoption'] is None and not outcome['processStillListed']
                     else:
                         assert guard['terminal']['ok'] is False
                         assert guard['exit']['phase'] == 'protected'

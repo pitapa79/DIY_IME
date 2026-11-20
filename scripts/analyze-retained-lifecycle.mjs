@@ -20,6 +20,9 @@ const pairs={
   resumedToReadiness:['native-resume-thread-finished','readiness-observed'],
   retirementToOriginalExit:['retirement-requested','original-process-io-ended'],
   aclRelease:['acl-release-started','acl-release-finished'],
+  moduleAclRelease:['acl-release-started','runtime-acl-release-started'],
+  runtimeAclRelease:['runtime-acl-release-started','runtime-acl-release-finished'],
+  runtimeLeaseDrop:['runtime-acl-release-finished','acl-release-finished'],
   profileDelete:['profile-delete-started','profile-delete-finished'],
   retirementToOwnerJoin:['retirement-requested','owner-joined'],
 };

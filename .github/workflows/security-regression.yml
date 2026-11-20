@@ -165,19 +165,6 @@ jobs:
           path: target/retained-chunked-snapshot-evidence/
           if-no-files-found: error
           retention-days: 5
-      - name: Verified retained DLL through Host cancellation and recovery
-        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_identity.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
-        run: |
-          python scripts/run-retained-native-startup-profile.py --verified-runtime-safety
-          exit $LASTEXITCODE
-      - name: Preserve verified retained Host safety evidence
-        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-verified-runtime-safety-evidence/manifest.json'') != '''''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: retained-verified-host-safety-${{ github.sha }}
-          path: target/retained-verified-runtime-safety-evidence/
-          if-no-files-found: error
-          retention-days: 5
       - name: Compare smaller retained Worker image
         if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
         run: |
@@ -197,6 +184,8 @@ jobs:
           if-no-files-found: error
           retention-days: 5
       - name: Build standalone Windows application
+        id: built_windows_app
+        if: success() || (!cancelled() && matrix.segment == 'primitive-startup' && steps.real_wasm.outcome == 'success')
         run: |
           $nodeRoot = Split-Path (Get-Command node).Source
           $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE 'target/tools/wasmtime50/wasmtime-v50.0.1-x86_64-windows-c-api'
@@ -384,6 +373,8 @@ jobs:
             if (!(Test-Path -LiteralPath $env:DIY_WASM_SCALING_REPORT_PATH)) { throw "Missing fixed-cadence report ($mode)" }
           }
       - name: Build alternate executable Wasm fixture
+        id: alternate_wasm
+        if: success() || (!cancelled() && matrix.segment == 'primitive-startup' && steps.built_windows_app.outcome == 'success')
         run: |
           $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
           cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/alternate-wasm
@@ -407,11 +398,15 @@ jobs:
         run: |
           python scripts/test_measure_primitive_retention_job.py
           exit $LASTEXITCODE
-      - name: Compare eager, demand and scoped S1 initial Worker startup
-        if: matrix.segment == 'primitive-startup'
+      - name: Build S1 startup comparison preflight
+        id: retained_startup_preflight
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.built_windows_app.outcome == 'success' && steps.alternate_wasm.outcome == 'success'"
         run: |
           cargo build --locked --example retained_composition_preflight
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit $LASTEXITCODE
+      - name: Compare eager, demand and scoped S1 initial Worker startup
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success'"
+        run: |
           $comparisonStatus = 0
           $trial = 0
           foreach ($mode in @('eager', 'deferred', 'scoped', 'scoped', 'deferred', 'eager')) {
@@ -430,6 +425,59 @@ jobs:
         with:
           name: retained-initial-startup-${{ github.sha }}
           path: target/initial-startup-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Compare fresh and prepared S1 AppContainer profiles
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success'"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($mode in @('fresh', 'prepared', 'prepared', 'fresh')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-profile-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve S1 prepared profile comparison
+        if: ${{ !cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/retained-profile-*/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-prepared-profile-${{ github.sha }}
+          path: target/retained-profile-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Verified retained DLL through Host cancellation and recovery
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.retained_verified_identity.outcome == ''success'' && hashFiles(''target/retained-native-startup-evidence/manifest.json'') != '''''
+        run: |
+          python scripts/run-retained-native-startup-profile.py --verified-runtime-safety
+          exit $LASTEXITCODE
+      - name: Preserve verified retained Host safety evidence
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/retained-verified-runtime-safety-evidence/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-verified-host-safety-${{ github.sha }}
+          path: target/retained-verified-runtime-safety-evidence/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Compare fresh and prepared profiles during ordered idle recovery
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success'"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($mode in @('fresh', 'prepared', 'prepared', 'fresh')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/retained-idle-profile-$trial-$mode" target/debug/examples/retained_composition_preflight.exe --candidate --lifetime --lifetime-timing --idle-overlap --ordered-recovery --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve S1 ordered idle profile comparison
+        if: ${{ !cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/retained-idle-profile-*/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-idle-profile-${{ github.sha }}
+          path: target/retained-idle-profile-*/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

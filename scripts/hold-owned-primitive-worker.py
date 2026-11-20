@@ -210,6 +210,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.hold_ms <= 10000:
         raise ValueError('finite hold bound required')
+    print('hold setup: verifying Worker identity', file=sys.stderr, flush=True)
     process, created = checked_worker(args.pid, args.root, args.digest)
     held = None
     finished, finalization = threading.Event(), threading.Lock()
@@ -227,6 +228,7 @@ def main():
 
     threading.Thread(target=watchdog, daemon=True).start()
     try:
+        print('hold setup: confirming suspended Worker threads', file=sys.stderr, flush=True)
         held = HeldThreads(process)
         count = len(held.threads)
         emit({'event': 'held', 'pid': args.pid, 'creationFileTime': created, 'threads': count})

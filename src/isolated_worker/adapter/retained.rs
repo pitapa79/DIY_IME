@@ -947,8 +947,30 @@ impl WasmArtifact {
         shared: Arc<Shared>,
     ) -> Result<Option<ExitReceipt>, CoreError> {
         shared.record_phase("profile-create-started");
+        let prepared = if compiled.is_some()
+            && shared
+                .qualifications
+                .as_ref()
+                .is_some_and(|nodes| nodes.len() == 1)
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_PREPARED_PROFILE").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            // The pool only contains unused profiles. Taking one transfers
+            // ownership; this lifetime's existing disposal path deletes it.
+            let profile = self.0.profile_pool.as_ref().and_then(|pool| pool.take());
+            shared.record_phase(if profile.is_some() {
+                "profile-pool-consumed"
+            } else {
+                "profile-pool-miss"
+            });
+            profile
+        } else {
+            None
+        };
         let mut profile = PreparationProfile {
-            profile: Profile::new()
+            profile: prepared
+                .map(Ok)
+                .unwrap_or_else(Profile::new)
                 .map_err(|_| fail("worker-isolation", "AppContainer unavailable"))?,
             strict: compiled.is_some(),
         };
@@ -1052,14 +1074,26 @@ impl WasmArtifact {
         // Keep the original pin on this same thread until actual exit/IO and ACL
         // cleanup. A cleanup retry cannot mint a successor or refund ownership.
         shared.record_phase("acl-release-started");
+        let mut observed_module_retry = false;
         for mut lease in module_leases {
             while lease.release().is_err() {
+                if !observed_module_retry {
+                    shared.record_phase("module-acl-release-retry");
+                    observed_module_retry = true;
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+        shared.record_phase("runtime-acl-release-started");
+        let mut observed_runtime_retry = false;
         while runtime_lease.release().is_err() {
+            if !observed_runtime_retry {
+                shared.record_phase("runtime-acl-release-retry");
+                observed_runtime_retry = true;
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
+        shared.record_phase("runtime-acl-release-finished");
         drop(runtime_lease);
         shared.record_phase("acl-release-finished");
         shared.record_phase("profile-delete-started");
@@ -1319,11 +1353,17 @@ fn coordinate(
             continue;
         }
         // Only the actual authorized invocation adopts a provisional Worker.
-        if owner.recovery.take().is_some_and(|lease| !lease.adopt()) {
-            drop(native.take());
-            provisional = None;
-            pending = Some(command);
-            continue;
+        if let Some(lease) = owner.recovery.take() {
+            if !lease.adopt() {
+                drop(native.take());
+                provisional = None;
+                pending = Some(command);
+                continue;
+            }
+            shared.record_run_phase(
+                "startup-owner-adopted",
+                Some(command.invocation.key().run_id),
+            );
         }
         provisional = None;
         let key = command.invocation.key().clone();

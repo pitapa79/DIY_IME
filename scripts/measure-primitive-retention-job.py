@@ -74,7 +74,21 @@ def sample(job, origin, previous_pids):
                 row['failureApi'] = 'OpenProcess'
         for handle, row in pending:
             read_member_memory(handle, job, row)
-    return dict(elapsedMs=(time.monotonic()-origin)*1000, assigned=pids.assigned,
+    elapsed_ms = (time.monotonic()-origin)*1000
+    missing = [row for row in rows if not row['available']]
+    if missing:
+        # Recheck after closing the observation handles. A PID absent now does
+        # not repair its missed sample or establish the time of process exit.
+        after = None
+        try:
+            after = base.query(job, 3, Pids())
+        except OSError:
+            pass
+        if after is not None and after.assigned == after.listed <= 64:
+            listed = set(after.ids[:after.listed])
+            for row in missing:
+                row['listedInJobAfterSample'] = row['pid'] in listed
+    return dict(elapsedMs=elapsed_ms, assigned=pids.assigned,
                 listed=pids.listed, processes=rows)
 
 

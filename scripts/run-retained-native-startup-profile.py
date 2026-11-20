@@ -185,7 +185,13 @@ def main():
             assert all(report["binaries"][key] == files[key] for key in ("host", "manager", "worker", "dll"))
             assert report["workspaceAfterHostExit"] == []
             assert all(row["dropped"] == 0 for row in report["traceCollections"])
-            assert job["allDescendantsExited"] and not job["timedOut"] and job["missingProcessMemoryReads"] == 0
+            assert job["allDescendantsExited"] and not job["timedOut"]
+            missing = job["missingProcessMemoryReads"]
+            row["missingProcessMemoryReads"] = missing
+            if missing:
+                # Preserve the failure and its evidence. The validated Job and
+                # workspace teardown allow the next independent case to run.
+                row["failure"] = "Windows Job process-memory observation missing"
             native = report["retainedNativeStartup"]
             assert not native["truncated"]
             if args.verified_runtime_safety:
@@ -202,7 +208,7 @@ def main():
                 cancelled = report["controlledCancellation"]
                 assert cancelled["passed"] and cancelled["outcome"] == "cancelled"
                 assert cancelled["pid"] in {sample["pid"] for sample in native["records"]}
-                row.update(checksPassed=True, safetyChecks=sorted(checks), rows=len(native["records"]))
+                row.update(checksPassed=missing == 0, safetyChecks=sorted(checks), rows=len(native["records"]))
                 save()
                 continue
             first = report["pacedRounds"][0]
@@ -228,9 +234,10 @@ def main():
                 completed = {p["phase"] for p in phases if p["role"] == role and p["event"] == "complete"
                              and (p["pid"], p["id"], p["phase"]) in started}
                 assert expected <= completed, f"{role} preparation phases missing: {sorted(expected - completed)}"
-            row.update(checksPassed=True, firstLatest=first["latestInput"], rows=len(native["records"]))
+            row.update(checksPassed=missing == 0, firstLatest=first["latestInput"], rows=len(native["records"]))
             print(json.dumps(row), flush=True)
             save()
+        assert all(row["checksPassed"] for row in state["results"]), "Native startup memory gaps preserved"
         state["complete"] = True
     except BaseException as error:
         state["failure"] = {"type": type(error).__name__, "message": str(error)}
