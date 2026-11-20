@@ -399,7 +399,13 @@ fn real_compiled_retained_checks_verified_runtime_identity_and_reclaims_owner() 
             receive.recv_timeout(Duration::from_secs(2)).unwrap();
             for run in 2..8 {
                 let cancel = CancellationToken::default();
-                let scope = fixture_empty(&fixture.gate, &fixture.target, run, cancel.clone());
+                let scope = fixture_scope(
+                    &fixture.gate,
+                    &fixture.target,
+                    run,
+                    cancel.clone(),
+                    fixture.source.clone(),
+                );
                 let mut input = fixture
                     .client
                     .as_mut()
