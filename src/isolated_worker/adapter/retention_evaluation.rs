@@ -16,7 +16,8 @@ pub(super) struct StartupGate {
 #[derive(Default)]
 struct StartupState {
     busy: usize,
-    recovery_waiters: std::collections::BTreeSet<usize>,
+    scoped_waiters: std::collections::BTreeSet<(StartupKind, usize)>,
+    retry_waiters: usize,
 }
 pub(super) struct StartupPermit(Arc<StartupGate>);
 impl Default for StartupGate {
@@ -56,55 +57,95 @@ impl StartupGate {
         self: &Arc<Self>,
         cancel: &CancellationToken,
     ) -> Result<StartupPermit, CoreError> {
-        self.acquire_with_priority(cancel, None)
+        self.acquire_with_priority(cancel, None, None, None)
     }
 
-    pub(super) fn acquire_recovery(
+    pub(super) fn acquire_scoped(
         self: &Arc<Self>,
         cancel: &CancellationToken,
         stop: &CancellationToken,
+        kind: StartupKind,
         rank: usize,
     ) -> Result<StartupPermit, CoreError> {
-        self.acquire_with_priority(cancel, Some((rank, stop)))
+        self.acquire_with_priority(cancel, Some(stop), Some((kind, rank)), None)
+    }
+
+    pub(super) fn acquire_retry(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        stop: &CancellationToken,
+        deadline: std::time::Instant,
+    ) -> Result<StartupPermit, CoreError> {
+        self.acquire_with_priority(cancel, Some(stop), None, Some(deadline))
     }
 
     fn acquire_with_priority(
         self: &Arc<Self>,
         cancel: &CancellationToken,
-        priority: Option<(usize, &CancellationToken)>,
+        stop: Option<&CancellationToken>,
+        rank: Option<(StartupKind, usize)>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<StartupPermit, CoreError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?;
         // A coordinator has at most one startup attempt in this gate.
-        if let Some((rank, _)) = priority
-            && !state.recovery_waiters.insert(rank)
+        if let Some(rank) = rank
+            && !state.scoped_waiters.insert(rank)
         {
-            return Err(fail("worker-thread", "duplicate recovery startup rank"));
+            return Err(fail("worker-thread", "duplicate scoped startup rank"));
         }
-        loop {
-            let cancelled =
-                cancel.is_cancelled() || priority.is_some_and(|(_, stop)| stop.is_cancelled());
-            let available = state.busy < self.limit
-                && priority.is_none_or(|(rank, _)| state.recovery_waiters.first() == Some(&rank));
-            if cancelled || available {
-                if let Some((rank, _)) = priority {
-                    state.recovery_waiters.remove(&rank);
-                    self.wake.notify_all();
+        if deadline.is_some() {
+            state.retry_waiters += 1;
+        }
+        let result = loop {
+            if cancel.is_cancelled() || stop.is_some_and(CancellationToken::is_cancelled) {
+                break Err(fail("worker-cancelled", "startup cancelled"));
+            }
+            let mut wait = Duration::from_millis(5);
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break Err(fail(
+                        "retained-startup-gate-busy",
+                        "startup retry window elapsed",
+                    ));
                 }
-                if cancelled {
-                    return Err(fail("worker-cancelled", "startup cancelled"));
+                wait = wait.min(remaining);
+            }
+            // Keep existing idle ordering and favor charged retries over
+            // provisional cold starts.
+            let next = match rank {
+                Some((kind, _)) => {
+                    state.scoped_waiters.first() == rank.as_ref()
+                        && (kind == StartupKind::Idle || state.retry_waiters == 0)
                 }
+                None if deadline.is_some() => {
+                    !matches!(state.scoped_waiters.first(), Some((StartupKind::Idle, _)))
+                }
+                None => state.retry_waiters == 0,
+            };
+            if state.busy < self.limit && next {
                 state.busy += 1;
-                return Ok(StartupPermit(self.clone()));
+                break Ok(StartupPermit(self.clone()));
             }
             state = self
                 .wake
-                .wait_timeout(state, Duration::from_millis(5))
+                .wait_timeout(state, wait)
                 .map_err(|_| fail("worker-thread", "startup scheduling unavailable"))?
                 .0;
+        };
+        if let Some(rank) = rank {
+            state.scoped_waiters.remove(&rank);
         }
+        if deadline.is_some() {
+            state.retry_waiters -= 1;
+        }
+        if rank.is_some() || deadline.is_some() {
+            self.wake.notify_all();
+        }
+        result
     }
 }
 impl Drop for StartupPermit {
@@ -117,14 +158,21 @@ impl Drop for StartupPermit {
 
 pub(in crate::isolated_worker) type Stages = Vec<(String, WasmNode, Value)>;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::isolated_worker) enum StartupKind {
+    Idle,
+    Initial,
+}
+
 #[derive(Clone)]
-pub(super) struct RecoveryDemand {
+pub(super) struct StartupDemand {
     pub(super) key: RunKey,
+    pub(super) kind: StartupKind,
     pub(super) cancel: CancellationToken,
     pending: Arc<Mutex<Vec<CancellationToken>>>,
 }
 
-impl RecoveryDemand {
+impl StartupDemand {
     fn withdraw(&self) {
         let pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         self.cancel.cancel();
@@ -133,25 +181,28 @@ impl RecoveryDemand {
         }
     }
 
-    pub(super) fn bind(&self, cancel: &CancellationToken) -> Result<RecoveryLease, CoreError> {
+    pub(super) fn bind(&self, cancel: &CancellationToken) -> Result<StartupLease, CoreError> {
         let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         if self.cancel.is_cancelled() || pending.len() >= 20 {
-            return Err(fail("worker-cancelled", "idle startup demand unavailable"));
+            return Err(fail(
+                "worker-cancelled",
+                "scoped startup demand unavailable",
+            ));
         }
         pending.push(cancel.clone());
-        Ok(RecoveryLease {
+        Ok(StartupLease {
             demand: self.clone(),
             cancel: cancel.clone(),
         })
     }
 }
 
-pub(super) struct RecoveryLease {
-    demand: RecoveryDemand,
+pub(super) struct StartupLease {
+    demand: StartupDemand,
     cancel: CancellationToken,
 }
 
-impl RecoveryLease {
+impl StartupLease {
     pub(super) fn adopt(&self) -> bool {
         let mut pending = self
             .demand
@@ -166,7 +217,7 @@ impl RecoveryLease {
     }
 }
 
-impl Drop for RecoveryLease {
+impl Drop for StartupLease {
     fn drop(&mut self) {
         self.demand
             .pending
@@ -176,22 +227,28 @@ impl Drop for RecoveryLease {
     }
 }
 
-struct IdleRecovery {
+struct ScopedStartup {
     target: Endpoint,
-    demand: Arc<Mutex<Option<RecoveryDemand>>>,
-    order: Option<Vec<String>>,
+    demand: Arc<Mutex<Option<StartupDemand>>>,
+    order: Vec<String>,
+    idle: bool,
+    ordered_idle: bool,
+    initial: bool,
 }
 
-pub(super) struct RecoveryStartup {
-    pub(super) demand: Arc<Mutex<Option<RecoveryDemand>>>,
-    pub(super) rank: Option<usize>,
+pub(super) struct StartupScope {
+    pub(super) demand: Arc<Mutex<Option<StartupDemand>>>,
+    pub(super) rank: usize,
+    pub(super) idle: bool,
+    pub(super) ordered_idle: bool,
+    pub(super) initial: bool,
 }
 
 pub(in crate::isolated_worker) struct Owners {
     owners: Vec<retained::Owner>,
     sizes: Vec<usize>,
     experimental: bool,
-    idle_recovery: Option<IdleRecovery>,
+    scoped_startup: Option<ScopedStartup>,
 }
 
 impl Owners {
@@ -241,7 +298,7 @@ impl Owners {
             owners: vec![owner],
             sizes: vec![4],
             experimental: false,
-            idle_recovery: None,
+            scoped_startup: None,
         }
     }
 
@@ -250,11 +307,22 @@ impl Owners {
             == Some(std::ffi::OsStr::new("1"))
     }
 
+    pub(in crate::isolated_worker) fn scoped_initial_requested() -> bool {
+        Self::deferred_initial_requested()
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+    }
+
+    pub(super) fn deferred_initial_requested() -> bool {
+        std::env::var_os("DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+    }
+
     pub(in crate::isolated_worker) fn install_evaluation(
         host: ExecutionHost,
         controller: GuardedController,
         groups: Vec<Stages>,
-        idle_chain: Option<(Endpoint, Vec<String>)>,
+        startup_chain: Option<(Endpoint, Vec<String>)>,
     ) -> Result<Self, CoreError> {
         if groups.is_empty()
             || groups.len() > 20
@@ -270,7 +338,7 @@ impl Owners {
             owners: Vec::new(),
             sizes: Vec::new(),
             experimental: true,
-            idle_recovery: None,
+            scoped_startup: None,
         };
         // Avoid launching twenty full-module compilers simultaneously on a
         // small-memory machine. Warm execution remains independent per group.
@@ -286,15 +354,18 @@ impl Owners {
         )?;
         if startup_limit > 1
             && groups.len() > 1
-            && let Some((target, order)) = idle_chain
+            && let Some((target, order)) = startup_chain
         {
             let ordered = std::env::var_os("DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER")
                 .as_deref()
                 == Some(std::ffi::OsStr::new("1"));
-            result.idle_recovery = Some(IdleRecovery {
+            result.scoped_startup = Some(ScopedStartup {
                 target,
                 demand: Arc::new(Mutex::new(None)),
-                order: ordered.then_some(order),
+                order,
+                idle: Self::idle_overlap_requested(),
+                ordered_idle: ordered,
+                initial: Self::scoped_initial_requested(),
             });
         }
         let startup_gate = Arc::new(StartupGate::bounded(startup_limit)?);
@@ -308,15 +379,15 @@ impl Owners {
         for stages in groups {
             result.sizes.push(stages.len());
             let rank = result
-                .idle_recovery
+                .scoped_startup
                 .as_ref()
-                .and_then(|idle| idle.order.as_ref())
-                .map(|order| {
-                    order
+                .map(|scope| {
+                    scope
+                        .order
                         .iter()
                         .position(|id| id == &stages[0].0)
                         .ok_or_else(|| {
-                            fail("retained-evaluation", "recovery startup order lost a stage")
+                            fail("retained-evaluation", "scoped startup order lost a stage")
                         })
                 })
                 .transpose()?;
@@ -327,10 +398,17 @@ impl Owners {
                 startup_gate.clone(),
                 control_probe.clone(),
                 diagnostic_origin,
-                result.idle_recovery.as_ref().map(|idle| RecoveryStartup {
-                    demand: idle.demand.clone(),
-                    rank,
-                }),
+                result
+                    .scoped_startup
+                    .as_ref()
+                    .zip(rank)
+                    .map(|(scope, rank)| StartupScope {
+                        demand: scope.demand.clone(),
+                        rank,
+                        idle: scope.idle,
+                        ordered_idle: scope.ordered_idle,
+                        initial: scope.initial,
+                    }),
             )?
             .ok_or_else(|| {
                 fail(
@@ -351,37 +429,53 @@ impl Owners {
             owner.start();
         }
     }
-    pub(in crate::isolated_worker) fn requests_idle_recovery(
+    pub(in crate::isolated_worker) fn startup_kind(
         &self,
         request: &StartRequest,
-    ) -> bool {
-        self.idle_recovery.as_ref().is_some_and(|idle| {
-            request.input.is_some()
-                && request.targets.as_slice() == std::slice::from_ref(&idle.target)
-                && self.owners.iter().any(retained::Owner::idle_retired)
-        })
+    ) -> Option<StartupKind> {
+        let scope = self.scoped_startup.as_ref()?;
+        if request.input.is_none()
+            || request.targets.as_slice() != std::slice::from_ref(&scope.target)
+        {
+            return None;
+        }
+        if scope.idle && self.owners.iter().any(retained::Owner::idle_retired) {
+            Some(StartupKind::Idle)
+        } else if scope.initial && self.owners.iter().any(retained::Owner::initial_pending) {
+            Some(StartupKind::Initial)
+        } else {
+            None
+        }
     }
 
     pub(in crate::isolated_worker) fn idle_recovery_status(&self) -> Value {
         json!({
-            "eligible": self.idle_recovery.is_some(),
+            "eligible": self.scoped_startup.as_ref().is_some_and(|scope| scope.idle),
             "idleRetiredOwners": self.owners.iter().filter(|owner| owner.idle_retired()).count(),
-            "prioritizesQueuedStages": self.idle_recovery.as_ref().is_some_and(|idle| idle.order.is_some()),
+            "prioritizesQueuedStages": self.scoped_startup.as_ref().is_some_and(|scope| scope.idle && scope.ordered_idle),
+            "scopesInitialStartup": self.scoped_startup.as_ref().is_some_and(|scope| scope.initial),
         })
     }
 
-    pub(in crate::isolated_worker) fn observe_start(&self, receipt: &StartReceipt, prepare: bool) {
+    pub(in crate::isolated_worker) fn observe_start(
+        &self,
+        receipt: &StartReceipt,
+        kind: Option<StartupKind>,
+    ) {
         if receipt.replayed {
             return;
         }
-        if let Some(idle) = &self.idle_recovery {
+        if let Some(idle) = &self.scoped_startup {
             let mut slot = idle.demand.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(previous) = slot.take() {
                 previous.withdraw();
             }
-            if prepare && receipt.state != RunPhase::Terminal {
-                *slot = Some(RecoveryDemand {
+            if let Some(kind) = kind
+                && receipt.state != RunPhase::Terminal
+            {
+                *slot = Some(StartupDemand {
                     key: receipt.key.clone(),
+                    kind,
                     cancel: CancellationToken::default(),
                     pending: Arc::default(),
                 });
@@ -389,11 +483,11 @@ impl Owners {
         }
     }
 
-    pub(in crate::isolated_worker) fn withdraw_idle_recovery(
+    pub(in crate::isolated_worker) fn withdraw_startup(
         &self,
         should_withdraw: impl FnOnce(&RunKey) -> bool,
     ) {
-        if let Some(idle) = &self.idle_recovery {
+        if let Some(idle) = &self.scoped_startup {
             let mut slot = idle.demand.lock().unwrap_or_else(|p| p.into_inner());
             if slot.as_ref().is_some_and(|d| should_withdraw(&d.key))
                 && let Some(demand) = slot.take()
@@ -451,7 +545,7 @@ impl Owners {
 
 impl Drop for Owners {
     fn drop(&mut self) {
-        self.withdraw_idle_recovery(|_| true);
+        self.withdraw_startup(|_| true);
         // Cancel every group first, then each original owner joins and cleans up.
         for owner in &self.owners {
             owner.close();
@@ -471,10 +565,13 @@ mod tests {
             owners: vec![],
             sizes: vec![],
             experimental: true,
-            idle_recovery: Some(IdleRecovery {
+            scoped_startup: Some(ScopedStartup {
                 target: Endpoint::new("last", "out"),
                 demand: demand.clone(),
-                order: None,
+                order: Vec::new(),
+                idle: true,
+                ordered_idle: false,
+                initial: true,
             }),
         };
         let key = RunKey {
@@ -489,18 +586,19 @@ mod tests {
             replayed: false,
             key: key.clone(),
         };
-        owners.observe_start(&receipt, true);
+        owners.observe_start(&receipt, Some(StartupKind::Initial));
         let current = demand.lock().unwrap().clone().unwrap();
+        assert!(current.kind == StartupKind::Initial);
         let adopted = CancellationToken::default();
         let waiting = CancellationToken::default();
         let lease = current.bind(&adopted).unwrap();
         assert!(lease.adopt());
         let waiting_lease = current.bind(&waiting).unwrap();
         receipt.replayed = true;
-        owners.observe_start(&receipt, false);
-        owners.withdraw_idle_recovery(|candidate| candidate.input_revision == Some(2));
+        owners.observe_start(&receipt, Some(StartupKind::Idle));
+        owners.withdraw_startup(|candidate| candidate.input_revision == Some(2));
         assert!(!current.cancel.is_cancelled());
-        owners.withdraw_idle_recovery(|candidate| candidate == &key);
+        owners.withdraw_startup(|candidate| candidate == &key);
         assert!(current.cancel.is_cancelled());
         assert!(waiting.is_cancelled());
         assert!(!waiting_lease.adopt());
@@ -609,12 +707,22 @@ mod tests {
             let worker_gate = gate.clone();
             let send = send.clone();
             let worker = std::thread::spawn(move || {
-                let permit =
-                    worker_gate.acquire_recovery(&CancellationToken::default(), &stop, rank);
+                let permit = worker_gate.acquire_scoped(
+                    &CancellationToken::default(),
+                    &stop,
+                    StartupKind::Idle,
+                    rank,
+                );
                 send.send((rank, permit.ok())).unwrap();
             });
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while !gate.state.lock().unwrap().recovery_waiters.contains(&rank) {
+            while !gate
+                .state
+                .lock()
+                .unwrap()
+                .scoped_waiters
+                .contains(&(StartupKind::Idle, rank))
+            {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -634,9 +742,91 @@ mod tests {
         for (_, worker) in waiters {
             worker.join().unwrap();
         }
-        assert!(gate.state.lock().unwrap().recovery_waiters.is_empty());
+        assert!(gate.state.lock().unwrap().scoped_waiters.is_empty());
         assert_eq!(gate.state.lock().unwrap().busy, 1);
         drop(second);
+    }
+
+    #[test]
+    fn startup_retry_honors_deadline_and_cancellation() {
+        let gate = Arc::new(StartupGate::default());
+        let cancel = CancellationToken::default();
+        let stop = CancellationToken::default();
+        let first = gate.acquire(&cancel).unwrap();
+        assert_eq!(
+            gate.acquire_retry(&cancel, &stop, std::time::Instant::now())
+                .err()
+                .unwrap()
+                .code,
+            "retained-startup-gate-busy"
+        );
+        stop.cancel();
+        assert_eq!(
+            gate.acquire_retry(
+                &cancel,
+                &stop,
+                std::time::Instant::now() + Duration::from_secs(1)
+            )
+            .err()
+            .unwrap()
+            .code,
+            "worker-cancelled"
+        );
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
+        assert_eq!(gate.state.lock().unwrap().retry_waiters, 0);
+        drop(first);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
+    }
+
+    #[test]
+    fn startup_retry_uses_the_next_open_slot_before_eager_and_scoped_initial_start() {
+        let gate = Arc::new(StartupGate::default());
+        let first = gate.acquire(&CancellationToken::default()).unwrap();
+        let priority = gate.clone();
+        let now = std::time::Instant::now();
+        let deadline = now + Duration::from_secs(2);
+        let retry = std::thread::spawn(move || {
+            priority.acquire_retry(
+                &CancellationToken::default(),
+                &CancellationToken::default(),
+                deadline,
+            )
+        });
+        while gate.state.lock().unwrap().retry_waiters == 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ordinary = gate.clone();
+        let cancel = CancellationToken::default();
+        let token = cancel.clone();
+        let eager = std::thread::spawn(move || ordinary.acquire(&token));
+        let scoped = gate.clone();
+        let token = cancel.clone();
+        let initial = std::thread::spawn(move || {
+            scoped.acquire_scoped(
+                &token,
+                &CancellationToken::default(),
+                StartupKind::Initial,
+                1,
+            )
+        });
+        while gate.state.lock().unwrap().scoped_waiters.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(first);
+        let replacement = retry.join().unwrap().unwrap();
+        cancel.cancel();
+        assert_eq!(
+            eager.join().unwrap().err().unwrap().code,
+            "worker-cancelled"
+        );
+        assert_eq!(
+            initial.join().unwrap().err().unwrap().code,
+            "worker-cancelled"
+        );
+        drop(replacement);
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 
     #[test]

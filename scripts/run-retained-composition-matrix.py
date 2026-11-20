@@ -35,6 +35,8 @@ def main():
                         help='enable bounded overlapping replacement in the timed lifetime case')
     parser.add_argument('--ordered-recovery', action='store_true',
                         help='prioritize queued idle replacement starts in dependency order')
+    parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'scoped', 'deferred-safety', 'scoped-safety'),
+                        help='compare initial startup policies on timed cold input fixtures')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
                         help='interrupt a witnessed idle replacement after the measured recovery')
     args = parser.parse_args()
@@ -48,6 +50,8 @@ def main():
         parser.error('--overlap-action requires --idle-overlap')
     if args.ordered_recovery and not args.idle_overlap:
         parser.error('--ordered-recovery requires --idle-overlap')
+    if args.initial_startup and (not args.candidate or args.lifetime):
+        parser.error('--initial-startup requires --candidate and cannot use --lifetime')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -78,6 +82,19 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
+    if args.initial_startup in ('deferred-safety', 'scoped-safety'):
+        case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
+                 and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
+        cases = [dict(case, cadence='safety', samples=1)]
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+        issue, profile = 176, f'initial-startup-{args.initial_startup}'
+    elif args.initial_startup:
+        cases = [dict(c, cadence='cold-paced') for c in cases
+                 if c['mode'] == 'separate' and c['timing']
+                 and c['cadence'] in ('cold-paced', 'paced')]
+        assert len(cases) == 8
+        planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
+        issue, profile = 176, f'initial-startup-{args.initial_startup}'
     if args.lifetime:
         case, = (c for c in cases if c['mode']=='separate' and c['layout']=='serial'
                  and c['count']==20 and c['cadence']=='warm' and not c['timing'])
@@ -97,7 +114,8 @@ def main():
                 'harnessFilesSha256': {name: sha(repo/name) for name in [
                     'scripts/run-retained-composition-matrix.py', 'scripts/retained-composition-cases.mjs',
                     'scripts/retained-composition-preflight.mjs', 'scripts/retained-composition-graphs.mjs',
-                    'scripts/analyze-retained-graph-calls.mjs', 'scripts/benchmark-primitive-retention.mjs',
+                    'scripts/analyze-retained-graph-calls.mjs', 'scripts/analyze-retained-lifecycle.mjs',
+                    'scripts/benchmark-primitive-retention.mjs',
                     'scripts/observed-native-ring-history.mjs',
                     'scripts/host-input-scenarios.mjs', 'scripts/host-warm-input-observation.mjs', 'scripts/analyze-retained-call-timing.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
@@ -112,6 +130,9 @@ def main():
     base = {key: value for key, value in os.environ.items() if not key.startswith('DIY_EXPERIMENT_')}
     base.pop('GITHUB_SHA', None)
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
+    base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
+    if args.initial_startup:
+        base['DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON'] = '1'
     if args.overlap_action:
         base['DIY_PRIMITIVE_IDLE_OVERLAP_ACTION'] = args.overlap_action
         manifest['overlapAction'] = args.overlap_action
@@ -148,6 +169,10 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP'] = '1'
                 if args.ordered_recovery:
                     env['DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER'] = '1'
+                if args.initial_startup and args.initial_startup != 'eager':
+                    env['DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP'] = '1'
+                if args.initial_startup in ('scoped', 'scoped-safety'):
+                    env['DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
@@ -161,6 +186,19 @@ def main():
                 result = subprocess.run(command, cwd=repo, env=env, stdout=log, stderr=log, timeout=330)
             case['exitCode'] = result.returncode
             save()
+            if result.returncode != 0 and args.initial_startup in ('eager', 'deferred', 'scoped'):
+                owned = read(job)
+                failed_report = read(report)
+                assert failed_report['sourceCommit'] == source
+                case.update(checksPassed=False, failure=failed_report.get('failure', 'Native case failed'),
+                            missingProcessMemoryReads=owned['missingProcessMemoryReads'],
+                            workspaceCleanupVerified=failed_report.get('workspaceAfterHostExit') == [])
+                save()
+                # Each case launches its own fixture. Proceed only once this Job
+                # has settled, and preserve the original failure for aggregation.
+                assert owned['allDescendantsExited'] and not owned['timedOut']
+                assert case['workspaceCleanupVerified'], 'Failed case workspace did not settle'
+                continue
             assert result.returncode == 0, 'Failed native case preserved; no retry'
             data, owned = read(report), read(job)
             assert data['completed'] and data['sourceCommit'] == source and data['runtimeBuildSourceCommit'] == source and data['workspaceAfterHostExit'] == []
@@ -174,6 +212,19 @@ def main():
                 assert data['requestedControls'] == expected
                 assert data['binaries'] == dict(zip(('host', 'manager', 'worker', 'dll'),
                                                      (hashes[path] for path in files[:4])))
+            if args.initial_startup:
+                proof = data['initialStartupComparison']
+                assert proof['deferred'] == (args.initial_startup != 'eager')
+                scoped = args.initial_startup in ('scoped', 'scoped-safety')
+                assert proof['scoped'] == scoped
+                if scoped and spec['cadence'] == 'safety':
+                    assert {guard['action'] for guard in proof['guards'] if guard['passed']} == {'cancel', 'protect'}
+                if spec['layout'] == 'unused':
+                    assert proof['additionalTarget']['passed']
+                    assert proof['additionalTarget']['node'] in data['unexecutedIds']
+                if spec['cadence'] == 'safety':
+                    assert data['controlledCancellation']['passed']
+                    assert all(check.get('passed', True) for check in data['safety'])
             if args.lifetime:
                 proof = data['retainedLifetime']
                 assert proof['passed'] and proof['idleElapsedMs'] >= 61000
@@ -218,8 +269,9 @@ def main():
                 # Continue independent cases, and fail the diagnostic at the end.
                 case['failure'] = 'Windows Job process-memory observation missing'
             save()
-        manifest['allCasesPhysicallyReviewed'] = True
-        assert all(case['checksPassed'] for case in manifest['cases']), 'Job memory gaps preserved'
+        manifest['allCasesPhysicallyReviewed'] = all(
+            case.get('workspaceCleanupVerified', True) for case in manifest['cases'])
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Native failures or Job memory gaps preserved'
         manifest['complete'] = True
     except BaseException as error:
         manifest['failure'] = {'type': type(error).__name__, 'message': str(error)}

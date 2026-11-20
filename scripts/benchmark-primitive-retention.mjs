@@ -29,6 +29,9 @@ const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refu
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
+const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
+const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
+const scopedInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP==='1';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
 const sampleDeliveryCheck=process.env.DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK==='1';
@@ -51,6 +54,11 @@ if(lifetime) {
 if(overlapAction!==undefined) {
   assert(lifetime && timing && process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP==='1');
   assert(['cancel','protect'].includes(overlapAction));
+}
+if(initialStartupComparison || deferredInitialStartup) {
+  assert(initialStartupComparison && ['cold-paced','safety'].includes(cadence) &&
+    timing && matrixMode && thirdparty && mode==='separate',
+  'initial startup comparison requires timed input and reviewed separate Nodes');
 }
 const composition=thirdparty?retainedComposition(count,layout):null;
 const reviewedModules=thirdparty ? ['DIY_REVIEW_MODULE_A','DIY_REVIEW_MODULE_B'].map(name=>readFileSync(resolve(process.env[name]))) : [];
@@ -156,9 +164,13 @@ const summarize=values=>{
 };
 const ended=s=>s.state==='terminal' && Object.values(s.physical).every(n=>n===0);
 const expected=text=>thirdparty ? composition.expected(text) : shape==='identity' ? text : count===1 ? text.replace('ka','か') : text.replace('ka','か').trim();
-function verify(s,wanted) {
-  assert.equal(s.current,true);assert.equal(s.result.reason,'completed',JSON.stringify(s.result.error));assert.equal(s.result.delivery,'complete');
-  for(const target of targets) {
+function verify(s,wanted,requestedTargets=targets) {
+  assert.equal(s.current,true);
+  if(s.result.reason!=='completed'||s.result.delivery!=='complete') {
+    const causes=s.result.causes?.map(cause=>cause.diagnostic?.error?.code).filter(Boolean)??[];
+    assert.fail(JSON.stringify({reason:s.result.reason,delivery:s.result.delivery,causes}));
+  }
+  for(const target of requestedTargets) {
     const value=s.result.ports.find(p=>p.endpoint.node===target.node&&p.endpoint.port===target.port)?.value;
     if(composition)composition.verify(value?.packet?.root.text,wanted);
     else assert.equal(value?.packet?.root.text,wanted,`wrong target ${target.node}.${target.port}`);
@@ -181,7 +193,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   measurementStartedUtc:new Date().toISOString(),
   machine:{osPlatform:platform(),osRelease:release(),architecture:arch(),logicalCpus:cpus().length,
     availableParallelism:availableParallelism(),cpuModels:[...new Set(cpus().map(cpu=>cpu.model))],totalPhysicalMemoryBytes:totalmem()},
-  mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold,
+  mode,count,samples,shape,cadence,layout,matrixMode,executedIds,unexecutedIds:composition?.unexecutedIds??[],resourcePolicy,graph,records,traces,statuses,warmAttempts,tracePaced,sampleDeliveryCheck,sampleDeliveryObserve,readinessBarrierUsed:mode!=='0' && !cold && !deferredInitialStartup,
   ...(timing ? {goalOverheadAvailable:false,semanticSeparation:'Guest API includes SDK ABI processing; residuals are NOT Node Execution Overhead.'} : {}),
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
@@ -189,6 +201,12 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
 if(lifetime && timing) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;
+}
+if(initialStartupComparison) {
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP=
+    process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP??null;
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP=
+    process.env.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP??null;
 }
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
@@ -217,7 +235,25 @@ try {
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
   let version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
-  if(mode!=='0' && !cold) {
+  if(initialStartupComparison) {
+    const receipt=await host.send({method:'run',request:{startKey:String(++sequence),
+      expectedPlanVersion:version,targets:[{node:'absent-stage',port:'out'}],
+      input:{revision:1,text:'rejected fixture',mode:'compose'}}});
+    assert.equal(receipt.ok,false,'an unrecognized target must be rejected');
+    const status=await host.call({method:'status'});
+    report.initialStartupComparison={
+      deferred:deferredInitialStartup,scoped:scopedInitialStartup,beforeFirstInput:status,
+    };
+    const scope=status.retainedWorker.idleRecovery?.scopesInitialStartup;
+    if(scopedInitialStartup)assert.equal(scope,layout==='serial' && count>1);
+    else assert.notEqual(scope,true,'scoped startup was selected in a control case');
+    if(deferredInitialStartup) {
+      assert.equal(status.workerProcesses,0,'a retained Worker launched before the first input');
+      assert.equal(status.retainedWorker.generation,0);
+      assert.equal(status.physical.physicalJobs,0);
+    }
+  }
+  if(report.readinessBarrierUsed) {
     const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;assert.equal(s.phase,'ready','evaluation Session was retired during startup');assert.equal(s.sessionEpoch,activated.sessionEpoch,'evaluation Session changed during startup');assert.equal(s.retainedWorker.startupFailures ?? 0,0,'retained startup failed before all groups became ready');return s.retainedWorker.ready?s:null;});
     assert.equal(ready.retainedWorker.experimental,true);
     const sizes=mode==='separate'?ids.map(()=>1):Array.from({length:Math.ceil(count/4)},(_,i)=>Math.min(4,count-i*4));
@@ -230,9 +266,10 @@ try {
       assert.equal(ready.retainedWorker.compiledGenerations,ready.retainedWorker.generation,'compiled replacement route must actually be selected');
     }
   }
-  async function submit(text,observation) {
+  async function submit(text,observation,requestedTargets=targets) {
     ++revision;if(revision>1)await host.call({method:'invalidateInput',expectedPlanVersion:version,revision});
-    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,targets,input:{revision,text,mode:'compose'}}});
+    const reply=await host.send({method:'run',request:{startKey:String(++sequence),expectedPlanVersion:version,
+      targets:requestedTargets,input:{revision,text,mode:'compose'}}});
     if(observation) {
       observation.admitted=typeof reply.ok==='boolean'?reply.ok:null;
       if(!reply.ok)observation.admissionRejected=reply.error?.code??'unknown-rejection';
@@ -240,6 +277,23 @@ try {
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
+  async function witnessProvisional(key,phase) {
+    return until(async()=>{
+      const status=await host.call({method:'status'});
+      const snapshot=await read(key);
+      assert(snapshot.current && !ended(snapshot),'the run ended before observing a provisional Worker');
+      const candidates=status.retainedWorker.callSamples.flatMap(({nodeIds:[nodeId],calls})=>{
+        const demand=calls.phases.find(e=>e.phase===phase && e.runId===key.runId);
+        if(!demand)return [];
+        const events=calls.phases.filter(e=>e.attempt===demand.attempt);
+        const resumed=events.find(e=>e.phase==='native-resume-thread-finished');
+        if(!resumed?.processId || !status.retainedWorker.processIds.includes(resumed.processId) ||
+            events.some(e=>e.phase==='owner-joined' || e.phase==='invocation-call-started'))return [];
+        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state}];
+      });
+      return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+    },15000);
+  }
   async function collectTrace() {
     // Freeze after all input callbacks have settled. Paginating a live trace
     // takes its mutex and can itself cause diagnostic try_lock contention.
@@ -319,6 +373,23 @@ try {
         const status=await host.call({method:'status'});
         // Preserve correct/failed/latest outcomes even if diagnostics fail.
         round.status=status;
+        if(initialStartupComparison && cold && intervalMs===20 && round.round===0) {
+          const runId=attempts.at(-1).key.runId;
+          const matched=[];
+          for(const {nodeIds:[node],calls} of status.retainedWorker.callSamples) {
+            for(const phase of calls.phases.filter(e=>e.phase==='initial-startup-demand-validated')) {
+              assert(executedIds.includes(node) && node!==executedIds[0]);
+              if(phase.runId!==runId)continue;
+              if(calls.phases.some(e=>e.phase==='invocation-call-finished' &&
+                e.runId===runId && e.attempt===phase.attempt && e.processId>0))
+                matched.push({node,attempt:phase.attempt,runId});
+            }
+          }
+          report.initialStartupComparison.matchedCalls=matched;
+          if(scopedInitialStartup && layout==='serial' && count===20)
+            assert(matched.length>0,'cold downstream preparation must be adopted by the latest run');
+          if(!scopedInitialStartup || layout!=='serial')assert.equal(matched.length,0);
+        }
         const events=tracePaced ? await collectTrace() : undefined;
         await verifySampleRetrieval(status);
         const paired=timing ? analyze(attempts.map(a=>a.key),events,status) : undefined;
@@ -359,7 +430,7 @@ try {
       if(sample===0)report.firstResultStatus=status;
       if(mode!=='0') {
         assert.equal(status.retainedWorker.decodedReplies,(sample+1)*executedCount);
-        if(!cold)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
+        if(report.readinessBarrierUsed)assert.equal(status.workerProcesses,report.lifetimeReady.workerProcesses);
         if(lifetime) {
           assert.deepEqual(status.retainedWorker.processIds,report.lifetimeReady.retainedWorker.processIds);
           assert.equal(status.retainedWorker.generation,report.lifetimeReady.retainedWorker.generation);
@@ -474,25 +545,7 @@ try {
       const key=await submit('synthetic interrupted idle recovery');
       assert(!key.admissionRejected);
       guard.key=key;
-      guard.witness=await until(async()=>{
-        const s=await host.call({method:'status'});
-        const snapshot=await read(key);
-        assert(snapshot.current && snapshot.state!=='terminal',
-          'the input stopped being live before observing a provisional Worker');
-        const candidates=s.retainedWorker.callSamples.flatMap(bundle=>{
-          const events=bundle.calls.phases;
-          const demand=events.find(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId);
-          if(!demand) return [];
-          const attempted=events.filter(e=>e.attempt===demand.attempt);
-          const resumed=attempted.find(e=>e.phase==='native-resume-thread-finished');
-          if(!resumed?.processId || attempted.some(e=>e.phase==='owner-joined' ||
-              (e.phase==='invocation-call-started' && e.runId===key.runId)))return [];
-          return s.retainedWorker.processIds.includes(resumed.processId)
-            ? [{nodeId:bundle.nodeIds[0],attempt:demand.attempt,pid:resumed.processId,
-                runState:snapshot.state}] : [];
-        });
-        return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
-      },15000);
+      guard.witness=await witnessProvisional(key,'idle-recovery-demand-validated');
       if(overlapAction==='cancel') {
         await host.call({method:'cancelRun',key});
         guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
@@ -528,6 +581,26 @@ try {
       const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
       verify(snapshot,expected(text));return {key,snapshot};
     }
+    async function measureRecovery(recovery,elapsed,oldKey) {
+      recovery.attempts=[];
+      recovery.latestInputOfferedMs=elapsed();
+      const freshText='  ka recovery 🙂漢字  ';
+      const {key}=await observeWarmInput({sample:0,attempts:recovery.attempts,
+        submit:attempt=>submit(freshText,attempt),read,until,ended,verify,expected:expected(freshText),
+        clock:elapsed});
+      recovery.latestCorrectVerifiedMs=elapsed();
+      assert.notEqual(key.runId,oldKey.runId);
+      const old=await host.send({method:'getRun',key:oldKey});
+      assert(typeof old.ok==='boolean');
+      if(old.ok) {
+        assert.equal(old.data.snapshot.current,false);
+        assert.equal(old.data.snapshot.result,null);
+        recovery.oldResultFence={current:false,result:null};
+      } else {
+        assert(['run-unknown','result-gone'].includes(old.error?.code),'unexpected old input refusal');
+        recovery.oldResultFence={errorCode:old.error.code};
+      }
+    }
     async function drained() {
       return until(async()=>{const s=await host.call({method:'status'});return s.workerProcesses===0 && s.physical.physicalJobs===0 && s.physical.reservedResultBytes===0?s:null;});
     }
@@ -537,7 +610,54 @@ try {
       if(latestReview.missing.length)await host.call({method:'approve',reviewId:latestReview.reviewId,ids:latestReview.missing.map(r=>r.id),save:false});
       const activated=await host.call({method:'activate',reviewId:latestReview.reviewId});
       version=activated.state.activePlanVersion;revision=0;
+      if(deferredInitialStartup)return;
       return until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    }
+    if(scopedInitialStartup) {
+      const proof=report.initialStartupComparison;
+      proof.guards=[];
+      // The earlier measurement has already exercised every owner in its Session.
+      await activateFresh();
+      for(const action of ['cancel','protect']) {
+        const status=await host.call({method:'status'});
+        const before={
+          sessionEpoch:status.sessionEpoch,workerProcesses:status.workerProcesses,
+          physicalJobs:status.physical.physicalJobs,generation:status.retainedWorker.generation,
+          eligible:status.retainedWorker.idleRecovery?.scopesInitialStartup,
+        };
+        assert(before.eligible,'a cold scoped fixture must be eligible before admission');
+        assert.equal(before.workerProcesses+before.physicalJobs+before.generation,0,
+          'the interruption witness requires a fresh Session with no Worker startup');
+        const key=await submit('0'.repeat(256));
+        assert(!key.admissionRejected);
+        assert.equal(key.sessionEpoch,before.sessionEpoch);
+        const guard={action,key,before,passed:false};
+        proof.guards.push(guard);
+        guard.witness=await witnessProvisional(key,'initial-startup-demand-validated');
+        assert.notEqual(guard.witness.nodeId,executedIds[0]);
+        if(action==='cancel') {
+          await host.call({method:'cancelRun',key});
+          guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+          assert.equal(guard.terminal.result.reason,'cancelled');
+          guard.exit=await until(async()=>{
+            const s=await host.call({method:'status'});
+            const row=s.retainedWorker.callSamples.find(r=>r.nodeIds[0]===guard.witness.nodeId);
+            const events=row.calls.phases.filter(e=>e.attempt===guard.witness.attempt);
+            assert(!events.some(e=>e.phase==='invocation-call-started'));
+            return !s.retainedWorker.processIds.includes(guard.witness.pid) &&
+              events.find(e=>e.phase==='owner-joined');
+          });
+        } else {
+          await host.call({method:'protection',enabled:true});
+          guard.terminal=await host.send({method:'getRun',key});
+          assert.equal(guard.terminal.error?.code,'external-protected');
+          guard.exit=await drained();
+          assert.equal(guard.exit.phase,'protected');
+          await host.call({method:'protection',enabled:false});
+        }
+        guard.passed=true;
+        await activateFresh();
+      }
     }
     await correct('');await correct('🙂漢字');
     report.safety.push({check:'empty-and-unicode',passed:true});
@@ -569,17 +689,25 @@ try {
         return status.retainedWorker.activeInput&&snapshot.physical.running>0?{status,snapshot}:null;
       });
       proof.observedActive=true;proof.activePhysical=active.snapshot.physical;
+      const recovery={origin:'before client cancelRun',originalPid:controlledPid};
+      proof.recovery=recovery;
+      const cancellationStart=performance.now();
+      const elapsed=()=>performance.now()-cancellationStart;
       await host.call({method:'cancelRun',key});
+      recovery.cancelAcknowledgedMs=elapsed();
       // Wait for the helper to close its dead-process/thread references before
       // requiring Host ACL/profile reclamation. Extra observer handles can
       // otherwise obstruct that reclamation and change the experiment.
       proof.ending=await control.expectOriginalExit();
+      recovery.originalExitObservedMs=elapsed();
       const snapshot=await until(async()=>{const value=await read(key);return ended(value)?value:null;});
       assert.equal(snapshot.result.reason,'cancelled');
+      recovery.oldRunTerminalObservedMs=elapsed();
       proof.outcome=snapshot.result.reason;proof.finalPhysical=snapshot.physical;
       observedCancelled++;
-      await correct('ka');
+      await measureRecovery(recovery,elapsed,key);
       const restored=await until(async()=>{const status=await host.call({method:'status'});return status.retainedWorker.ready?status:null;});
+      recovery.allOwnersReadyObservedMs=elapsed();
       statuses.push(restored);
       assert(restored.retainedWorker.generation>beforeControlled.retainedWorker.generation);
       assert.equal(restored.retainedWorker.physicalJobs,beforeControlled.retainedWorker.physicalJobs);
@@ -624,10 +752,17 @@ try {
     const beforeFault=await correct('ka'),status=await host.call({method:'status'});
     const pid=status.retainedWorker.processIds.at(-1);assert(pid>0);
     const python=process.env.DIY_PRIMITIVE_PYTHON;assert(python,'explicit Python for original owned-worker fault required');
+    const faultRecovery={origin:'before launching checked fault-injection helper',originalPid:pid};
+    report.workerFaultRecovery=faultRecovery;
+    const faultStart=performance.now();
+    const elapsed=()=>performance.now()-faultStart;
     const fault=spawnSync(python,[resolve('scripts/terminate-owned-retention-worker.py'),String(pid),join(root,'workers'),report.binaries.worker],{encoding:'utf8',windowsHide:true,timeout:10000});
-    assert.equal(fault.status,0,fault.stderr);verify(await read(beforeFault.key),expected('ka'));
-    await correct('ka');
+    assert.equal(fault.status,0,fault.stderr);
+    faultRecovery.originalExitObservedMs=elapsed();
+    verify(await read(beforeFault.key),expected('ka'));
+    await measureRecovery(faultRecovery,elapsed,beforeFault.key);
     const recovered=await until(async()=>{const s=await host.call({method:'status'});return s.retainedWorker.ready?s:null;});
+    faultRecovery.allOwnersReadyObservedMs=elapsed();
     assert(!recovered.retainedWorker.processIds.includes(pid));
     report.safety.push({check:'owned-original-process-fault-no-retroactive-result-change-and-recovery',passed:true,pid});
 
@@ -635,6 +770,34 @@ try {
     assert.equal((await host.send({method:'getRun',key:successor.key})).ok,false);
     await activateFresh();await correct('ka');
     report.safety.push({check:'close-session-and-fresh-reopen',passed:true});
+  }
+  if(initialStartupComparison && layout==='unused') {
+    const before=await host.call({method:'status'});
+    const proof=report.initialStartupComparison;
+    proof.beforeAdditionalTarget=before;
+    const owner=composition.unexecutedIds[0];
+    const samplesFor=(status,node)=>status.retainedWorker.callSamples.find(row=>row.nodeIds[0]===node).calls;
+    if(deferredInitialStartup) {
+      assert(before.workerProcesses<=executedCount,'an unrequested Worker is running');
+      for(const node of composition.unexecutedIds) {
+        assert(!samplesFor(before,node).phases.some(event=>event.phase==='attempt-started'),
+          `unrequested Worker startup: ${node}`);
+      }
+    }
+    const switchedTargets=[{node:owner,port:'out'}];
+    const text='  ka requested later 🙂漢字  ';
+    const key=await submit(text,undefined,switchedTargets);
+    assert(!key.admissionRejected);
+    const snapshot=await until(async()=>{const s=await read(key);return ended(s)?s:null;});
+    verify(snapshot,expected(text),switchedTargets);
+    const after=await host.call({method:'status'});
+    const call=samplesFor(after,owner).phases.find(event=>
+      event.phase==='invocation-call-finished' && event.runId===key.runId);
+    assert(call?.processId>0,'later target must execute in its own retained Worker');
+    if(deferredInitialStartup)assert(samplesFor(after,owner).phases.some(event=>
+      event.phase==='native-launch-started'),'later target did not launch a Worker');
+    proof.additionalTarget={node:owner,key,call,passed:true};
+    statuses.push(before,after);
   }
   report.beforeClose=await host.call({method:'status'});
   report.closeAcknowledged=await host.call({method:'closeSession'});
@@ -661,7 +824,12 @@ finally {
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
     report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);
-  try {if(manager)await manager.close();if(host)await host.close();}
+  try {
+    if(manager)await manager.close();
+    if(host)await host.close();
+    if(initialStartupComparison && !report.completed)
+      report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
+  }
   finally {
     writeFileSync(reportPath,JSON.stringify(report));
     assert.equal(dirname(realpathSync(root)),parent);assert(root.startsWith(join(parent,'diyime-primitive-retention-')));
