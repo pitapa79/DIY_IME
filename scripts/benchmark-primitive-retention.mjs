@@ -24,10 +24,11 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime'].includes(cadence));
+assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime','call-limit'].includes(cadence));
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
+const callLimit=cadence==='call-limit';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
 const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
@@ -46,6 +47,11 @@ const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
+if(callLimit) {
+  assert(thirdparty && layout==='serial' && mode==='separate' && count===1 && samples===1 && timing &&
+    process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1',
+    'call-limit case requires one reviewed compiled Worker with lifecycle diagnostics');
+}
 if(lifetime) {
   assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
     'lifetime case requires the bounded 20-node compiled fixture');
@@ -366,6 +372,64 @@ try {
     assert.equal(status.retainedWorker.compiledGenerations,0);
     assert.equal(status.workerProcesses,0);
     report.startupRefusalVerified=true;
+  } else if(callLimit) {
+    const callBudget = 4096;
+    const baseline = report.lifetimeReady.retainedWorker;
+    const [originalPid] = baseline.processIds;
+    assert(originalPid > 0 && baseline.decodedReplies === 0);
+    const proof = {callBudget, originalPid, inputsVerified:0, passed:false};
+    report.retainedCallLimit = proof;
+    const offer = async sample => {
+      const text = `  ka${sample}🙂漢字  `;
+      const key = await submit(text);
+      assert(!key.admissionRejected, 'the latest input must be admitted');
+      const snapshot = await until(async () => {
+        const value = await read(key);
+        return ended(value) ? value : null;
+      });
+      verify(snapshot, expected(text));
+      proof.inputsVerified++;
+      return key;
+    };
+    for(let index=0; index<callBudget-1; ++index) await offer(index);
+    const beforeLimit = await host.call({method:'status'});
+    assert.equal(beforeLimit.retainedWorker.decodedReplies, callBudget-1);
+    assert.equal(beforeLimit.retainedWorker.generation, baseline.generation);
+    assert.deepEqual(beforeLimit.retainedWorker.processIds, [originalPid]);
+    proof.oldKey = await offer(callBudget-1);
+    const exhausted = await host.call({method:'status'});
+    assert.equal(exhausted.retainedWorker.decodedReplies, callBudget);
+    assert.equal(exhausted.retainedWorker.generation, baseline.generation);
+    assert(exhausted.retainedWorker.processIds.every(pid=>pid===originalPid));
+    assert.equal(exhausted.retainedWorker.activeInput, false);
+    proof.exhausted = exhausted;
+    statuses.push(exhausted);
+    await host.call({method:'traceStartDetailed'});
+    proof.latestKey = await offer(callBudget);
+    const replaced = await host.call({method:'status'});
+    const [newPid] = replaced.retainedWorker.processIds;
+    assert(newPid > 0 && newPid !== originalPid);
+    assert.equal(replaced.retainedWorker.generation, baseline.generation + 1);
+    assert.equal(replaced.retainedWorker.compiledGenerations, replaced.retainedWorker.generation);
+    assert.equal(replaced.retainedWorker.decodedReplies, callBudget + 1);
+    assert.equal(replaced.retainedWorker.physicalJobs, 1);
+    assert.equal(replaced.workerProcesses, 1);
+    const phases = replaced.retainedWorker.callSamples[0].calls.phases;
+    const previousExit = phases.find(e => e.phase === 'original-process-io-ended' && e.processId === originalPid);
+    const joined = phases.find(e => e.phase === 'owner-joined' && e.processId === originalPid);
+    const latest = phases.find(e => e.phase === 'invocation-call-started' && e.processId === newPid &&
+      e.runId === proof.latestKey.runId);
+    for(const phase of [previousExit, joined, latest]) assert(phase?.atNs);
+    assert.equal(previousExit.attempt, joined.attempt);
+    assert(BigInt(previousExit.atNs) <= BigInt(joined.atNs) && BigInt(joined.atNs) <= BigInt(latest.atNs));
+    const old = await host.send({method:'getRun',key:proof.oldKey});
+    assert(old.ok ? old.data.snapshot.current === false && old.data.snapshot.result === null :
+      ['result-gone', 'run-unknown'].includes(old.error?.code));
+    proof.replaced = replaced;
+    statuses.push(replaced);
+    traces.push({key:proof.latestKey,events:await collectTrace()});
+    await verifySampleRetrieval(replaced);
+    proof.passed = true;
   } else if(paced) {
     const steps=Array.from({length:7},(_,i)=>{const text=`  ka${i}🙂漢字  `;return {id:String(i),text,expected:expected(text)};});
     report.pacedRounds=[];
@@ -836,7 +900,7 @@ try {
   report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
-  if(!paced&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
+  if(!paced&&!callLimit&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
     report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);
