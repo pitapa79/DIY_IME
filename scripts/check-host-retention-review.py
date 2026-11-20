@@ -65,6 +65,7 @@ def main():
             env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
             env['DIY_EXPERIMENT_RETAINED_TIMING'] = '0' if mode == '0' else '1'
             env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if cadence == 'call-limit' else '0'
+            env['DIY_EXPERIMENT_COMPILED_JIT'] = env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT']
             env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(report)
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',

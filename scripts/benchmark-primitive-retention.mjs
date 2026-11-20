@@ -405,7 +405,9 @@ try {
     proof.exhausted = exhausted;
     statuses.push(exhausted);
     await host.call({method:'traceStartDetailed'});
+    const latestOffered = performance.now();
     proof.latestKey = await offer(callBudget);
+    proof.latestInputToVerifiedMs = performance.now()-latestOffered;
     const replaced = await host.call({method:'status'});
     const [newPid] = replaced.retainedWorker.processIds;
     assert(newPid > 0 && newPid !== originalPid);
@@ -423,8 +425,10 @@ try {
     assert.equal(previousExit.attempt, joined.attempt);
     assert(BigInt(previousExit.atNs) <= BigInt(joined.atNs) && BigInt(joined.atNs) <= BigInt(latest.atNs));
     const old = await host.send({method:'getRun',key:proof.oldKey});
-    assert(old.ok ? old.data.snapshot.current === false && old.data.snapshot.result === null :
-      ['result-gone', 'run-unknown'].includes(old.error?.code));
+    proof.oldResultFence = old.ok ? {current:old.data.snapshot.current,result:old.data.snapshot.result} :
+      {errorCode:old.error?.code};
+    assert(old.ok ? proof.oldResultFence.current === false && proof.oldResultFence.result === null :
+      ['result-gone', 'run-unknown'].includes(proof.oldResultFence.errorCode));
     proof.replaced = replaced;
     statuses.push(replaced);
     traces.push({key:proof.latestKey,events:await collectTrace()});
