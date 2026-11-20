@@ -3,6 +3,7 @@ mod dictionary;
 mod gate;
 #[cfg(all(feature = "resource-integration-probe", target_arch = "x86_64"))]
 pub mod integration_probe;
+mod metadata_preparation;
 mod network;
 mod profile_pool;
 mod retained;
@@ -809,10 +810,21 @@ impl WasmArtifact {
         cancel: &CancellationToken,
         owner: Option<crate::isolated_worker::RetainedReservation>,
     ) -> WorkerImage {
-        if std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
-            != Some(std::ffi::OsStr::new("1"))
-            || cancel.is_cancelled()
-        {
+        self.prepared_jit_image_if_enabled(
+            cancel,
+            owner,
+            std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
+                == Some(std::ffi::OsStr::new("1")),
+        )
+    }
+
+    fn prepared_jit_image_if_enabled(
+        &self,
+        cancel: &CancellationToken,
+        owner: Option<crate::isolated_worker::RetainedReservation>,
+        enabled: bool,
+    ) -> WorkerImage {
+        if !enabled || cancel.is_cancelled() {
             return WorkerImage::Jit;
         }
         // One compile-only process per captured source/policy. Other owners
@@ -1304,7 +1316,7 @@ impl WasmArtifact {
                 "system Nodes cannot be registered from guest",
             ));
         }
-        let described = wire::reply(&self.call(
+        let described = wire::reply(&self.call_metadata(
             &wire::request(kind, version, json!({"method":"describe"})),
             cancel.clone(),
         )?)?;
@@ -1320,7 +1332,7 @@ impl WasmArtifact {
             }
         }
         for config in &approved {
-            let validated = wire::reply(&self.call(
+            let validated = wire::reply(&self.call_metadata(
                 &wire::request(kind, version, json!({"method":"validate","config":config})),
                 cancel.clone(),
             )?)?;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawn, spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
-import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync, readdirSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdtempSync, rmSync, realpathSync, readdirSync, writeSync} from 'node:fs';
 import {tmpdir,cpus,totalmem,release,platform,arch,availableParallelism} from 'node:os';
 import {join, resolve, dirname} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -39,6 +39,8 @@ const parent=realpathSync(tmpdir()), root=mkdtempSync(join(parent,'diyime-primit
 const thirdparty=shape==='thirdparty';
 const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
+const metadataComparison=process.env.DIY_PRIMITIVE_METADATA_PREPARATION_COMPARISON==='1';
+if(metadataComparison) assert(matrixMode && thirdparty && mode==='separate' && layout==='serial' && cadence==='cold-paced');
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
 const composition=thirdparty?retainedComposition(count,layout):null;
@@ -69,19 +71,32 @@ const managerPath=join(root,'manager.json'), hostPath=join(root,'host.json');
 writeFileSync(managerPath,JSON.stringify(packageManager));
 writeFileSync(hostPath,JSON.stringify({packageManager,resourcePolicy,permissionRoot:join(root,'permissions'),requestBytes:1048576,responseBytes:16777216}));
 
+const journalEnabled=process.env.DIY_PRIMITIVE_PHASE_JOURNAL==='1';
+let journalRemaining=512;
+function journal(role,event,method,pid) {
+  if(!journalEnabled || journalRemaining<=0)return;
+  journalRemaining--;
+  writeSync(2,JSON.stringify({diagnostic:'retained-benchmark-phase',elapsedMs:performance.now(),role,event,method,pid})+'\n');
+}
+
 class Client {
-  constructor(exe,path) {
+  constructor(exe,path,role) {
+    this.role=role;this.lastSent=undefined;this.lastReply=undefined;
     this.next=0;this.pending=new Map();this.stderr=[];this.received=[];
     this.replyEvidence=new PrivateReplyEvidence();
     this.child=spawn(exe,[path],{windowsHide:true,stdio:'pipe'});
+    journal(this.role,'spawn',undefined,this.child.pid);
     this.child.stderr.on('data',data=>this.stderr.push(data));
     this.ended=new Promise(done=>this.child.once('close',code=>{
+      journal(this.role,'exit',undefined,this.child.pid);
       for(const p of this.pending.values())p.reject(Error(`child exit ${code}`));done(code);
     }));
     createInterface({input:this.child.stdout}).on('line',line=>{
       const reply=JSON.parse(line),pending=this.pending.get(reply.id);
       if(cadence==='safety')this.received.push(reply);
       assert(pending,'unexpected protocol reply');this.pending.delete(reply.id);pending.resolve(reply);
+      if(this.lastReply!==pending.method)journal(this.role,'reply',pending.method,this.child.pid);
+      this.lastReply=pending.method;
       this.replyEvidence.record(pending.method,line,reply);
     });
   }
@@ -89,10 +104,13 @@ class Client {
     const id=String(++this.next),body=Buffer.from(JSON.stringify({id,operation})),header=Buffer.alloc(12);
     header.writeUInt32LE(body.length);header.writeBigUInt64LE(BigInt(payload.length),4);
     const result=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject,method:operation.method}));
+    if(this.lastSent!==operation.method)journal(this.role,'send',operation.method,this.child.pid);
+    this.lastSent=operation.method;
     this.child.stdin.write(Buffer.concat([header,body,payload]));return result;
   }
   async call(operation,payload) { const r=await this.send(operation,payload);assert.equal(r.ok,true,JSON.stringify(r.error));return r.data; }
   async close() {
+    journal(this.role,'close-stdin',undefined,this.child.pid);
     this.child.stdin.end();assert.equal(await this.ended,0,Buffer.concat(this.stderr).toString());
     const size=Math.min(65536,this.stderr.reduce((sum,part)=>sum+part.length,0));
     const audit=Buffer.concat(this.stderr,size).toString().split(/\r?\n/).filter(line=>
@@ -133,7 +151,7 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
 try {
   if(thirdparty)report.reviewedImplementations=reviewedModules.map(module=>({moduleSha256:sha(module),executableCodeSha256:wasmCodeSha256(module)}));
-  manager=new Client(managerExe,managerPath);
+  manager=new Client(managerExe,managerPath,'manager');
   const frames=[...new Set(ids.map((_,i)=>kindAt(i)))].map(kind=>{
     const fixtureIndex=thirdparty?kinds.indexOf(kind):-1;
     const fixture=fixtureIndex>=0&&fixtureIndex!==2;
@@ -148,15 +166,26 @@ try {
     const frame=Buffer.concat([header,manifest,module]),size=Buffer.alloc(8);size.writeBigUInt64LE(BigInt(frame.length));return Buffer.concat([size,frame]);
   });
   const frameCount=Buffer.alloc(4);frameCount.writeUInt32LE(frames.length);
+  const managerReviewStarted=performance.now();
   const review=await manager.call({method:'review'},Buffer.concat([frameCount,...frames]));
   await manager.call({method:'commit',reviewId:review.reviewId,allowDowngrade:false,allowSameVersionRebuild:false});
+  if(metadataComparison) {
+    const flag=process.env.DIY_EXPERIMENT_PREPARATION_CODE_CACHE;
+    report.requestedControls.DIY_EXPERIMENT_PREPARATION_CODE_CACHE=flag??null;
+    report.metadataPreparation={cacheRequested:flag==='1',managerReviewAndCommitMs:performance.now()-managerReviewStarted};
+  }
   await manager.close();manager=undefined;
-  host=new Client(hostExe,hostPath);
+  host=new Client(hostExe,hostPath,'host');
   report.privateReplyEvidence=host.replyEvidence;
   const preparation=performance.now(),pending=await host.call({method:'prepare',graph});
+  const prepared=performance.now();
   await host.call({method:'approve',reviewId:pending.reviewId,ids:pending.missing.map(r=>r.id),save:false});
+  const approved=performance.now();
   const activated=await host.call({method:'activate',reviewId:pending.reviewId});
-  let version=activated.state.activePlanVersion;report.prepareAndActivateMs=performance.now()-preparation;
+  const active=performance.now();
+  let version=activated.state.activePlanVersion;report.prepareAndActivateMs=active-preparation;
+  if(metadataComparison) Object.assign(report.metadataPreparation,{hostPrepareMs:prepared-preparation,
+    hostApproveMs:approved-prepared,hostActivateMs:active-approved});
   if(mode!=='0' && !cold) {
     const ready=await until(async()=>{const s=await host.call({method:'status'});report.lastReadinessStatus=s;assert.equal(s.phase,'ready','evaluation Session was retired during startup');assert.equal(s.sessionEpoch,activated.sessionEpoch,'evaluation Session changed during startup');assert.equal(s.retainedWorker.startupFailures ?? 0,0,'retained startup failed before all groups became ready');return s.retainedWorker.ready?s:null;});
     assert.equal(ready.retainedWorker.experimental,true);
@@ -256,7 +285,17 @@ try {
       beginRound:tracePaced ? async()=>{await host.call({method:'traceStartDetailed'});} : undefined,
       observeRound:round=>report.pacedRounds.push(round),
       finishRound:async(intervalMs,attempts,round)=>{
+        if(metadataComparison && intervalMs===20 && round.round===0) {
+          const latest=attempts.at(-1);
+          assert.equal(latest.outcome,'correct');
+          report.metadataPreparation.firstLatestResponseMs=latest.responseMs;
+          report.metadataPreparation.hostPrepareThroughFirstLatestMs=latest.issued+latest.responseMs-preparation;
+        }
         const status=await host.call({method:'status'});
+        if(metadataComparison && status.retainedWorker.ready &&
+            report.metadataPreparation.hostPrepareThroughReadinessObservationMs===undefined) {
+          report.metadataPreparation.hostPrepareThroughReadinessObservationMs=performance.now()-preparation;
+        }
         // Preserve correct/failed/latest outcomes even if diagnostics fail.
         round.status=status;
         const events=tracePaced ? await collectTrace() : undefined;
@@ -445,6 +484,7 @@ try {
   }
   // Inspect BEFORE test-directory removal: that removal must not hide an
   // execution/code-cache leak after the original Host and Workers have exited.
+  journal('driver','check-workspace');
   report.workspaceAfterHostExit=remainingWorkspaceFiles(join(root,'workers'));
   assert.deepEqual(report.workspaceAfterHostExit,[],'Host must reclaim workspace assets itself');
   report.completed=true;
@@ -457,7 +497,9 @@ finally {
   finally {
     writeFileSync(reportPath,JSON.stringify(report));
     assert.equal(dirname(realpathSync(root)),parent);assert(root.startsWith(join(parent,'diyime-primitive-retention-')));
+    journal('driver','remove-fixture');
     rmSync(root,{recursive:true});
+    journal('driver','fixture-removed');
   }
 }
 console.log(JSON.stringify({mode,count,shape,cadence,completed:report.completed,warm:report.warmResultMs}));
