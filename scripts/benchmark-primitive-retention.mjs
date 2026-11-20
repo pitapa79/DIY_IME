@@ -277,6 +277,7 @@ try {
     if(!reply.ok){assert.equal(reply.error?.code,'busy');return {admissionRejected:'busy'};}return reply.data.receipt.key;
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
+  const startupAdopted=e=>e.phase==='startup-owner-adopted' || e.phase==='invocation-call-started';
   async function witnessProvisional(key,phase) {
     return until(async()=>{
       const snapshot=await read(key);
@@ -290,7 +291,7 @@ try {
         const events=calls.phases.filter(e=>e.attempt===demand.attempt);
         const resumed=events.find(e=>e.phase==='native-resume-thread-finished');
         if(!resumed?.processId || !status.retainedWorker.processIds.includes(resumed.processId) ||
-            events.some(e=>e.phase==='owner-joined' || e.phase==='invocation-call-started'))return [];
+            events.some(e=>e.phase==='owner-joined' || startupAdopted(e)))return [];
         return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state,
           resumeObservedAtNs:resumed.atNs}];
       });
@@ -559,10 +560,11 @@ try {
           const {nodeId,attempt,pid}=guard.witness;
           const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
           const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
-          const invocation=events.find(e=>e.phase==='invocation-call-started' && e.runId===key.runId);
-          if(invocation)guard.invocationBeforeReclaim=invocation;
-          assert(!invocation,'the witnessed Worker had already adopted the input');
-          return !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
+          const adoption=events.find(startupAdopted);
+          if(adoption)guard.adoptionBeforeReclaim=adoption;
+          assert(!adoption,'the witnessed Worker had already adopted an input');
+          return events.some(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId) &&
+            !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
         },15000);
       } else {
         await host.call({method:'protection',enabled:true});
@@ -652,8 +654,11 @@ try {
             const s=await host.call({method:'status'});
             const row=s.retainedWorker.callSamples.find(r=>r.nodeIds[0]===guard.witness.nodeId);
             const events=row.calls.phases.filter(e=>e.attempt===guard.witness.attempt);
-            assert(!events.some(e=>e.phase==='invocation-call-started'));
-            return !s.retainedWorker.processIds.includes(guard.witness.pid) &&
+            const adoption=events.find(startupAdopted);
+            if(adoption)guard.adoptionBeforeReclaim=adoption;
+            assert(!adoption,'the witnessed Worker had already adopted an input');
+            return events.some(e=>e.phase==='initial-startup-demand-validated' && e.runId===key.runId) &&
+              !s.retainedWorker.processIds.includes(guard.witness.pid) &&
               events.find(e=>e.phase==='owner-joined');
           });
         } else {

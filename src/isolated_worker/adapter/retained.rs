@@ -1349,11 +1349,17 @@ fn coordinate(
             continue;
         }
         // Only the actual authorized invocation adopts a provisional Worker.
-        if owner.recovery.take().is_some_and(|lease| !lease.adopt()) {
-            drop(native.take());
-            provisional = None;
-            pending = Some(command);
-            continue;
+        if let Some(lease) = owner.recovery.take() {
+            if !lease.adopt() {
+                drop(native.take());
+                provisional = None;
+                pending = Some(command);
+                continue;
+            }
+            shared.record_run_phase(
+                "startup-owner-adopted",
+                Some(command.invocation.key().run_id),
+            );
         }
         provisional = None;
         let key = command.invocation.key().clone();
