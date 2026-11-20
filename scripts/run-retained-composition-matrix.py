@@ -315,6 +315,11 @@ def main():
                     if args.overlap_action == 'cancel':
                         assert guard['terminal']['result']['reason'] == 'cancelled'
                         assert guard['exit']['phase'] == 'owner-joined'
+                        assert guard['witness'] in guard['witnessCandidates']
+                        outcome, = (row for row in guard['witnessOutcomes']
+                                    if row['witness'] == guard['witness'])
+                        assert outcome['joined'] == guard['exit'] and outcome['demandMatched']
+                        assert outcome['adoption'] is None and not outcome['processStillListed']
                     else:
                         assert guard['terminal']['ok'] is False
                         assert guard['exit']['phase'] == 'protected'

@@ -284,7 +284,7 @@ try {
   }
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
   const startupAdopted=e=>e.phase==='startup-owner-adopted' || e.phase==='invocation-call-started';
-  async function witnessProvisional(key,phase) {
+  async function witnessProvisionalWorkers(key,phase) {
     return until(async()=>{
       const snapshot=await read(key);
       assert(snapshot.current && !ended(snapshot),'the run ended before observing a provisional Worker');
@@ -301,7 +301,9 @@ try {
         return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state,
           resumeObservedAtNs:resumed.atNs}];
       });
-      return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
+      return candidates.length
+        ? candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))
+        : null;
     },15000);
   }
   async function collectTrace() {
@@ -617,22 +619,37 @@ try {
       const key=await submit('synthetic interrupted idle recovery');
       assert(!key.admissionRejected);
       guard.key=key;
-      guard.witness=await witnessProvisional(key,'idle-recovery-demand-validated');
+      const witnesses=await witnessProvisionalWorkers(key,'idle-recovery-demand-validated');
+      guard.witness=witnesses[0];
       if(overlapAction==='cancel') {
+        guard.witnessCandidates=witnesses;
         await host.call({method:'cancelRun',key});
         guard.terminal=await until(async()=>{const s=await read(key);return ended(s)?s:null;},15000);
         assert.equal(guard.terminal.result.reason,'cancelled');
         guard.exit=await until(async()=>{
           const s=await host.call({method:'status'});
           assert.equal(s.sessionEpoch,before.sessionEpoch);
-          const {nodeId,attempt,pid}=guard.witness;
-          const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
-          const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
-          const adoption=events.find(startupAdopted);
-          if(adoption)guard.adoptionBeforeReclaim=adoption;
-          assert(!adoption,'the witnessed Worker had already adopted an input');
-          return events.some(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId) &&
-            !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
+          // The graph can advance during the cancel RPC. Require a real witnessed
+          // replacement that was reclaimed without ever adopting an input.
+          guard.witnessOutcomes=witnesses.map(witness=>{
+            const {nodeId,attempt,pid}=witness;
+            const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
+            const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
+            return {
+              witness,
+              adoption:events.find(startupAdopted)??null,
+              joined:events.find(e=>e.phase==='owner-joined')??null,
+              demandMatched:events.some(e=>e.phase==='idle-recovery-demand-validated' && e.runId===key.runId),
+              processStillListed:s.retainedWorker.processIds.includes(pid),
+            };
+          });
+          assert(guard.witnessOutcomes.some(outcome=>!outcome.adoption),
+            'every witnessed Worker had already adopted an input');
+          const reclaimed=guard.witnessOutcomes.find(outcome=>
+            !outcome.adoption && outcome.joined && outcome.demandMatched && !outcome.processStillListed);
+          if(!reclaimed)return null;
+          guard.witness=reclaimed.witness;
+          return reclaimed.joined;
         },15000);
       } else {
         await host.call({method:'protection',enabled:true});
@@ -712,7 +729,7 @@ try {
         assert.equal(key.sessionEpoch,before.sessionEpoch);
         const guard={action,key,before,passed:false};
         proof.guards.push(guard);
-        guard.witness=await witnessProvisional(key,'initial-startup-demand-validated');
+        [guard.witness]=await witnessProvisionalWorkers(key,'initial-startup-demand-validated');
         assert.notEqual(guard.witness.nodeId,executedIds[0]);
         if(action==='cancel') {
           await host.call({method:'cancelRun',key});
