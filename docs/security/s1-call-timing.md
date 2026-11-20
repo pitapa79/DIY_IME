@@ -129,6 +129,12 @@ Core結果準備から `host-response-published` までは別に計測した。�
 
 ## 復旧の再検証と残る制約
 
+#174 / Draft #175 の HEAD `6a66299781d1026a41dccf34ea3181185ada094e` では、Windowsの必須集約を含む11ジョブが成功した。
+同一バイナリで依存順を付ける前後のアイドル復旧は698.311msと473.406msだった。各1試行、両方とも最大同時起動2、
+旧Workerの後継20件を最新RunKeyに対応付け、各26/26のwarm入力が正答し、メモリ欠測は0件だった。
+別の取消と保護の試行でも、実起動したWorkerと最終回収を照合した。
+[Windows CI](https://github.com/pitapa79/DIY_IME/actions/runs/44483499942)・[依存順なし](https://github.com/pitapa79/DIY_IME/actions/runs/44483499942/artifacts/14511680159)・[依存順あり](https://github.com/pitapa79/DIY_IME/actions/runs/44483499942/artifacts/14511471128)・[取消と保護](https://github.com/pitapa79/DIY_IME/actions/runs/44483499942/artifacts/14511916181)
+
 Windows CI 44693112708の合成マージは `87de8df5690c466267cc2b877c6111bf39405f7c`。
 同じ配布バイナリの20段で、事前コンパイルなし→あり→あり→なしの順に測定した。
 
@@ -147,6 +153,13 @@ Windows CI 44693112708の合成マージは `87de8df5690c466267cc2b877c6111bf394
 同じバイナリで各2試行、全試行で旧結果を拒否し、各20個の元Workerを回収した。
 事前作成ありの20呼出しは各試行とも対応するプロファイルを使用した。
 [アイドルのプロファイル比較](https://github.com/pitapa79/DIY_IME/actions/runs/44693112708/artifacts/14610911731)
+
+別実行のCI 44698665039でも同じ4アームの比較を完了した。
+事前作成なしは486.553／428.505ms、ありは454.544／356.839ms。両条件の観測値の範囲は重なった。
+各アームで26/26のwarm入力とアイドル後の最新入力が正答し、旧結果は拒否された。
+各20件の元Workerの回収と後継による実呼出しを照合し、事前作成ありの各20呼出しがプールから取得したプロファイルを使用した。
+4アームともJobの全子孫と作業領域の回収を確認し、メモリとtraceの欠測は0件だった。
+[2回目のアイドル比較](https://github.com/pitapa79/DIY_IME/actions/runs/44698665039/artifacts/14613127895)
 
 先行する別試行では、最新入力の待ちが元WorkerのACL回収と130.5ms重なった。
 もう一つの遅延例では、新Workerのプロファイル作成が待ちの203.8msと重なり、元WorkerのACL回収は1.88msだった。
