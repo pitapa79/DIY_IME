@@ -279,9 +279,11 @@ try {
   const read=async key=>(await host.call({method:'getRun',key})).snapshot;
   async function witnessProvisional(key,phase) {
     return until(async()=>{
-      const status=await host.call({method:'status'});
       const snapshot=await read(key);
       assert(snapshot.current && !ended(snapshot),'the run ended before observing a provisional Worker');
+      // Observe the real Worker immediately before requesting the interruption.
+      const status=await host.call({method:'status'});
+      assert.equal(status.sessionEpoch,key.sessionEpoch);
       const candidates=status.retainedWorker.callSamples.flatMap(({nodeIds:[nodeId],calls})=>{
         const demand=calls.phases.find(e=>e.phase===phase && e.runId===key.runId);
         if(!demand)return [];
@@ -289,7 +291,8 @@ try {
         const resumed=events.find(e=>e.phase==='native-resume-thread-finished');
         if(!resumed?.processId || !status.retainedWorker.processIds.includes(resumed.processId) ||
             events.some(e=>e.phase==='owner-joined' || e.phase==='invocation-call-started'))return [];
-        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state}];
+        return [{nodeId,attempt:demand.attempt,pid:resumed.processId,runState:snapshot.state,
+          resumeObservedAtNs:resumed.atNs}];
       });
       return candidates.sort((a,b)=>executedIds.indexOf(b.nodeId)-executedIds.indexOf(a.nodeId))[0];
     },15000);
@@ -556,8 +559,9 @@ try {
           const {nodeId,attempt,pid}=guard.witness;
           const row=s.retainedWorker.callSamples.find(b=>b.nodeIds[0]===nodeId);
           const events=(row?.calls.phases??[]).filter(e=>e.attempt===attempt);
-          assert(!events.some(e=>e.phase==='invocation-call-started' && e.runId===key.runId),
-            'the witnessed Worker had already adopted the input');
+          const invocation=events.find(e=>e.phase==='invocation-call-started' && e.runId===key.runId);
+          if(invocation)guard.invocationBeforeReclaim=invocation;
+          assert(!invocation,'the witnessed Worker had already adopted the input');
           return !s.retainedWorker.processIds.includes(pid) && events.find(e=>e.phase==='owner-joined');
         },15000);
       } else {
