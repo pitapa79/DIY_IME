@@ -4,6 +4,9 @@ const pairs={
   startupGate:['attempt-started','startup-permit-acquired'],
   preparationGate:['preparation-permit-waiting','preparation-permit-acquired'],
   codePreparation:['code-preparation-started','code-preparation-finished'],
+  compilerTransaction:['code-compiler-transaction-started','code-compiler-transaction-finished'],
+  compilerOutputVerification:['code-compiler-transaction-finished','code-compiler-output-verified'],
+  verifiedCodeToPreparationEnd:['code-compiler-output-verified','code-preparation-finished'],
   profileCreate:['profile-create-started','profile-create-finished'],
   codeAccess:['code-access-started','code-access-finished'],
   jobCreate:['job-create-started','job-create-finished'],
@@ -57,6 +60,7 @@ export function analyzeRetainedLifecycle(statuses) {
     for(const attempt of attempts) {
       const own=events.filter(event=>event.attempt===attempt);
       item.attempts.push({attempt,processIds:[...new Set(own.map(e=>e.processId).filter(pid=>pid!==null))],
+        codeCacheHitEvents:own.filter(event=>event.phase==='code-preparation-cache-hit').length,
         spans:Object.fromEntries(Object.entries(pairs).map(([name,[a,b]])=>[name,interval(own,a,b)]))});
     }
     const runs=[...new Set(events.map(event=>event.runId).filter(id=>id!==null))];

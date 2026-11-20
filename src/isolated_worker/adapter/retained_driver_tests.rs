@@ -134,9 +134,35 @@ impl Fixture {
         };
         let compiled = compiled_artifact.as_ref().map(|artifact| {
             assert_eq!(host.usage().physical_jobs, 1);
-            let image = artifact.prepared_jit_image_owned(&control.cancel, Some(pin.clone()));
+            let mut phases = Vec::new();
+            let image =
+                artifact.prepared_jit_image_owned(&control.cancel, Some(pin.clone()), |phase| {
+                    phases.push(phase);
+                });
+            assert_eq!(
+                phases,
+                [
+                    "code-compiler-transaction-started",
+                    "code-compiler-transaction-finished",
+                    "code-compiler-output-verified",
+                ]
+            );
+            phases.clear();
+            let cached =
+                artifact.prepared_jit_image_owned(&control.cancel, Some(pin.clone()), |phase| {
+                    phases.push(phase);
+                });
+            assert_eq!(phases, ["code-preparation-cache-hit"]);
+            let WorkerImage::PreparedCompiled(files, size, digest) = &image else {
+                panic!("expected the compiler's verified image");
+            };
+            let WorkerImage::PreparedCompiled(cached_files, cached_size, cached_digest) = cached
+            else {
+                panic!("expected the same image from cache");
+            };
+            assert!(Arc::ptr_eq(files, &cached_files));
+            assert_eq!((*size, digest), (cached_size, &cached_digest));
             assert_eq!(host.usage().physical_jobs, 1);
-            assert!(matches!(image, WorkerImage::PreparedCompiled(..)));
             image
         });
         let calls = policy.max_calls;

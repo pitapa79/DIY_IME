@@ -821,19 +821,21 @@ impl WasmArtifact {
     }
 
     fn prepared_jit_image(&self, cancel: &CancellationToken) -> WorkerImage {
-        self.prepared_jit_image_owned(cancel, None)
+        self.prepared_jit_image_owned(cancel, None, |_| {})
     }
 
     fn prepared_jit_image_owned(
         &self,
         cancel: &CancellationToken,
         owner: Option<crate::isolated_worker::RetainedReservation>,
+        observe: impl FnMut(&'static str),
     ) -> WorkerImage {
         self.prepared_jit_image_if_enabled(
             cancel,
             owner,
             std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
+            observe,
         )
     }
 
@@ -842,6 +844,7 @@ impl WasmArtifact {
         cancel: &CancellationToken,
         owner: Option<crate::isolated_worker::RetainedReservation>,
         enabled: bool,
+        mut observe: impl FnMut(&'static str),
     ) -> WorkerImage {
         if !enabled || cancel.is_cancelled() {
             return WorkerImage::Jit;
@@ -851,14 +854,18 @@ impl WasmArtifact {
         let Ok(mut state) = self.0.jit_compiled.try_lock() else {
             return WorkerImage::Jit;
         };
+        let already_captured = matches!(*state, CompiledState::Ready(_));
         if matches!(*state, CompiledState::Pending) {
             let produced: Result<CompiledAsset, CoreError> = (|| {
                 let request = owner.as_ref().map_or_else(
                     || WorkerRequest::Immediate(Vec::new()),
                     |pin| WorkerRequest::RetainedCompile(pin.clone()),
                 );
-                let bytes =
-                    self.call_worker(request, cancel.clone(), None, 0, WorkerImage::CompileJit)?;
+                observe("code-compiler-transaction-started");
+                let result =
+                    self.call_worker(request, cancel.clone(), None, 0, WorkerImage::CompileJit);
+                observe("code-compiler-transaction-finished");
+                let bytes = result?;
                 // Only accept the captured compiler's output after original
                 // process/IO/ACL/profile cleanup, never a package artifact.
                 super::runtime::compiled_jit::validate_produced(
@@ -869,6 +876,7 @@ impl WasmArtifact {
                 )
                 .map_err(|_| fail("worker-identity", "compiled JIT binding unavailable"))?;
                 let digest = sha256(&bytes)?;
+                observe("code-compiler-output-verified");
                 let files = Arc::new(CodeFiles::new(
                     &self.0.workspace,
                     &[("node.cwasm", &bytes)],
@@ -886,6 +894,9 @@ impl WasmArtifact {
             *state = produced.map_or(CompiledState::Unavailable, CompiledState::Ready);
         }
         if let CompiledState::Ready(asset) = &*state {
+            if already_captured {
+                observe("code-preparation-cache-hit");
+            }
             WorkerImage::PreparedCompiled(asset.files.clone(), asset.len, asset.digest.clone())
         } else {
             WorkerImage::Jit

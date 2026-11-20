@@ -45,3 +45,18 @@ test('split ACL cleanup only when each boundary was recorded for the same attemp
   for(const name of ['moduleAclRelease','runtimeAclRelease','runtimeLeaseDrop'])
     assert.equal(old[name].state,'not-observed');
 });
+test('separate a compile transaction from verification and a later cache hit',()=>{
+  const phases=[event('code-preparation-started','1000000'),
+    event('code-compiler-transaction-started','2000000'),event('code-compiler-transaction-finished','9000000'),
+    event('code-compiler-output-verified','11000000'),event('code-preparation-finished','12000000'),
+    event('code-preparation-started','20000000','2'),event('code-preparation-cache-hit','20010000','2'),
+    event('code-preparation-finished','20020000','2')];
+  const [compiled,reused]=analyzeRetainedLifecycle([status(phases)]).owners[0].attempts;
+  assert.equal(compiled.spans.compilerTransaction.ms,7);
+  assert.equal(compiled.spans.compilerOutputVerification.ms,2);
+  assert.equal(compiled.spans.verifiedCodeToPreparationEnd.ms,1);
+  assert.equal(compiled.codeCacheHitEvents,0);
+  assert.equal(reused.codeCacheHitEvents,1);
+  assert.equal(reused.spans.compilerTransaction.state,'not-observed');
+  assert.equal(reused.spans.compilerTransaction.ms,undefined);
+});
