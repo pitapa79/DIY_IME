@@ -15,7 +15,8 @@ export class HeldPrimitiveWorker {
     this.started=new Promise((resolve,reject)=>{this.resolveStarted=resolve;this.rejectStarted=reject;});
     this.started.catch(()=>{});
     this.startTimer=setTimeout(()=>{
-      this.parseError=Error('owned Worker hold setup exceeded bound');
+      const diagnostic=this.stderr.trim() || 'no helper diagnostics received';
+      this.parseError=Error(`owned Worker hold setup exceeded bound: ${diagnostic}`);
       this.rejectStarted(this.parseError);this.child.stdin.end();
     },16000);
     this.completion=new Promise(resolve=>{
