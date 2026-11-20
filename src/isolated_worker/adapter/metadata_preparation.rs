@@ -64,7 +64,7 @@ impl WasmArtifact {
         }
         // No raw-JIT fallback: unavailable/busy/cancelled producers cannot hide
         // a cleanup failure or cause a second guest execution attempt.
-        let image = self.prepared_jit_image_if_enabled(&cancel, None, compiler_enabled);
+        let image = self.prepared_jit_image_if_enabled(&cancel, None, compiler_enabled, |_| {});
         if !matches!(image, WorkerImage::PreparedCompiled(..)) {
             return Err(fail(
                 "worker-preparation",

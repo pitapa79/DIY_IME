@@ -796,7 +796,9 @@ impl Native {
             // Source selection is this captured Node's own factory. Preparing
             // code runs no input/Instance and settles the original compiler
             // before granting a new retained process access to its output.
-            match modules[0].prepared_jit_image_owned(&cancel, Some(pin.clone())) {
+            match modules[0].prepared_jit_image_owned(&cancel, Some(pin.clone()), |phase| {
+                shared.record_phase(phase);
+            }) {
                 WorkerImage::PreparedCompiled(files, len, digest) => {
                     files.check_healthy()?;
                     Some(RetainedCompiledCode {

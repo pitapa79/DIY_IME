@@ -114,7 +114,8 @@ def main():
                 'harnessFilesSha256': {name: sha(repo/name) for name in [
                     'scripts/run-retained-composition-matrix.py', 'scripts/retained-composition-cases.mjs',
                     'scripts/retained-composition-preflight.mjs', 'scripts/retained-composition-graphs.mjs',
-                    'scripts/analyze-retained-graph-calls.mjs', 'scripts/benchmark-primitive-retention.mjs',
+                    'scripts/analyze-retained-graph-calls.mjs', 'scripts/analyze-retained-lifecycle.mjs',
+                    'scripts/benchmark-primitive-retention.mjs',
                     'scripts/observed-native-ring-history.mjs',
                     'scripts/host-input-scenarios.mjs', 'scripts/host-warm-input-observation.mjs', 'scripts/analyze-retained-call-timing.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
