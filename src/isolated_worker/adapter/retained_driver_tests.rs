@@ -397,7 +397,26 @@ fn real_compiled_retained_checks_verified_runtime_identity_and_reclaims_owner() 
         if proof == RuntimeProof::Matching {
             ready.unwrap();
             receive.recv_timeout(Duration::from_secs(2)).unwrap();
-            assert_eq!(fixture.host.usage().physical_jobs, 1);
+            for run in 2..8 {
+                let cancel = CancellationToken::default();
+                let scope = fixture_empty(&fixture.gate, &fixture.target, run, cancel.clone());
+                let mut input = fixture
+                    .client
+                    .as_mut()
+                    .unwrap()
+                    .begin_input(fixture_key(run), cancel)
+                    .unwrap();
+                let data = input.call(b"{}".to_vec(), scope).unwrap();
+                assert_eq!(
+                    input.finish(|| Ok(data)).unwrap(),
+                    json!({"counter":1,"memory":1})
+                );
+                assert_eq!(fixture.host.usage().physical_jobs, 1);
+                assert!(matches!(
+                    fixture.ended.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+            }
         } else {
             assert!(ready.is_err());
         }
