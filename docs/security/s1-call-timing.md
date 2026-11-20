@@ -266,6 +266,26 @@ stage0の同一PIDの枠待ちは1,521.235／637.674ms、枠取得後のプロ�
 この比較の初回遅延には起動枠待ちが大きく寄与した。上のwarm試行の分位点には含めていない。
 [区間の原本](https://github.com/pitapa79/DIY_IME/actions/runs/44758981867/artifacts/14642701009)
 
+### 取消検査の再実行とWindowsのメモリ欠測
+
+CI 44765372491のアイドル取消は候補を2件記録した。stage10のPID 7924は未採択のまま回収され、Ownerのjoinを照合した。
+stage1のPID 9448が取消要求の処理までに同じ入力を引き受けた記録も残った。保護では旧キーを拒否し、Worker・Job・予約結果を解放した。
+取消・保護ともJobと作業領域を回収し、メモリ欠測は0件だった。
+[取消・保護の原本](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14647596062)
+
+同じCIの構成試験は参照25/25、候補23/25合格。warmは各446/446、20ms間隔の最新入力は各24/24正答で、全50ケースで最終回収を確認した。
+候補の4段2ケースは `OpenProcess` エラー87で欠測し、直後のJob一覧に対象PIDがなかった。初回起動比較にもメモリ欠測1件が残り、49/50件が合格した。
+[参照](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14645617666)・[候補](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14644678817)・[初回起動](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14644918773)
+
+DLL比較は4段でメモリが欠測し、20段が未実行だった。独立のDLL安全試験は成功した。依存順付きアイドル復旧試験もメモリ欠測1件で比較不合格だった。
+Native起動検査では、終了と作業領域の回収を確認できたメモリ欠測ケースの記録を残して、後続の独立ケースまで実行する。欠測のあるスイートは不合格とする。
+[DLL比較](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14644832568)・[DLL安全](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14645278051)・[依存順比較](https://github.com/pitapa79/DIY_IME/actions/runs/44765372491/artifacts/14645404866)
+
+ローカルWindowsの合成Jobで、短命な子72件をJob通知と100ms周期の両方から観測した。
+通知からの読み取りでは72/72件を生存中に捕捉し、周期では42件を観測した。両方で観測した42件すべてで周期側のworking setの最大値が通知時を上回った。
+通知に到達保証はなく、値も周期採取とは時刻が異なるため、既存の欠測を埋める用途には使わない。
+[Windows Job通知の仕様](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_associate_completion_port)
+
 ## 未完了
 
 Wasm API内の意味的処理区間の分離、受付・公開を含む基盤追加遅延の評価、通常HostのCore計測が残る。
