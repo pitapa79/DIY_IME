@@ -1082,6 +1082,7 @@ impl WasmArtifact {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+        shared.record_phase("runtime-acl-release-started");
         let mut observed_runtime_retry = false;
         while runtime_lease.release().is_err() {
             if !observed_runtime_retry {
@@ -1090,6 +1091,7 @@ impl WasmArtifact {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        shared.record_phase("runtime-acl-release-finished");
         drop(runtime_lease);
         shared.record_phase("acl-release-finished");
         shared.record_phase("profile-delete-started");

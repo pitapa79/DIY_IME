@@ -34,3 +34,14 @@ test('measure launch stages with observed endpoints and preserve a missing resum
   const complete=analyzeRetainedLifecycle([status([...phases,event('native-resume-thread-finished','16000000')])]);
   assert.equal(complete.owners[0].attempts[0].spans.resumedToReadiness.ms,19);
 });
+test('split ACL cleanup only when each boundary was recorded for the same attempt',()=>{
+  const phases=[event('acl-release-started','1000000'),event('runtime-acl-release-started','4000000'),
+    event('runtime-acl-release-finished','8000000'),event('acl-release-finished','10000000')];
+  const spans=analyzeRetainedLifecycle([status(phases)]).owners[0].attempts[0].spans;
+  for(const [name,ms] of Object.entries({aclRelease:9,moduleAclRelease:3,runtimeAclRelease:4,
+    runtimeLeaseDrop:2})) assert.equal(spans[name].ms,ms);
+  const old=analyzeRetainedLifecycle([status([phases[0],phases[3]])]).owners[0].attempts[0].spans;
+  assert.equal(old.aclRelease.ms,9);
+  for(const name of ['moduleAclRelease','runtimeAclRelease','runtimeLeaseDrop'])
+    assert.equal(old[name].state,'not-observed');
+});
