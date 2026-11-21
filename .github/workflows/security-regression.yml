@@ -13,6 +13,10 @@ on:
         description: Compare serial compiler-gate waiting for already captured code
         type: boolean
         default: false
+      observe_creation_memory:
+        description: Record supplemental process creation memory in S1 composition checks
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -32,6 +36,7 @@ jobs:
         shell: pwsh
     env:
       CARGO_INCREMENTAL: '0'
+      DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY: ${{ github.event_name == 'workflow_dispatch' && inputs.observe_creation_memory && (matrix.segment == 'primitive-startup' || matrix.segment == 'retention-graphs') && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

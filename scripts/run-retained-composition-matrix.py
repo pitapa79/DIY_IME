@@ -106,6 +106,8 @@ def main():
         parser.error('--profile-pool requires --candidate and excludes --initial-startup')
     if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
         parser.error('idle profile comparisons require --ordered-recovery without --overlap-action')
+    observe_creation = os.environ.get('DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY') == '1'
+    sampler_options = ['--observe-creation-memory'] if observe_creation else []
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -172,6 +174,7 @@ def main():
     manifest = {'issue': issue,
                 'parentGoal': 109, 'sourceCommit': source,
                 'profile': profile,
+                'observeCreationMemory': observe_creation,
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
                 'moduleFiles': module_hashes,
@@ -193,6 +196,7 @@ def main():
                               for c in cases[len(manifest['cases']):]]
         (output/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     base = {key: value for key, value in os.environ.items() if not key.startswith('DIY_EXPERIMENT_')}
+    base.pop('DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY', None)
     base.pop('GITHUB_SHA', None)
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
     base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
@@ -245,7 +249,7 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP'] = '1'
                 if args.ready_code_no_prepare_wait:
                     env['DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT'] = '1'
-            command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
+            command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py', *sampler_options,
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
                 spec['count'], spec['samples'], 'thirdparty', spec['cadence']]))
