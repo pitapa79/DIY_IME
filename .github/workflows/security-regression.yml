@@ -17,6 +17,10 @@ on:
         description: Record supplemental process creation memory in S1 composition checks
         type: boolean
         default: false
+      trace_controlled_recovery:
+        description: Trace raw and captured-code Worker startup after controlled recovery
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -285,6 +289,20 @@ jobs:
         run: |
           python scripts/compare-private-sample-delivery.py target/windows-app target/private-sample-delivery-evidence
           exit $LASTEXITCODE
+      - name: Trace raw and captured-code recovery startup
+        if: "!cancelled() && matrix.segment == 'primitive-recovery' && inputs.trace_controlled_recovery == true"
+        run: |
+          python scripts/run-primitive-retention-evaluation.py target/windows-app target/recovery-startup-traces recovery-phases
+          exit $LASTEXITCODE
+      - name: Preserve controlled recovery startup traces
+        if: "!cancelled() && matrix.segment == 'primitive-recovery' && hashFiles('target/recovery-startup-traces/manifest.json') != ''"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-recovery-startup-traces-${{ github.sha }}
+          path: target/recovery-startup-traces/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Preserve private sample delivery comparisons including failures
         if: always() && matrix.segment == 'primitive-timing'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

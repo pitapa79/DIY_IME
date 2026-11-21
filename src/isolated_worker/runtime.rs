@@ -176,8 +176,9 @@ fn retained_verified_mode_refuses_missing_or_invalid_proof() {
 }
 
 fn worker_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
-    use super::retained_startup::{VERIFIED_FLAG, VERIFIED_TIMED_FLAG};
+    use super::retained_startup::{RAW_TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG};
     match args.first().and_then(|arg| arg.to_str()) {
+        Some(RAW_TIMED_FLAG) => return retained_module::run_raw_timed(&args[1..]),
         Some(VERIFIED_FLAG) => return retained_module::run_compiled_verified(&args[1..], false),
         Some(VERIFIED_TIMED_FLAG) => {
             return retained_module::run_compiled_verified(&args[1..], true);

@@ -150,6 +150,10 @@ pub(super) fn run(args: &[OsString]) -> Result<(), String> {
     run_modules(args, false, false, None)
 }
 
+pub(super) fn run_raw_timed(args: &[OsString]) -> Result<(), String> {
+    run_modules(args, false, true, None)
+}
+
 pub(super) fn run_compiled(args: &[OsString]) -> Result<(), String> {
     run_modules(args, true, false, None)
 }
@@ -209,7 +213,7 @@ fn run_modules(
     // runtime calls fuel memory, then 1..4 (module, exact length) pairs.
     // The new compile-cache experiment is restricted to one Node/module.
     let stride = if compiled { 4 } else { 2 };
-    if (compiled && args.len() != 8)
+    if ((compiled || timed_startup) && args.len() != 4 + stride)
         || args.len() < 4 + stride
         || args.len() > 4 + stride * MAX_MODULES
         || !(args.len() - 4).is_multiple_of(stride)
@@ -526,6 +530,15 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn raw_startup_timing_rejects_multiple_modules_before_runtime_load() {
+        let args = ["runtime", "1", "1", "1", "module-a", "1", "module-b", "1"].map(OsString::from);
+        assert_eq!(
+            run_raw_timed(&args).unwrap_err(),
+            "expected retained runtime calls fuel memory module length pairs"
+        );
+    }
+
     #[test]
     fn native_sequence_slot_and_every_partial_header_are_checked() {
         let mut header = Vec::new();

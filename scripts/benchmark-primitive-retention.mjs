@@ -97,6 +97,7 @@ writeFileSync(hostPath,JSON.stringify({packageManager,resourcePolicy,permissionR
 
 const journalEnabled=process.env.DIY_PRIMITIVE_PHASE_JOURNAL==='1';
 const nativeStartupTiming=process.env.DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING==='1';
+const nativeRawStartupTiming=process.env.DIY_EXPERIMENT_RETAINED_NATIVE_RAW_STARTUP_TIMING==='1';
 let journalRemaining=512;
 function journal(role,event,method,pid) {
   if(!journalEnabled || journalRemaining<=0)return;
@@ -148,7 +149,7 @@ class Client {
     const audit=lines.filter(line=>
       /^host-trace-loss-audit total=\d{1,20} probeBusy=\d{1,20} reservationFull=\d{1,20} clockUnavailable=\d{1,20} recorderBusy=\d{1,20} hostQueueFull=\d{1,20} invalidNative=\d{1,20} unfinished=\d{1,20}$/.test(line)).slice(0,64);
     if(audit.length)report.traceLossAudit=[...(report.traceLossAudit ?? []),...audit].slice(0,64);
-    if(nativeStartupTiming && this.role==='host') {
+    if((nativeStartupTiming || nativeRawStartupTiming) && this.role==='host') {
       const records=lines.flatMap(line=>{
         const match=/^retained-native-startup pid=(\d{1,10}) verify_us=(\d{1,16}) load_us=(\d{1,16}) read_us=(\d{1,16}) restore_us=(\d{1,16})$/.exec(line);
         if(!match)return [];
@@ -156,7 +157,17 @@ class Client {
         if(pid<=0 || ![pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleRestoreUs].every(Number.isSafeInteger))return [];
         return [{pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleRestoreUs}];
       });
-      report.retainedNativeStartup={records:records.slice(0,256),truncated:size===65536||records.length>256};
+      if(nativeStartupTiming)report.retainedNativeStartup={records:records.slice(0,256),truncated:size===65536||records.length>256};
+      if(nativeRawStartupTiming) {
+        const rawRecords=lines.flatMap(line=>{
+          const match=/^retained-native-raw-startup pid=(\d{1,10}) verify_us=(\d{1,16}) load_us=(\d{1,16}) read_us=(\d{1,16}) compile_us=(\d{1,16})$/.exec(line);
+          if(!match)return [];
+          const [pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleCompileUs]=match.slice(1).map(Number);
+          if(pid<=0 || ![pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleCompileUs].every(Number.isSafeInteger))return [];
+          return [{pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleCompileUs}];
+        });
+        report.retainedNativeRawStartup={records:rawRecords.slice(0,256),truncated:size===65536||rawRecords.length>256};
+      }
     }
   }
 }
@@ -204,6 +215,8 @@ const report={syntheticOnly:true,boundary:'normal External Host consent/Core/App
   requestedControls:Object.fromEntries(['HOST_TRACE_LOSS_AUDIT','RETAINED_STARTUP_PARALLELISM','RETAINED_TIMING','RETAINED_COMPILED_JIT','RETAINED_PREPARED_PROFILE','REVIEWED_PRIMITIVE_RETENTION','PREPARED_JIT','INHERITED_CODE_ACL','VERIFIED_RUNTIME_FILE','RETAINED_VERIFIED_RUNTIME_FILE','CHUNKED_SNAPSHOT_WRITES','OVERLAP_WORKER_CLEANUP','COMPILED_JIT','POOLED_JIT','JIT_STREAM_MODULE','NEUTRAL_JIT_POOL','NEUTRAL_CODE_CACHE','NEUTRAL_CODE_MAPPING'].map(name=>['DIY_EXPERIMENT_'+name,process.env['DIY_EXPERIMENT_'+name] ?? null])),
   binaries:Object.fromEntries([['host',hostExe],['manager',managerExe],['worker',worker],['dll',dll]].map(([k,p])=>[k,sha(readFileSync(p))])),
   moduleSha256:sha(readFileSync(join(official,'official.wasm'))),completed:false};
+if(nativeStartupTiming)report.requestedControls.DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING='1';
+if(nativeRawStartupTiming)report.requestedControls.DIY_EXPERIMENT_RETAINED_NATIVE_RAW_STARTUP_TIMING='1';
 if(lifetime && timing) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP=process.env.DIY_EXPERIMENT_RETAINED_IDLE_OVERLAP??null;
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;

@@ -231,7 +231,7 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
     use crate::isolated_worker::retained_startup::{
-        TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
+        RAW_TIMED_FLAG, TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
     };
 
     let flag = args.first().and_then(|arg| arg.to_str());
@@ -239,7 +239,12 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     if !(expects_proof
         || matches!(
             flag,
-            Some("--retained-resources-v1" | "--retained-compiled-resources-v1" | TIMED_FLAG)
+            Some(
+                "--retained-resources-v1"
+                    | "--retained-compiled-resources-v1"
+                    | TIMED_FLAG
+                    | RAW_TIMED_FLAG
+            )
         ))
         || expects_proof != verified_runtime.is_some()
         || control

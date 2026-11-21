@@ -838,10 +838,6 @@ impl Native {
                         len,
                         digest,
                         source: modules[0].0.identity.rsplit(':').next().unwrap().to_owned(),
-                        timed_startup: shared.samples.is_some()
-                            && std::env::var_os("DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING")
-                                .as_deref()
-                                == Some(std::ffi::OsStr::new("1")),
                     })
                 }
                 _ => None,
@@ -871,17 +867,35 @@ impl Native {
         }
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
-        let startup_observer = compiled.as_ref().filter(|code| code.timed_startup).map(|_| {
+        let timing_flag = if used_compiled {
+            "DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING"
+        } else {
+            "DIY_EXPERIMENT_RETAINED_NATIVE_RAW_STARTUP_TIMING"
+        };
+        let timed = nodes.len() == 1
+            && shared.samples.is_some()
+            && std::env::var_os(timing_flag).as_deref() == Some(std::ffi::OsStr::new("1"));
+        let startup_observer = timed.then(|| {
             let process_id = shared.process_id.clone();
-            Box::new(move |timing: crate::isolated_worker::retained_startup::Timing| {
-                use std::io::Write;
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "retained-native-startup pid={} verify_us={} load_us={} read_us={} restore_us={}",
-                    process_id.load(Ordering::Acquire), timing.dll_verify_us, timing.dll_load_us,
-                    timing.module_read_us, timing.module_restore_us,
-                );
-            }) as crate::isolated_worker::retained_startup::Observer
+            Box::new(
+                move |timing: crate::isolated_worker::retained_startup::Timing| {
+                    use std::io::Write;
+                    let (label, module_phase) = if used_compiled {
+                        ("retained-native-startup", "restore_us")
+                    } else {
+                        ("retained-native-raw-startup", "compile_us")
+                    };
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "{label} pid={} verify_us={} load_us={} read_us={} {module_phase}={}",
+                        process_id.load(Ordering::Acquire),
+                        timing.dll_verify_us,
+                        timing.dll_load_us,
+                        timing.module_read_us,
+                        timing.module_restore_us,
+                    );
+                },
+            ) as crate::isolated_worker::retained_startup::Observer
         });
         let (client, request) = RetainedClient::channel_observed(
             host.clone(),
@@ -918,7 +932,7 @@ impl Native {
                 }
                 artifact.retained_lifetime(
                     &modules,
-                    compiled,
+                    RetainedStartup { compiled, timed },
                     request,
                     &control,
                     cleanup_pin,
@@ -965,7 +979,11 @@ struct RetainedCompiledCode {
     len: usize,
     digest: String,
     source: String,
-    timed_startup: bool,
+}
+
+struct RetainedStartup {
+    compiled: Option<RetainedCompiledCode>,
+    timed: bool,
 }
 
 fn ready_retained_code(
@@ -992,12 +1010,13 @@ impl WasmArtifact {
     fn retained_lifetime(
         &self,
         modules: &[WasmArtifact],
-        compiled: Option<RetainedCompiledCode>,
+        startup: RetainedStartup,
         request: RetainedWorkerRequest,
         control: &RunControl,
         _cleanup_pin: RetainedReservation,
         shared: Arc<Shared>,
     ) -> Result<Option<ExitReceipt>, CoreError> {
+        let RetainedStartup { compiled, timed } = startup;
         shared.record_phase("profile-create-started");
         let prepared = if compiled.is_some()
             && shared
@@ -1042,7 +1061,7 @@ impl WasmArtifact {
         let mut module_leases = Vec::new();
         let receipt = (|| {
             use crate::isolated_worker::retained_startup::{
-                TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
+                RAW_TIMED_FLAG, TIMED_FLAG, VERIFIED_FLAG, VERIFIED_TIMED_FLAG,
             };
 
             let dll = runtime.cache.path().join("wasmtime.dll");
@@ -1062,13 +1081,13 @@ impl WasmArtifact {
             } else {
                 None
             };
-            let timed = compiled.as_ref().is_some_and(|code| code.timed_startup);
             let mode = match (compiled.is_some(), timed, verified_runtime.is_some()) {
                 (true, true, true) => VERIFIED_TIMED_FLAG,
                 (true, false, true) => VERIFIED_FLAG,
                 (true, true, false) => TIMED_FLAG,
                 (true, false, false) => "--retained-compiled-resources-v1",
-                (false, _, _) => "--retained-resources-v1",
+                (false, true, _) => RAW_TIMED_FLAG,
+                (false, false, _) => "--retained-resources-v1",
             };
             let mut args: Vec<OsString> = vec![
                 mode.into(),

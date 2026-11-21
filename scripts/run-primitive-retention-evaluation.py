@@ -11,7 +11,7 @@ import sys
 parser = argparse.ArgumentParser()
 parser.add_argument('bundle', type=Path)
 parser.add_argument('output', type=Path)
-parser.add_argument('suite', choices=['comparison', 'safety', 'recovery', 'timing', 'startup'])
+parser.add_argument('suite', choices=['comparison', 'safety', 'recovery', 'recovery-phases', 'timing', 'startup'])
 args = parser.parse_args()
 repo = Path(__file__).resolve().parent.parent
 bundle = args.bundle.resolve(strict=True)
@@ -51,6 +51,10 @@ elif args.suite == 'recovery':
             for cadence, samples in [('warm', 30), ('paced', 5)]:
                 cases.extend(('separate', count, samples, shape, cadence) for _ in range(4))
     cases.extend(('separate', 20, 1, 'identity', 'safety') for _ in range(4))
+elif args.suite == 'recovery-phases':
+    for compiled in [False, True, True, False] * 2:
+        cases.append(('separate', 20, 1, 'identity', 'safety'))
+        timing_controls.append((compiled, True))
 elif args.suite == 'timing':
     def timing_cases(count, samples, shape, cadence, compiled_modes=(False, True)):
         for compiled in compiled_modes:
@@ -102,12 +106,15 @@ try:
         name = f'{index:02}-{mode}-{count}-{shape}-{cadence}'
         env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
         env['DIY_EXPERIMENT_PREPARED_JIT'] = 'all' if mode == '0' else '0'
-        compiled, measured = timing_controls[index] if args.suite == 'timing' else (
+        compiled, measured = timing_controls[index] if timing_controls else (
             args.suite == 'startup' or args.suite == 'recovery' and index % 4 in [1, 2], args.suite == 'startup')
         startup_limit = startup_limits[index] if args.suite == 'startup' else 1
         env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = str(startup_limit)
         env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if compiled else '0'
         env['DIY_EXPERIMENT_RETAINED_TIMING'] = '1' if measured else '0'
+        if args.suite == 'recovery-phases':
+            env['DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING'] = '1'
+            env['DIY_EXPERIMENT_RETAINED_NATIVE_RAW_STARTUP_TIMING'] = '1'
         if cadence == 'startup-refusal':
             env['DIY_EXPERIMENT_COMPILED_JIT'] = '0'
         else:
