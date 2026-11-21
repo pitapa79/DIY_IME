@@ -31,7 +31,7 @@ impl Default for StartupGate {
     }
 }
 impl StartupGate {
-    fn bounded(limit: usize) -> Result<Self, CoreError> {
+    pub(super) fn bounded(limit: usize) -> Result<Self, CoreError> {
         if !matches!(limit, 1 | 2 | 4) {
             return Err(fail("retained-startup", "unsupported startup concurrency"));
         }

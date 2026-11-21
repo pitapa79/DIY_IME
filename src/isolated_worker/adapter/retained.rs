@@ -62,6 +62,8 @@ struct Shared {
     send: mpsc::SyncSender<Command>,
     stop: CancellationToken,
     input: Mutex<Option<ActiveInput>>,
+    #[cfg(test)]
+    end_ready_owner_before_input: std::sync::atomic::AtomicBool,
     lifetime: Mutex<Option<CancellationToken>>,
     physical: AtomicU64,
     ready: std::sync::atomic::AtomicBool,
@@ -350,6 +352,8 @@ impl Owner {
             send,
             stop: CancellationToken::default(),
             input: Mutex::new(None),
+            #[cfg(test)]
+            end_ready_owner_before_input: std::sync::atomic::AtomicBool::new(false),
             lifetime: Mutex::new(None),
             physical: AtomicU64::new(0),
             ready: std::sync::atomic::AtomicBool::new(false),
@@ -1527,6 +1531,14 @@ fn coordinate(
         provisional = None;
         let key = command.invocation.key().clone();
         let input_cancel = CancellationToken::default();
+        #[cfg(test)]
+        if was_ready
+            && shared
+                .end_ready_owner_before_input
+                .swap(false, Ordering::AcqRel)
+        {
+            owner.cancel.cancel();
+        }
         *shared.input.lock().unwrap_or_else(|p| p.into_inner()) = Some(ActiveInput {
             key: key.clone(),
             cancel: input_cancel.clone(),
@@ -1926,6 +1938,175 @@ mod tests {
         assert_eq!((len, observed), (code.len(), digest));
         cancel.cancel();
         assert!(ready_retained_code(&cache, &cancel).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires the actual Worker, pinned DLL and qualified fixture"]
+    fn real_reviewed_coordinator_requeues_after_ready_owner_exit() {
+        let asset =
+            |name| PathBuf::from(std::env::var_os(name).expect("explicit Worker fixture asset"));
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("retained-ready-requeue-{}", std::process::id()));
+        std::fs::create_dir(&workspace).unwrap();
+        let mut policy = WorkerPolicy::bounded_probe();
+        policy.termination_grace = Duration::from_millis(5);
+        let artifact = WasmArtifact::capture(
+            &workspace,
+            &asset("DIY_RANGE_WORKER_BINARY"),
+            &asset("DIY_RANGE_RUNTIME_DLL"),
+            std::fs::read(asset("DIY_RETAINED_HOST_FIXTURE_WASM")).unwrap(),
+            policy,
+        )
+        .unwrap();
+        let gate = ExecutionGate::default();
+        let config = json!({"mode":"echo"});
+        let node = artifact
+            .prepare(
+                "fixture.wasm",
+                1,
+                vec![config.clone()],
+                gate.clone(),
+                CancellationToken::default(),
+            )
+            .unwrap()
+            .bind_package("retained-ready-requeue-fixture".into());
+        let mut registry = Registry::new();
+        register_system_nodes(&mut registry).unwrap();
+        registry.register_deferred(node.clone()).unwrap();
+        let graph = Graph::from_json(
+            &json!({
+                "version":1,
+                "nodes":[{"id":"input","kind":"input.text","version":1},
+                         {"id":"stage0","kind":"fixture.wasm","version":1,"config":config}],
+                "edges":[{"from":{"node":"input","port":"out"},"to":{"node":"stage0","port":"in"}}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let resources: Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/execution_control.json"
+        ))
+        .unwrap();
+        let host = ExecutionHost::new(
+            "real-reviewed-ready-requeue",
+            ResourcePolicy::from_value(resources["resourceProfiles"]["noTombstones"].clone())
+                .unwrap(),
+        )
+        .unwrap();
+        let service = ExecutionService::new(host.clone()).unwrap();
+        let plan_version = DecimalId::new(1).unwrap();
+        let raw = service
+            .open_ready(
+                ExecutionPlan::compile(&graph, &registry).unwrap(),
+                plan_version,
+            )
+            .unwrap();
+        let target = node.grant_target(raw.session_epoch(), plan_version, "stage0");
+        gate.approve(target.clone());
+        let controller = gate.seal(raw, vec![target]).unwrap();
+        let owner = Owner::install_evaluation(
+            host.clone(),
+            controller.clone(),
+            vec![("stage0".into(), node, config)],
+            Arc::new(retention_evaluation::StartupGate::bounded(2).unwrap()),
+            Arc::new(Mutex::new(())),
+            Some(std::time::Instant::now()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        owner.start();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !owner.ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "original owner must become ready"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(owner.compiled_generations(), 1);
+        let old_pid = owner.process_id().unwrap();
+        owner
+            .shared
+            .end_ready_owner_before_input
+            .store(true, Ordering::Release);
+        let text = "same latest input";
+        let request: StartRequest = serde_json::from_value(json!({
+            "startKey":"1","expectedPlanVersion":"1","targets":[{"node":"stage0","port":"out"}],
+            "input":{"revision":1,"text":text,"mode":"compose"}
+        }))
+        .unwrap();
+        let key = controller.start_run(request).unwrap().key;
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let result = loop {
+            let snapshot = controller.get_run(&key).unwrap();
+            if snapshot.state == RunPhase::Terminal
+                && snapshot.physical.running == 0
+                && snapshot.physical.cancel_requested == 0
+                && snapshot.physical.queued == 0
+                && snapshot.physical.stalled == 0
+            {
+                assert!(snapshot.current);
+                break snapshot.result.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "latest input must settle"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(result.delivery, RunDelivery::Complete);
+        assert_eq!(result.ports[0].value["packet"]["root"]["text"], text);
+        assert_eq!(owner.compiled_generations(), 2);
+        let replacement_pid = owner.process_id().unwrap();
+        assert_ne!(old_pid, replacement_pid);
+        let samples = owner.call_samples().unwrap();
+        assert_eq!(samples["calls"]["phaseDropped"], 0);
+        let phases = samples["calls"]["phases"].as_array().unwrap();
+        let stage = |name, run: Option<DecimalId>, pid: Option<u64>| {
+            let matches: Vec<_> = phases
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    row["phase"] == name
+                        && run.is_none_or(|id| row["runId"] == json!(id))
+                        && pid.is_none_or(|id| row["processId"] == id)
+                })
+                .collect();
+            assert_eq!(matches.len(), 1, "{name}: {matches:?}");
+            matches[0].0
+        };
+        let dequeued = stage("invocation-dequeued", Some(key.run_id), Some(old_pid));
+        let ended = stage("original-process-io-ended", None, Some(old_pid));
+        let joined = stage("owner-joined", None, Some(old_pid));
+        let restarted = stage(
+            "invocation-requeued-after-owner-end",
+            Some(key.run_id),
+            None,
+        );
+        let called = stage("invocation-call-started", Some(key.run_id), None);
+        assert_eq!(phases[called]["processId"], replacement_pid);
+        assert!(dequeued < ended && ended < joined && joined < restarted && restarted < called);
+        controller.close();
+        drop(owner);
+        drop(controller);
+        drop(service);
+        drop(registry);
+        drop(artifact);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while host.usage() != ResourceUsage::default() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "remaining ownership: {:?}",
+                host.usage()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::fs::remove_dir(workspace).unwrap();
+        eprintln!(
+            "reviewed ready requeue: original PID {old_pid}, successor PID {replacement_pid}"
+        );
     }
 
     /// Direct trusted-native composition for Core bridge verification only.
