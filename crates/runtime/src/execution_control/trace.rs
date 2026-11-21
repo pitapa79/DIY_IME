@@ -1154,6 +1154,10 @@ impl TraceTicket {
             && matches!(
                 event,
                 TraceKind::HostResponsePublished
+                    | TraceKind::CoreProducerEndQueued
+                    | TraceKind::CoreProducerEndReceived
+                    | TraceKind::CoreStartReturnQueued
+                    | TraceKind::CoreStartReturnReceived
                     | TraceKind::HostRequestStarted
                     | TraceKind::HostRequestFinished
                     | TraceKind::WorkerStagingStarted
