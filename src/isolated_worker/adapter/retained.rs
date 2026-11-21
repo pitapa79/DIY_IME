@@ -22,6 +22,7 @@ struct Command {
     cancel: CancellationToken,
     done: mpsc::SyncSender<()>,
     startup_retry_until: Option<std::time::Instant>,
+    restarted_after_owner_end: bool,
 }
 impl Command {
     fn fail(self, error: CoreError) {
@@ -179,6 +180,7 @@ impl NodeLink {
             cancel,
             done,
             startup_retry_until: None,
+            restarted_after_owner_end: false,
         };
         // A failed thread creation must return ownership to the caller.
         let owned = Arc::new(Mutex::new(Some(command)));
@@ -1192,6 +1194,14 @@ fn retire_native(native: &mut Option<Native>, shared: &Shared, allow_idle_recove
     }
 }
 
+fn claim_pre_delivery_restart(restarted: &mut bool, was_ready: bool, owner_ended: bool) -> bool {
+    if *restarted || !was_ready || !owner_ended {
+        return false;
+    }
+    *restarted = true;
+    true
+}
+
 fn coordinate(
     host: ExecutionHost,
     controller: GuardedController,
@@ -1314,11 +1324,20 @@ fn coordinate(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        if command.startup_retry_until.is_none() {
+        if command.startup_retry_until.is_none() && !command.restarted_after_owner_end {
             shared.record_run_phase("invocation-dequeued", Some(command.invocation.key().run_id));
         }
         if command.cancel.is_cancelled() {
             command.fail(fail("worker-cancelled", "invocation cancelled"));
+            continue;
+        }
+        if command.restarted_after_owner_end
+            && !current_run(&shared, &controller, command.invocation.key())
+        {
+            command.fail(fail(
+                "worker-cancelled",
+                "replacement input is no longer current",
+            ));
             continue;
         }
         if command.stage != 0 {
@@ -1392,10 +1411,30 @@ fn coordinate(
             .wait_ready(Duration::from_secs(10))
             .is_err()
         {
+            let was_ready = shared.ready.load(Ordering::Acquire);
+            let owner_ended = owner._pin.is_closed();
             drop(native.take());
             if provisional.take().is_some() {
                 // No input reached this Worker. Use the normal start for the
                 // already admitted invocation if speculative readiness failed.
+                pending = Some(command);
+            } else if shared
+                .startup_gate
+                .as_ref()
+                .is_some_and(|gate| gate.requires_compiled())
+                && claim_pre_delivery_restart(
+                    &mut command.restarted_after_owner_end,
+                    was_ready,
+                    owner_ended,
+                )
+            {
+                // The previously ready owner ended after the coordinator's
+                // readiness poll. Join it before preparing a new owner for
+                // this same command, which has not reached begin_input.
+                shared.record_run_phase(
+                    "invocation-requeued-after-owner-end",
+                    Some(command.invocation.key().run_id),
+                );
                 pending = Some(command);
             } else {
                 command.legacy(&shared);
@@ -1681,6 +1720,18 @@ mod tests {
         graph::{ExecutionPlan, Graph},
         node::Registry,
     };
+
+    #[test]
+    fn permits_one_restart_only_for_a_previously_ready_closed_owner() {
+        let mut restarted = false;
+        assert!(!claim_pre_delivery_restart(&mut restarted, false, false));
+        assert!(!claim_pre_delivery_restart(&mut restarted, true, false));
+        assert!(!claim_pre_delivery_restart(&mut restarted, false, true));
+        assert!(!restarted);
+        assert!(claim_pre_delivery_restart(&mut restarted, true, true));
+        assert!(restarted);
+        assert!(!claim_pre_delivery_restart(&mut restarted, true, true));
+    }
 
     #[test]
     fn ready_cache_read_never_waits_or_publishes_code() {
