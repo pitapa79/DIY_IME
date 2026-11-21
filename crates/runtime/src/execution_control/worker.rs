@@ -217,9 +217,22 @@ impl WorkerDispatcher {
         let worker_permit = permit.clone();
         #[cfg(test)]
         let start_gate = self.start_gate.clone();
-        std::thread::Builder::new()
-            .name(format!("diy-ime-job-{}", id.get()))
+        let builder = std::thread::Builder::new().name(format!("diy-ime-job-{}", id.get()));
+        let measure_dispatch = invocation
+            .trace
+            .as_ref()
+            .is_some_and(|trace| trace.is_detailed());
+        if measure_dispatch {
+            invocation.trace_event(super::TraceKind::CoreDispatchSpawn, Some(id.get()));
+        }
+        builder
             .spawn(move || {
+                if measure_dispatch {
+                    work.trace_event(
+                        super::TraceKind::CoreDispatchEntered,
+                        Some(worker_stamp.job_id.get()),
+                    );
+                }
                 #[cfg(test)]
                 if let Some(gate) = start_gate {
                     let _ = gate.lock().unwrap_or_else(|p| p.into_inner()).recv();

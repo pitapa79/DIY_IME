@@ -33,6 +33,8 @@ pub enum TraceKind {
     RunAccepted,
     DependencyWait,
     NodeReady,
+    CoreDispatchSpawn,
+    CoreDispatchEntered,
     NodeStarted,
     NodeResolved,
     NodeSkipped,
