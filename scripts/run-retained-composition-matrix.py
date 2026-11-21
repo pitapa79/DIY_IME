@@ -107,7 +107,10 @@ def main():
     if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
         parser.error('idle profile comparisons require --ordered-recovery without --overlap-action')
     observe_creation = os.environ.get('DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY') == '1'
+    observe_process_v2 = os.environ.get('DIY_PRIMITIVE_OBSERVE_PROCESS_V2_MEMORY') == '1'
     sampler_options = ['--observe-creation-memory'] if observe_creation else []
+    if observe_process_v2:
+        sampler_options.append('--observe-process-v2-memory')
     assert sys.platform == 'win32'
     repo = Path(__file__).resolve().parent.parent
     bundle, output = args.bundle.resolve(strict=True), args.output.resolve()
@@ -175,6 +178,7 @@ def main():
                 'parentGoal': 109, 'sourceCommit': source,
                 'profile': profile,
                 'observeCreationMemory': observe_creation,
+                'observeProcessV2Memory': observe_process_v2,
                 'scope': 'Synthetic normalHost topology/input coverage; guest spans include SDK ABI. No semantic/framework target or product adoption claim.',
                 'bundleFiles': {path: hashes[path] for path in files},
                 'moduleFiles': module_hashes,
@@ -187,6 +191,7 @@ def main():
                     'scripts/observed-native-ring-history.mjs',
                     'scripts/host-input-scenarios.mjs', 'scripts/host-warm-input-observation.mjs', 'scripts/analyze-retained-call-timing.mjs',
                     'scripts/private-sample-delivery.mjs', 'scripts/measure-primitive-retention-job.py',
+                    'scripts/process_v2_job_memory.py',
                     'editor/src/executionTrace.ts']}, 'plannedCases': cases,
                 'cases': [], 'allCasesPhysicallyReviewed': False, 'complete': False, 'notRun': []}
     def save():
@@ -197,6 +202,7 @@ def main():
         (output/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     base = {key: value for key, value in os.environ.items() if not key.startswith('DIY_EXPERIMENT_')}
     base.pop('DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY', None)
+    base.pop('DIY_PRIMITIVE_OBSERVE_PROCESS_V2_MEMORY', None)
     base.pop('GITHUB_SHA', None)
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
     base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)

@@ -17,7 +17,7 @@ class MemorySampleHandleTests(unittest.TestCase):
         events = []
 
         def open_pid(access, inherit, pid):
-            self.assertEqual((access, inherit), (0x1000, False))
+            self.assertEqual((access, inherit), (sampler.QUERY_PROCESS_AND_WAIT, False))
             events.append(('open', pid))
             if pid == 11:
                 ctypes.set_last_error(87)
@@ -46,7 +46,7 @@ class MemorySampleHandleTests(unittest.TestCase):
         close_events = [('close', handle) for handle in reversed(opened)]
         with patch.object(sampler.base, 'query', side_effect=query), \
              patch.object(sampler, 'open_process', side_effect=open_pid), \
-             patch.object(sampler, 'read_member_memory', side_effect=read), \
+             patch.object(sampler, 'read_live_member_memory', side_effect=read), \
              patch.object(sampler.base, 'close', side_effect=lambda handle: events.append(('close', handle))):
             if fail_read:
                 with self.assertRaisesRegex(RuntimeError, 'synthetic counter failure'):
@@ -77,6 +77,27 @@ class MemorySampleHandleTests(unittest.TestCase):
 
     def test_preserve_missing_memory_if_the_second_job_query_fails(self):
         self.run_sample(set(), [10, 11, 12], after_ids=None)
+
+
+class MemorySampleLivenessTests(unittest.TestCase):
+    def test_only_publish_counters_read_while_process_is_unsignalled(self):
+        def read(_handle, _job, observation):
+            observation.update(available=True, workingSetBytes=4096)
+
+        live = sampler.WAIT_TIMEOUT
+        for waits, phase in [([live, live], None), ([0], 'before-read'), ([live, 0], 'after-read')]:
+            with self.subTest(phase=phase):
+                row = {'pid': 10, 'available': False}
+                with patch.object(sampler.base, 'wait', side_effect=waits) as wait, \
+                     patch.object(sampler, 'read_member_memory', side_effect=read) as counter:
+                    sampler.read_live_member_memory(110, 99, row)
+                self.assertEqual(wait.call_count, len(waits))
+                self.assertEqual(counter.call_count, int(phase != 'before-read'))
+                if phase is None:
+                    self.assertEqual(row, {'pid': 10, 'available': True, 'workingSetBytes': 4096})
+                else:
+                    self.assertEqual(row, {'pid': 10, 'available': False, 'phase': phase,
+                                           'failureApi': 'WaitForSingleObject', 'waitStatus': 0})
 
 
 if __name__ == '__main__':

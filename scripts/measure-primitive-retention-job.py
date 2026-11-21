@@ -5,7 +5,7 @@ that race process exit or fail are explicit, never filled with zero.
 """
 import ctypes as c
 from ctypes import wintypes as w
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 import importlib.util
 import json
 from pathlib import Path
@@ -37,6 +37,9 @@ get_packet = base.api('GetQueuedCompletionStatus', w.BOOL, w.HANDLE, c.POINTER(w
                       c.POINTER(c.c_size_t), c.POINTER(c.c_void_p), w.DWORD)
 post_packet = base.api('PostQueuedCompletionStatus', w.BOOL, w.HANDLE, w.DWORD, c.c_size_t, c.c_void_p)
 
+QUERY_PROCESS_AND_WAIT = 0x101000  # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+WAIT_TIMEOUT = 258
+
 def read_member_memory(handle, job, row):
     member = w.BOOL()
     counters = Memory()
@@ -58,6 +61,20 @@ def read_member_memory(handle, job, row):
         row.update(available=True, creationFileTime=str((created.dwHighDateTime << 32) | created.dwLowDateTime),
                    workingSetBytes=counters.ws, peakWorkingSetBytes=counters.peak_ws,
                    privateCommitBytes=counters.private)
+
+
+def read_live_member_memory(handle, job, row):
+    before = base.wait(handle, 0)
+    if before != WAIT_TIMEOUT:
+        row.update(failureApi='WaitForSingleObject', waitStatus=before, phase='before-read')
+        return
+    observation = dict(row)
+    read_member_memory(handle, job, observation)
+    after = base.wait(handle, 0)
+    if after != WAIT_TIMEOUT:
+        row.update(failureApi='WaitForSingleObject', waitStatus=after, phase='after-read')
+        return
+    row.update(observation)
 
 
 class CreationMemoryObserver:
@@ -88,7 +105,7 @@ class CreationMemoryObserver:
             message, key, pid = w.DWORD(), c.c_size_t(), c.c_void_p()
             while not self.stop.is_set():
                 if not get_packet(self.port, c.byref(message), c.byref(key), c.byref(pid), 100):
-                    if c.get_last_error() != 258:  # WAIT_TIMEOUT
+                    if c.get_last_error() != WAIT_TIMEOUT:
                         raise c.WinError(c.get_last_error())
                     continue
                 if key.value == 0:  # Stop packet queued by close().
@@ -103,22 +120,13 @@ class CreationMemoryObserver:
 
     def observe(self, pid):
         row = dict(pid=pid, available=False, elapsedMs=(time.monotonic()-self.origin)*1000)
-        handle = open_process(0x101000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        handle = open_process(QUERY_PROCESS_AND_WAIT, False, pid)
         if not handle:
             row.update(failureApi='OpenProcess', error=c.get_last_error())
             return row
         try:
-            before = base.wait(handle, 0)
-            if before != 258:
-                row.update(failureApi='WaitForSingleObject', waitStatus=before, phase='before-read')
-                return row
-            observation = dict(row)
-            read_member_memory(handle, self.job, observation)
-            after = base.wait(handle, 0)
-            if after != 258:
-                row.update(failureApi='WaitForSingleObject', waitStatus=after, phase='after-read')
-                return row
-            return observation
+            read_live_member_memory(handle, self.job, row)
+            return row
         finally:
             base.close(handle)
 
@@ -142,7 +150,7 @@ def sample(job, origin, previous_pids):
         # Give newly listed processes the earliest open attempt. Keep the
         # original Job enumeration order in the reported rows.
         for row in sorted(rows, key=lambda row: row['pid'] in previous_pids):
-            handle = open_process(0x1000, False, row['pid'])
+            handle = open_process(QUERY_PROCESS_AND_WAIT, False, row['pid'])
             if handle:
                 handles.callback(base.close, handle)
                 pending.append((handle, row))
@@ -150,7 +158,7 @@ def sample(job, origin, previous_pids):
                 row['error'] = c.get_last_error()
                 row['failureApi'] = 'OpenProcess'
         for handle, row in pending:
-            read_member_memory(handle, job, row)
+            read_live_member_memory(handle, job, row)
     elapsed_ms = (time.monotonic()-origin)*1000
     missing = [row for row in rows if not row['available']]
     if missing:
@@ -169,7 +177,22 @@ def sample(job, origin, previous_pids):
                 listed=pids.listed, processes=rows)
 
 
-def measure(command, observe_creation=False):
+def process_v2_observer():
+    spec = importlib.util.spec_from_file_location(
+        'process_v2_job_memory', Path(__file__).with_name('process_v2_job_memory.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def members(job):
+        pids = base.query(job, 3, Pids())
+        if pids.assigned == pids.listed <= len(pids.ids):
+            return set(pids.ids[:pids.listed])
+        return None
+
+    return module.ProcessV2MemoryObserver(members)
+
+
+def measure(command, observe_creation=False, observe_process_v2=False):
     job = base.check(base.create_job(None, None))
     process = base.Process()
     assigned = False
@@ -178,12 +201,20 @@ def measure(command, observe_creation=False):
     previous_pids = set()
     timed_out = False
     creation = None
+    process_v2 = None
+    process_v2_rows = []
+    process_v2_error = None
     try:
         limits = base.ExtendedLimits()
         limits.basic.flags = 0x2000
         base.check(base.set_job(job, 9, c.byref(limits), c.sizeof(limits)))
         if observe_creation:
             creation = CreationMemoryObserver(job, origin)
+        if observe_process_v2:
+            try:
+                process_v2 = process_v2_observer()
+            except OSError as error:
+                process_v2_error = str(error)
         startup = base.Startup()
         startup.size = c.sizeof(startup)
         line = c.create_unicode_buffer(subprocess.list2cmdline(command))
@@ -194,12 +225,18 @@ def measure(command, observe_creation=False):
             raise c.WinError(c.get_last_error())
         while True:
             result = base.wait(process.handle, 100)
+            if process_v2 is not None:
+                try:
+                    extra = process_v2.sample(job)
+                except (OSError, ValueError) as error:
+                    extra = {'error': str(error)}
+                process_v2_rows.append(dict(primarySampleIndex=len(samples), **extra))
             observation = sample(job, origin, previous_pids)
             samples.append(observation)
             previous_pids = {row['pid'] for row in observation['processes']}
             if result == 0:
                 break
-            if result != 0x102:
+            if result != WAIT_TIMEOUT:
                 raise RuntimeError('original benchmark driver wait failed')
             if time.monotonic()-origin >= 300:
                 timed_out = True
@@ -225,10 +262,20 @@ def measure(command, observe_creation=False):
             creation.close()
             result['creationMemoryObservations'] = dict(rows=creation.rows, dropped=creation.dropped,
                                                         listenerError=creation.error)
+        if observe_process_v2:
+            if process_v2 is not None:
+                try:
+                    process_v2.close()
+                except OSError as error:
+                    process_v2_error = str(error)
+            result['processV2MemoryObservations'] = dict(rows=process_v2_rows, observerError=process_v2_error)
         return result
     finally:
         if creation is not None:
             creation.close()
+        if process_v2 is not None:
+            with suppress(OSError):
+                process_v2.close()
         if process.handle:
             if not assigned:
                 base.kill(process.handle, 1)
@@ -238,17 +285,20 @@ def measure(command, observe_creation=False):
 
 def main():
     args = sys.argv[1:]
-    observe_creation = args[0] == '--observe-creation-memory'
-    if observe_creation:
+    options = set()
+    while args[0] in ('--observe-creation-memory', '--observe-process-v2-memory'):
+        options.add(args[0])
         args = args[1:]
     assert args[0] == '--command'
     report = Path(args[1]).resolve()
     assert not report.exists()
     command = [str(Path(args[2]).resolve(strict=True)), *args[3:]]
-    result = measure(command, observe_creation=observe_creation)
+    result = measure(command, observe_creation='--observe-creation-memory' in options,
+                     observe_process_v2='--observe-process-v2-memory' in options)
     with report.open('x', encoding='utf-8') as stream:
         json.dump(result, stream)
-    print(json.dumps({k:v for k,v in result.items() if k not in {'samples', 'creationMemoryObservations'}}), file=sys.stderr)
+    print(json.dumps({k:v for k,v in result.items() if k not in
+                      {'samples', 'creationMemoryObservations', 'processV2MemoryObservations'}}), file=sys.stderr)
     if not result['successful']:
         raise SystemExit(124 if result['timedOut'] else result['driverExitCode'] or 1)
 

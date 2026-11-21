@@ -17,6 +17,10 @@ on:
         description: Record supplemental process creation memory in S1 composition checks
         type: boolean
         default: false
+      observe_process_v2_memory:
+        description: Record supplemental Process V2 memory in the S1 candidate matrix
+        type: boolean
+        default: false
       trace_controlled_recovery:
         description: Trace raw and captured-code Worker startup after controlled recovery
         type: boolean
@@ -593,6 +597,7 @@ jobs:
         if: '!cancelled() && matrix.segment == ''retention-graphs'' && steps.real_wasm.outcome == ''success'' && (steps.dependency_advisories.outcome == ''failure'' || steps.composition_reference.outputs.ready == ''true'')'
         env:
           DIY_COMPOSITION_REFERENCE_READY: ${{ steps.composition_reference.outputs.ready }}
+          DIY_PRIMITIVE_OBSERVE_PROCESS_V2_MEMORY: ${{ github.event_name == 'workflow_dispatch' && inputs.observe_process_v2_memory && '1' || '0' }}
         run: |
           if ($env:DIY_COMPOSITION_REFERENCE_READY -eq 'true') {
             $bundle = Join-Path $env:GITHUB_WORKSPACE 'target/windows-app'
