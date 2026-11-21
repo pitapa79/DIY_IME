@@ -9,6 +9,10 @@ on:
         description: Compare existing S1 startup limits on dense and sparse cold fixtures
         type: boolean
         default: false
+      compare_ready_code_wait:
+        description: Compare serial compiler-gate waiting for already captured code
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -455,6 +459,30 @@ jobs:
         with:
           name: retained-cold-startup-limits-${{ github.sha }}
           path: target/cold-startup-limit-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Compare startup waiting for already captured code
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success' && inputs.compare_ready_code_wait == true"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($arm in @('wait', 'lookup', 'lookup', 'wait')) {
+            $trial++
+            $options = @()
+            if ($arm -eq 'lookup') { $options += '--ready-code-no-prepare-wait' }
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/ready-code-wait-$trial-$arm" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped --initial-startup-limit 4 --initial-startup-focus @options
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          python scripts/run-retained-composition-matrix.py target/windows-app target/ready-code-wait-safety target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped-safety --initial-startup-limit 4 --ready-code-no-prepare-wait
+          if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          exit $comparisonStatus
+      - name: Preserve ready-code waiting comparison
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/ready-code-wait-*/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-ready-code-wait-${{ github.sha }}
+          path: target/ready-code-wait-*/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

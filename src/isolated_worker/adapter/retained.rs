@@ -775,30 +775,62 @@ impl Native {
         if let StartupAttempt::Retry { key, .. } = attempt {
             shared.record_run_phase("startup-reservation-retry-admitted", Some(key.run_id));
         }
-        shared.record_phase("preparation-permit-waiting");
-        let preparation_permit = shared
-            .startup_gate
-            .as_ref()
-            .map(|gate| gate.prepare(&cancel))
-            .transpose()?
-            .flatten();
-        shared.record_phase("preparation-permit-acquired");
+        let compiled_route = shared.startup_gate.is_some()
+            && nodes.len() == 1
+            && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+        let cached = if compiled_route
+            && shared
+                .startup_gate
+                .as_ref()
+                .is_some_and(|gate| gate.requires_compiled())
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            && std::env::var_os("DIY_EXPERIMENT_COMPILED_JIT").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            ready_retained_code(&modules[0].0.jit_compiled, &cancel)
+        } else {
+            None
+        };
+        let preparation_permit = if cached.is_some() {
+            shared.record_phase("preparation-permit-skipped-ready-code");
+            None
+        } else {
+            shared.record_phase("preparation-permit-waiting");
+            let permit = shared
+                .startup_gate
+                .as_ref()
+                .map(|gate| gate.prepare(&cancel))
+                .transpose()?
+                .flatten();
+            shared.record_phase("preparation-permit-acquired");
+            permit
+        };
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
         }
         shared.record_phase("code-preparation-started");
-        let compiled = if shared.startup_gate.is_some()
-            && nodes.len() == 1
-            && retention_evaluation::Owners::evaluation_group_size()? == Some(1)
-            && std::env::var_os("DIY_EXPERIMENT_RETAINED_COMPILED_JIT").as_deref()
-                == Some(std::ffi::OsStr::new("1"))
-        {
+        let compiled = if compiled_route {
             // Source selection is this captured Node's own factory. Preparing
             // code runs no input/Instance and settles the original compiler
             // before granting a new retained process access to its output.
-            match modules[0].prepared_jit_image_owned(&cancel, Some(pin.clone()), |phase| {
-                shared.record_phase(phase);
-            }) {
+            let image = if let Some(image) = cached {
+                if cancel.is_cancelled() {
+                    return Err(fail(
+                        "worker-cancelled",
+                        "cached startup cancelled before launch",
+                    ));
+                }
+                shared.record_phase("code-preparation-cache-hit");
+                image
+            } else {
+                modules[0].prepared_jit_image_owned(&cancel, Some(pin.clone()), |phase| {
+                    shared.record_phase(phase);
+                })
+            };
+            match image {
                 WorkerImage::PreparedCompiled(files, len, digest) => {
                     files.check_healthy()?;
                     Some(RetainedCompiledCode {
@@ -934,6 +966,26 @@ struct RetainedCompiledCode {
     digest: String,
     source: String,
     timed_startup: bool,
+}
+
+fn ready_retained_code(
+    cache: &Mutex<CompiledState>,
+    cancel: &CancellationToken,
+) -> Option<WorkerImage> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    // A cache read cannot launch a compiler or publish a new asset.
+    // Pending, unavailable and busy owners keep the serial preparation path.
+    let state = cache.try_lock().ok()?;
+    let CompiledState::Ready(asset) = &*state else {
+        return None;
+    };
+    Some(WorkerImage::PreparedCompiled(
+        asset.files.clone(),
+        asset.len,
+        asset.digest.clone(),
+    ))
 }
 
 impl WasmArtifact {
@@ -1610,6 +1662,42 @@ mod tests {
         graph::{ExecutionPlan, Graph},
         node::Registry,
     };
+
+    #[test]
+    fn ready_cache_read_never_waits_or_publishes_code() {
+        let cancel = CancellationToken::default();
+        let cache = Mutex::new(CompiledState::Pending);
+        assert!(ready_retained_code(&cache, &cancel).is_none());
+        *cache.lock().unwrap() = CompiledState::Unavailable;
+        assert!(ready_retained_code(&cache, &cancel).is_none());
+        let code = b"synthetic cache fixture, never executed";
+        let files = Arc::new(
+            CodeFiles::new(
+                Path::new(env!("CARGO_MANIFEST_DIR")),
+                &[("node.cwasm", code)],
+                &Arc::new(CodeBudget::default()),
+            )
+            .unwrap(),
+        );
+        let digest = sha256(code).unwrap();
+        let mut state = cache.lock().unwrap();
+        *state = CompiledState::Ready(CompiledAsset {
+            files: files.clone(),
+            len: code.len(),
+            digest: digest.clone(),
+        });
+        assert!(ready_retained_code(&cache, &cancel).is_none());
+        drop(state);
+        let Some(WorkerImage::PreparedCompiled(read, len, observed)) =
+            ready_retained_code(&cache, &cancel)
+        else {
+            panic!("expected the already captured asset");
+        };
+        assert!(Arc::ptr_eq(&read, &files));
+        assert_eq!((len, observed), (code.len(), digest));
+        cancel.cancel();
+        assert!(ready_retained_code(&cache, &cancel).is_none());
+    }
 
     /// Direct trusted-native composition for Core bridge verification only.
     /// No external package or graph acquires fixed-official eligibility here.

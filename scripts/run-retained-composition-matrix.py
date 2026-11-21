@@ -76,6 +76,8 @@ def main():
                         help='select an existing startup-slot limit for an initial-startup experiment')
     parser.add_argument('--initial-startup-focus', action='store_true',
                         help='select 20-stage serial and 20-registered sparse cold fixtures')
+    parser.add_argument('--ready-code-no-prepare-wait', action='store_true',
+                        help='use the ready-code lookup before the serial compiler gate')
     parser.add_argument('--profile-pool', choices=('fresh', 'prepared'),
                         help='compare fresh and unused prepared AppContainer profiles')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
@@ -97,6 +99,9 @@ def main():
         parser.error('--initial-startup-limit requires --initial-startup')
     if args.initial_startup_focus and args.initial_startup not in ('eager', 'deferred', 'scoped'):
         parser.error('--initial-startup-focus requires an initial-startup performance mode')
+    if args.ready_code_no_prepare_wait and (args.initial_startup_limit != 4
+            or args.initial_startup not in ('scoped', 'scoped-safety')):
+        parser.error('--ready-code-no-prepare-wait requires scoped startup at limit four')
     if args.profile_pool and (not args.candidate or args.initial_startup):
         parser.error('--profile-pool requires --candidate and excludes --initial-startup')
     if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
@@ -195,6 +200,7 @@ def main():
         base['DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON'] = '1'
         manifest['initialStartupLimit'] = args.initial_startup_limit or 2
         manifest['initialStartupFocus'] = args.initial_startup_focus
+        manifest['readyCodeNoPrepareWait'] = args.ready_code_no_prepare_wait
     if args.overlap_action:
         base['DIY_PRIMITIVE_IDLE_OVERLAP_ACTION'] = args.overlap_action
         manifest['overlapAction'] = args.overlap_action
@@ -237,6 +243,8 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP'] = '1'
                 if args.initial_startup in ('scoped', 'scoped-safety'):
                     env['DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP'] = '1'
+                if args.ready_code_no_prepare_wait:
+                    env['DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
                 '--command', job, bundle/'runtime/node.exe', repo/'scripts/benchmark-primitive-retention.mjs',
                 bundle/files[0], bundle/files[1], bundle/files[2], bundle/files[3], bundle/'official',
@@ -292,6 +300,19 @@ def main():
                 assert proof['deferred'] == (args.initial_startup != 'eager')
                 scoped = args.initial_startup in ('scoped', 'scoped-safety')
                 assert proof['scoped'] == scoped
+                if spec['count'] == 20 and spec['layout'] == 'serial' and spec['cadence'] == 'cold-paced':
+                    burst, = (row for row in data['pacedRounds'] if row['round'] == 0 and row['intervalMs'] == 20)
+                    latest = burst['attempts'][-1]['key']['runId']
+                    matches = []
+                    for owner in burst['status']['retainedWorker']['callSamples']:
+                        phases = owner['calls']['phases']
+                        for skip in (phase for phase in phases if phase['phase'] == 'preparation-permit-skipped-ready-code'):
+                            if any(call['phase'] == 'invocation-call-finished' and call['runId'] == latest
+                                   and call['processId'] > 0 and call['attempt'] == skip['attempt'] for call in phases):
+                                matches.append({'node': owner['nodeIds'][0], 'attempt': skip['attempt']})
+                    case['readyCodeLatestMatches'] = matches
+                    save()
+                    assert bool(matches) == args.ready_code_no_prepare_wait
                 if scoped and spec['cadence'] == 'safety':
                     assert {guard['action'] for guard in proof['guards'] if guard['passed']} == {'cancel', 'protect'}
                 if spec['layout'] == 'unused':
