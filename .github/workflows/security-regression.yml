@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      compare_cold_startup_limits:
+        description: Compare existing S1 startup limits on dense and sparse cold fixtures
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -425,6 +430,31 @@ jobs:
         with:
           name: retained-initial-startup-${{ github.sha }}
           path: target/initial-startup-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Compare bounded S1 cold startup limits
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success' && inputs.compare_cold_startup_limits == true"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($arm in @('eager/2', 'scoped/2', 'scoped/4', 'eager/4', 'eager/4', 'scoped/4', 'scoped/2', 'eager/2')) {
+            $trial++
+            $mode, $limit = $arm.Split('/')
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/cold-startup-limit-$trial-$mode-$limit" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup $mode --initial-startup-limit $limit --initial-startup-focus
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          foreach ($mode in @('deferred-safety', 'scoped-safety')) {
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/cold-startup-limit-$mode-4" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup $mode --initial-startup-limit 4
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve bounded cold startup comparison
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && hashFiles(''target/cold-startup-limit-*/manifest.json'') != '''''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-cold-startup-limits-${{ github.sha }}
+          path: target/cold-startup-limit-*/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

@@ -72,6 +72,10 @@ def main():
                         help='prioritize queued idle replacement starts in dependency order')
     parser.add_argument('--initial-startup', choices=('eager', 'deferred', 'scoped', 'deferred-safety', 'scoped-safety'),
                         help='compare initial startup policies on timed cold input fixtures')
+    parser.add_argument('--initial-startup-limit', type=int, choices=(2, 4),
+                        help='select an existing startup-slot limit for an initial-startup experiment')
+    parser.add_argument('--initial-startup-focus', action='store_true',
+                        help='select 20-stage serial and 20-registered sparse cold fixtures')
     parser.add_argument('--profile-pool', choices=('fresh', 'prepared'),
                         help='compare fresh and unused prepared AppContainer profiles')
     parser.add_argument('--overlap-action', choices=('cancel', 'protect'),
@@ -89,6 +93,10 @@ def main():
         parser.error('--ordered-recovery requires --idle-overlap')
     if args.initial_startup and (not args.candidate or args.lifetime):
         parser.error('--initial-startup requires --candidate and cannot use --lifetime')
+    if args.initial_startup_limit is not None and not args.initial_startup:
+        parser.error('--initial-startup-limit requires --initial-startup')
+    if args.initial_startup_focus and args.initial_startup not in ('eager', 'deferred', 'scoped'):
+        parser.error('--initial-startup-focus requires an initial-startup performance mode')
     if args.profile_pool and (not args.candidate or args.initial_startup):
         parser.error('--profile-pool requires --candidate and excludes --initial-startup')
     if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
@@ -140,6 +148,9 @@ def main():
                  if c['mode'] == 'separate' and c['timing']
                  and c['cadence'] in ('cold-paced', 'paced')]
         assert len(cases) == 8
+        if args.initial_startup_focus:
+            cases = [c for c in cases if c['count'] == 20 and c['layout'] in ('serial', 'unused')]
+            assert sorted(c['layout'] for c in cases) == ['serial', 'unused']
         planned.write_text(json.dumps(cases, indent=2), encoding='utf-8')
         issue, profile = 176, f'initial-startup-{args.initial_startup}'
     if args.lifetime:
@@ -182,6 +193,8 @@ def main():
     base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
     if args.initial_startup:
         base['DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON'] = '1'
+        manifest['initialStartupLimit'] = args.initial_startup_limit or 2
+        manifest['initialStartupFocus'] = args.initial_startup_focus
     if args.overlap_action:
         base['DIY_PRIMITIVE_IDLE_OVERLAP_ACTION'] = args.overlap_action
         manifest['overlapAction'] = args.overlap_action
@@ -211,7 +224,7 @@ def main():
                              'OVERLAP_WORKER_CLEANUP', 'NEUTRAL_CODE_CACHE', 'NEUTRAL_CODE_MAPPING']:
                     env['DIY_EXPERIMENT_'+flag] = '1'
                 env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1'
-                env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = '2'
+                env['DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM'] = str(args.initial_startup_limit or 2)
                 if args.candidate:
                     env.update(dict.fromkeys(candidate_controls, '1'))
                 if args.profile_pool == 'prepared':
