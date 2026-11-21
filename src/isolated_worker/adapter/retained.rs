@@ -1202,6 +1202,26 @@ fn claim_pre_delivery_restart(restarted: &mut bool, was_ready: bool, owner_ended
     true
 }
 
+fn claim_and_trace_pre_delivery_restart(
+    shared: &Shared,
+    command: &mut Command,
+    was_ready: bool,
+    owner_ended: bool,
+) -> bool {
+    if !claim_pre_delivery_restart(
+        &mut command.restarted_after_owner_end,
+        was_ready,
+        owner_ended,
+    ) {
+        return false;
+    }
+    shared.record_run_phase(
+        "invocation-requeued-after-owner-end",
+        Some(command.invocation.key().run_id),
+    );
+    true
+}
+
 fn coordinate(
     host: ExecutionHost,
     controller: GuardedController,
@@ -1404,6 +1424,11 @@ fn coordinate(
             command.legacy(&shared);
             continue;
         };
+        let was_ready = shared.ready.load(Ordering::Acquire);
+        let requires_compiled = shared
+            .startup_gate
+            .as_ref()
+            .is_some_and(|gate| gate.requires_compiled());
         if owner
             .client
             .as_mut()
@@ -1411,19 +1436,16 @@ fn coordinate(
             .wait_ready(Duration::from_secs(10))
             .is_err()
         {
-            let was_ready = shared.ready.load(Ordering::Acquire);
             let owner_ended = owner._pin.is_closed();
             drop(native.take());
             if provisional.take().is_some() {
                 // No input reached this Worker. Use the normal start for the
                 // already admitted invocation if speculative readiness failed.
                 pending = Some(command);
-            } else if shared
-                .startup_gate
-                .as_ref()
-                .is_some_and(|gate| gate.requires_compiled())
-                && claim_pre_delivery_restart(
-                    &mut command.restarted_after_owner_end,
+            } else if requires_compiled
+                && claim_and_trace_pre_delivery_restart(
+                    &shared,
+                    &mut command,
                     was_ready,
                     owner_ended,
                 )
@@ -1431,10 +1453,6 @@ fn coordinate(
                 // The previously ready owner ended after the coordinator's
                 // readiness poll. Join it before preparing a new owner for
                 // this same command, which has not reached begin_input.
-                shared.record_run_phase(
-                    "invocation-requeued-after-owner-end",
-                    Some(command.invocation.key().run_id),
-                );
                 pending = Some(command);
             } else {
                 command.legacy(&shared);
@@ -1495,9 +1513,21 @@ fn coordinate(
             .ok();
         if input.is_none() {
             drop(input);
+            let closed_ready_owner = requires_compiled
+                && (was_ready || command.restarted_after_owner_end)
+                && begin_error.as_deref() == Some("retained-scope")
+                && owner._pin.is_closed();
             drop(native.take());
             *shared.input.lock().unwrap_or_else(|p| p.into_inner()) = None;
-            if matches!(
+            if closed_ready_owner {
+                // The pin can close after readiness succeeds but before
+                // begin_input acquires a charge. No request has been sent.
+                if claim_and_trace_pre_delivery_restart(&shared, &mut command, was_ready, true) {
+                    pending = Some(command);
+                } else {
+                    command.legacy(&shared);
+                }
+            } else if matches!(
                 begin_error.as_deref(),
                 Some("retained-call-limit" | "retained-scope")
             ) {
@@ -1791,6 +1821,14 @@ mod tests {
         let timeout = Duration::from_secs(2);
         client.wait_ready(timeout).unwrap();
         old_cancel.cancel();
+        assert_eq!(
+            client
+                .begin_input(key, CancellationToken::default())
+                .err()
+                .expect("closed owner cannot begin the pending input")
+                .code,
+            "retained-scope"
+        );
         assert_eq!(
             client.wait_ready(timeout).unwrap_err().code,
             "retained-scope"
