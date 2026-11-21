@@ -1,4 +1,4 @@
-use super::{DecimalId, ResourceLease, RunKey};
+use super::{DecimalId, ResourceLease, RunKey, TraceKind};
 use crate::{error_input::ErrorAwareExecution, node::CoreError, runtime::NodeExecution};
 use std::{
     fmt,
@@ -20,6 +20,20 @@ pub(crate) enum WorkerOutcome {
     Terminated,
     StartReturned(Result<(), CoreError>),
     NotStarted,
+}
+impl WorkerOutcome {
+    fn completion_trace_events(&self) -> (TraceKind, TraceKind) {
+        match self {
+            Self::StartReturned(_) => (
+                TraceKind::CoreStartReturnQueued,
+                TraceKind::CoreStartReturnReceived,
+            ),
+            Self::Sync(_) | Self::Deferred(_) | Self::Terminated | Self::NotStarted => (
+                TraceKind::CoreProducerEndQueued,
+                TraceKind::CoreProducerEndReceived,
+            ),
+        }
+    }
 }
 pub(crate) struct WorkerEvent {
     pub stamp: JobStamp,
@@ -50,7 +64,7 @@ pub(crate) struct PermitState {
     pub invocation: Mutex<Option<super::OwnedInvocation>>,
 }
 impl PermitState {
-    fn release_owned(&self) {
+    fn release_owned(&self) -> Option<OwnedInvocation> {
         let lease = self.lease.lock().unwrap_or_else(|p| p.into_inner()).take();
         let invocation = self
             .invocation
@@ -58,7 +72,7 @@ impl PermitState {
             .unwrap_or_else(|p| p.into_inner())
             .take();
         drop(lease);
-        drop(invocation);
+        invocation
     }
 }
 
@@ -243,7 +257,7 @@ impl WorkerDispatcher {
                 let outcome = if worker_cancel.is_cancelled() {
                     if let Some(state) = &worker_permit {
                         state.finished.store(true, Ordering::Release);
-                        state.release_owned();
+                        drop(state.release_owned());
                     }
                     WorkerOutcome::NotStarted
                 } else {
@@ -274,6 +288,12 @@ impl WorkerDispatcher {
                         )),
                     }
                 };
+                if measure_dispatch {
+                    work.trace_event(
+                        outcome.completion_trace_events().0,
+                        Some(worker_stamp.job_id.get()),
+                    );
+                }
                 // The dispatcher retains its own lease until this authenticated event is consumed.
                 drop(work);
                 drop(worker_lease);
@@ -396,6 +416,12 @@ impl WorkerDispatcher {
         let job = self.jobs.get_mut(&event.stamp.job_id)?;
         if job.stamp != event.stamp || !Arc::ptr_eq(&job.authority, &event.authority) {
             return None;
+        }
+        if job.invocation.host_trace_is_detailed() {
+            job.invocation.trace_event(
+                event.outcome.completion_trace_events().1,
+                Some(event.stamp.job_id.get()),
+            );
         }
         let mut execution = None;
         match event.outcome {
@@ -600,7 +626,14 @@ impl CompletionPermit {
         // The dispatcher retains its own lease until authenticated consumption.
         // Release producer ownership before waking it, so reclaimed capacity is
         // already visible when the owner considers its next FIFO handoff.
-        self.state.release_owned();
+        if let Some(invocation) = self.state.release_owned()
+            && invocation.host_trace_is_detailed()
+        {
+            invocation.trace_event(
+                TraceKind::CoreProducerEndQueued,
+                Some(self.state.stamp.job_id.get()),
+            );
+        }
         self.state.sender.send(event).is_ok()
     }
 }
