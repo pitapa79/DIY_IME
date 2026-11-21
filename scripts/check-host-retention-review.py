@@ -96,7 +96,8 @@ def main():
                 proof = data['inflightConfigurationSwitch']
                 assert proof['passed'] and proof['oldPid'] != proof['newPid']
                 assert proof['oldKey']['sessionEpoch'] != proof['latestKey']['sessionEpoch']
-                assert proof['oldResultFence'] and proof['latestAttempts'][0]['outcome'] == 'correct'
+                assert proof['oldResultFenceDuringReview'] and proof['oldResultFence']
+                assert proof['latestAttempts'][0]['outcome'] == 'correct'
                 assert proof['oldActivePhysical']['running'] > 0
                 assert proof['originalExit']['release']['originalHandleSignalled']
                 assert not proof['originalExit']['release']['forcedCleanup']

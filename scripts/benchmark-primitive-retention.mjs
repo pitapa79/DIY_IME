@@ -363,13 +363,6 @@ try {
     const node=changed.nodes.find(n=>n.id===target.node);
     assert.equal(node.config.mode,'forward');
     node.config={mode:'echo'};
-    const nextReview=await host.call({method:'prepare',graph:changed});
-    assert(nextReview.requests.some(request=>request.kind==='execute'));
-    if(nextReview.missing.length)await host.call({method:'approve',reviewId:nextReview.reviewId,
-      ids:nextReview.missing.map(request=>request.id),save:false});
-    const before=await host.call({method:'status'});
-    assert.equal(before.sessionEpoch,previous.sessionEpoch);
-    assert.deepEqual(before.retainedWorker.processIds,[oldPid]);
     const python=process.env.DIY_PRIMITIVE_PYTHON;
     assert(python,'explicit Python for the owned Worker witness required');
     const control=new HeldPrimitiveWorker({python,pid:oldPid,workspace:join(root,'workers'),digest:report.binaries.worker});
@@ -383,18 +376,28 @@ try {
       const active=await until(async()=>{
         const status=await host.call({method:'status'}),snapshot=await read(oldKey);
         assert.equal(status.sessionEpoch,previous.sessionEpoch);
+        assert.deepEqual(status.retainedWorker.processIds,[oldPid]);
         assert(snapshot.current&&!ended(snapshot),'old input finished before configuration switch');
         return status.retainedWorker.activeInput && snapshot.physical.running>0 ? snapshot : null;
       });
       proof.oldActivePhysical=active.physical;
       const switched=performance.now();
-      const [activation,ending]=await Promise.all([
-        host.call({method:'activate',reviewId:nextReview.reviewId}),
+      // The ordinary review path stops a non-fixed Session before Prepare.
+      const [nextReview,ending]=await Promise.all([
+        host.call({method:'prepare',graph:changed}),
         control.expectOriginalExit(),
       ]);
       proof.originalExit=ending;
-      proof.activationAndExitMs=performance.now()-switched;
+      proof.prepareAndExitMs=performance.now()-switched;
       assert.equal(ending.header.pid,oldPid);
+      const oldWhilePending=await host.send({method:'getRun',key:oldKey});
+      assert.equal(oldWhilePending.ok,false,'old key must be fenced during review');
+      proof.oldResultFenceDuringReview=oldWhilePending.error?.code;
+      assert.equal(typeof proof.oldResultFenceDuringReview,'string');
+      assert(nextReview.requests.some(request=>request.kind==='execute'));
+      if(nextReview.missing.length)await host.call({method:'approve',reviewId:nextReview.reviewId,
+        ids:nextReview.missing.map(request=>request.id),save:false});
+      const activation=await host.call({method:'activate',reviewId:nextReview.reviewId});
       assert.notEqual(activation.sessionEpoch,previous.sessionEpoch);
       version=activation.state.activePlanVersion;revision=0;
       const rejected=await host.send({method:'getRun',key:oldKey});
