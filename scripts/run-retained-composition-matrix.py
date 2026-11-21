@@ -345,6 +345,17 @@ def main():
         raise
     finally:
         save()
+        if not manifest['complete']:
+            for case in manifest['cases']:
+                if case.get('checksPassed') is True:
+                    continue
+                print(json.dumps({
+                    'event': 'retained-matrix-case-incomplete',
+                    'case': case['name'],
+                    'profile': manifest['profile'],
+                    'nativeExitCode': case.get('exitCode'),
+                    'missingProcessMemoryReads': case.get('missingProcessMemoryReads'),
+                }), flush=True)
 
 
 if __name__ == '__main__':
