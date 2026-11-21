@@ -24,11 +24,12 @@ assert(officialArg, 'HOST MANAGER WORKER DLL OFFICIAL COUNT SAMPLES identity|mix
 const [hostExe, managerExe, worker, dll, official] = [hostArg,managerArg,workerArg,dllArg,officialArg].map(value=>resolve(value));
 const count=Number(countArg), samples=Number(samplesArg);
 assert([1,2,4,8,16,20].includes(count) && Number.isInteger(samples) && samples>=1 && samples<=1000);
-assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime','call-limit'].includes(cadence));
+assert(['identity','mixed','thirdparty'].includes(shape) && ['warm','paced','safety','cold','cold-paced','startup-refusal','lifetime','call-limit','config-switch'].includes(cadence));
 const cold=cadence==='cold' || cadence==='cold-paced' || cadence==='startup-refusal';
 const paced=cadence==='paced' || cadence==='cold-paced';
 const lifetime=cadence==='lifetime';
 const callLimit=cadence==='call-limit';
+const configSwitch=cadence==='config-switch';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
 const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
@@ -47,10 +48,10 @@ const layout=process.env.DIY_PRIMITIVE_LAYOUT??'serial';
 const matrixMode=process.env.DIY_PRIMITIVE_MATRIX==='1';
 assert(layout==='serial'||matrixMode,'additional layouts require explicit matrix mode');
 assert(thirdparty||layout==='serial','additional layouts require the typed fixture matrix');
-if(callLimit) {
+if(callLimit || configSwitch) {
   assert(thirdparty && layout==='serial' && mode==='separate' && count===1 && samples===1 && timing &&
     process.env.DIY_EXPERIMENT_RETAINED_COMPILED_JIT==='1',
-    'call-limit case requires one reviewed compiled Worker with lifecycle diagnostics');
+    'call-limit and config-switch require one reviewed compiled Worker with lifecycle diagnostics');
 }
 if(lifetime) {
   assert(matrixMode && thirdparty && layout==='serial' && mode==='separate' && count===20 && samples===25,
@@ -354,7 +355,88 @@ try {
       if(sampleDeliveryCheck)host.replyEvidence.assertExclusive();
     }
   }
-  if(cadence==='startup-refusal') {
+  if(configSwitch) {
+    const previous=report.lifetimeReady;
+    const [oldPid]=previous.retainedWorker.processIds;
+    assert(oldPid>0 && previous.workerProcesses===1);
+    const changed=structuredClone(graph);
+    const node=changed.nodes.find(n=>n.id===target.node);
+    assert.equal(node.config.mode,'forward');
+    node.config={mode:'echo'};
+    const nextReview=await host.call({method:'prepare',graph:changed});
+    assert(nextReview.requests.some(request=>request.kind==='execute'));
+    if(nextReview.missing.length)await host.call({method:'approve',reviewId:nextReview.reviewId,
+      ids:nextReview.missing.map(request=>request.id),save:false});
+    const before=await host.call({method:'status'});
+    assert.equal(before.sessionEpoch,previous.sessionEpoch);
+    assert.deepEqual(before.retainedWorker.processIds,[oldPid]);
+    const python=process.env.DIY_PRIMITIVE_PYTHON;
+    assert(python,'explicit Python for the owned Worker witness required');
+    const control=new HeldPrimitiveWorker({python,pid:oldPid,workspace:join(root,'workers'),digest:report.binaries.worker});
+    const proof={oldPid,oldMode:'forward',newMode:node.config.mode,passed:false,latestAttempts:[]};
+    report.inflightConfigurationSwitch=proof;
+    try {
+      proof.held=await control.started;
+      const oldKey=await submit('old configuration fixture');
+      assert(!oldKey.admissionRejected);
+      proof.oldKey=oldKey;
+      const active=await until(async()=>{
+        const status=await host.call({method:'status'}),snapshot=await read(oldKey);
+        assert.equal(status.sessionEpoch,previous.sessionEpoch);
+        assert(snapshot.current&&!ended(snapshot),'old input finished before configuration switch');
+        return status.retainedWorker.activeInput && snapshot.physical.running>0 ? snapshot : null;
+      });
+      proof.oldActivePhysical=active.physical;
+      const switched=performance.now();
+      const [activation,ending]=await Promise.all([
+        host.call({method:'activate',reviewId:nextReview.reviewId}),
+        control.expectOriginalExit(),
+      ]);
+      proof.originalExit=ending;
+      proof.activationAndExitMs=performance.now()-switched;
+      assert.equal(ending.header.pid,oldPid);
+      assert.notEqual(activation.sessionEpoch,previous.sessionEpoch);
+      version=activation.state.activePlanVersion;revision=0;
+      const rejected=await host.send({method:'getRun',key:oldKey});
+      assert.equal(rejected.ok,false,'old key after replacement must be fenced');
+      proof.oldResultFence=rejected.error?.code;
+      assert.equal(typeof proof.oldResultFence,'string');
+      await host.call({method:'traceStartDetailed'});
+      const latestText='new configuration fixture 🙂';
+      const checkConfig=(snapshot,wanted)=>{
+        assert(snapshot.current && ended(snapshot));
+        assert.equal(snapshot.result.reason,'completed');
+        assert.equal(snapshot.result.delivery,'complete');
+        const value=snapshot.result.ports.find(({endpoint})=>endpoint.node===target.node&&endpoint.port===target.port)?.value;
+        const echo=JSON.parse(value?.packet?.root.text);
+        assert.equal(echo.operation.config.mode,'echo');
+        assert.equal(echo.operation.inputs.in.packet.root.text,wanted);
+      };
+      const offered=performance.now();
+      const observed=await observeWarmInput({sample:0,attempts:proof.latestAttempts,
+        submit:attempt=>submit(latestText,attempt),read,until,ended,verify:checkConfig,expected:latestText});
+      assert.equal(observed.key.sessionEpoch,activation.sessionEpoch);
+      proof.latestKey=observed.key;
+      proof.latestInputToPhysicalEndMs=observed.resultMs;
+      proof.latestInputToVerifiedMs=performance.now()-offered;
+      const events=await collectTrace();
+      traces.push({key:observed.key,events});
+      const current=await host.call({method:'status'});
+      statuses.push(current);
+      assert.equal(current.sessionEpoch,activation.sessionEpoch);
+      const [newPid]=current.retainedWorker.processIds;
+      assert(newPid>0 && newPid!==oldPid);
+      assert.equal(current.retainedWorker.compiledGenerations,current.retainedWorker.generation);
+      proof.newPid=newPid;
+      const paired=analyze([observed.key],events,current);
+      assert.equal(paired.paired,1);
+      const [call]=paired.rows;
+      assert.deepEqual(call.key,observed.key);
+      assert.equal(call.processId,newPid);
+      await verifySampleRetrieval(current);
+      proof.passed=true;
+    } finally {proof.helperCompletion=await control.close();}
+  } else if(cadence==='startup-refusal') {
     assert.equal(mode,'separate');
     assert(['2','4'].includes(process.env.DIY_EXPERIMENT_RETAINED_STARTUP_PARALLELISM));
     assert.equal(process.env.DIY_EXPERIMENT_COMPILED_JIT,'0');
@@ -921,7 +1003,7 @@ try {
   report.completed=true;
 } catch(error) {report.failure={message:String(error),stack:error.stack};throw error;}
 finally {
-  if(!paced&&!callLimit&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
+  if(!paced&&!callLimit&&!configSwitch&&cadence!=='startup-refusal')report.warmInputDenominators=warmInputDenominators(warmAttempts,samples+1);
   if(timing)report.lifecycle=analyzeRetainedLifecycle([report.lastReadinessStatus,report.lifetimeReady,
     ...statuses,...(report.pacedRounds ?? []).map(round=>round.status),report.retainedLifetime?.before,
     report.retainedLifetime?.idle,report.retainedLifetime?.after,report.beforeClose]);

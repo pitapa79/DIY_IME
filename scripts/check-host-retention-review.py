@@ -59,12 +59,13 @@ def main():
             ('0', 1, 'warm'), ('separate', 1, 'warm'), ('separate', 4, 'warm'),
             ('separate', 20, 'warm'), ('separate', 20, 'safety'),
             ('separate', 1, 'call-limit'),
+            ('separate', 1, 'config-switch'),
         ]):
             name = f'{index:02}-{mode}-{count}-{cadence}'
             report, job = output/(name+'.json'), output/(name+'.job.json')
             env['DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION'] = mode
             env['DIY_EXPERIMENT_RETAINED_TIMING'] = '0' if mode == '0' else '1'
-            env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if cadence == 'call-limit' else '0'
+            env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT'] = '1' if cadence in ('call-limit', 'config-switch') else '0'
             env['DIY_EXPERIMENT_COMPILED_JIT'] = env['DIY_EXPERIMENT_RETAINED_COMPILED_JIT']
             env['DIY_PRIMITIVE_RETENTION_REPORT'] = str(report)
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py',
@@ -91,6 +92,14 @@ def main():
             if cadence == 'call-limit':
                 proof = data['retainedCallLimit']
                 assert proof['passed'] and proof['inputsVerified'] == proof['callBudget'] + 1 == 4097
+            if cadence == 'config-switch':
+                proof = data['inflightConfigurationSwitch']
+                assert proof['passed'] and proof['oldPid'] != proof['newPid']
+                assert proof['oldKey']['sessionEpoch'] != proof['latestKey']['sessionEpoch']
+                assert proof['oldResultFence'] and proof['latestAttempts'][0]['outcome'] == 'correct'
+                assert proof['oldActivePhysical']['running'] > 0
+                assert proof['originalExit']['release']['originalHandleSignalled']
+                assert not proof['originalExit']['release']['forcedCleanup']
             case['checksPassed'] = True
             save()
         manifest['complete'] = True
