@@ -1734,6 +1734,96 @@ mod tests {
     }
 
     #[test]
+    fn closed_ready_driver_releases_original_charge_before_an_undelivered_restart() {
+        use super::super::retained_tests::{fixture_empty, fixture_host, fixture_key};
+        use std::{fs::File, io::Read, os::windows::io::OwnedHandle};
+
+        let host = fixture_host("ready-owner-before-delivery");
+        let gate = ExecutionGate::default();
+        let key = fixture_key(1);
+        let target = GrantTarget::new(
+            "ready-owner-fixture".into(),
+            &key.session_epoch,
+            key.plan_version,
+            "node".into(),
+        );
+        gate.approve(target.clone());
+        let reserve = |cancel: &CancellationToken| {
+            RetainedReservation::reserve(
+                &host,
+                vec![RetainedBinding {
+                    module_slot: 0,
+                    scope: fixture_empty(&gate, &target, 1, cancel.clone()),
+                }],
+                cancel,
+            )
+        };
+        let old_cancel = CancellationToken::default();
+        let original = reserve(&old_cancel).unwrap();
+        let (mut client, request) = RetainedClient::channel(
+            host.clone(),
+            original.clone(),
+            vec![0],
+            DriverPolicy {
+                idle_timeout: Duration::from_secs(5),
+                input_timeout: Duration::from_secs(5),
+                max_calls: 1,
+                max_input_bytes: 4096,
+                max_reply_bytes: 4096,
+            },
+        )
+        .unwrap();
+        let (ready_reader, mut ready_writer) = std::io::pipe().unwrap();
+        let (mut input_reader, input_writer) = std::io::pipe().unwrap();
+        crate::isolated_worker::retained_startup::write_ready(&mut ready_writer, 1, None).unwrap();
+        drop(ready_writer);
+        let RetainedWorkerRequest {
+            reservation,
+            exchange,
+        } = request;
+        let old_io = std::thread::spawn(move || {
+            let _io_pin = reservation;
+            exchange(
+                File::from(OwnedHandle::from(ready_reader)),
+                File::from(OwnedHandle::from(input_writer)),
+            )
+        });
+        let timeout = Duration::from_secs(2);
+        client.wait_ready(timeout).unwrap();
+        old_cancel.cancel();
+        assert_eq!(
+            client.wait_ready(timeout).unwrap_err().code,
+            "retained-scope"
+        );
+        let mut restarted = false;
+        assert!(claim_pre_delivery_restart(
+            &mut restarted,
+            true,
+            original.is_closed()
+        ));
+        let replacement_cancel = CancellationToken::default();
+        assert!(
+            reserve(&replacement_cancel).is_err(),
+            "old physical charge still owns the slot"
+        );
+
+        assert!(old_io.join().unwrap().is_err());
+        drop(client);
+        drop(original);
+        let mut sent = Vec::new();
+        input_reader.read_to_end(&mut sent).unwrap();
+        assert!(
+            sent.is_empty(),
+            "no invocation was sent to the closed owner"
+        );
+        let replacement = reserve(&replacement_cancel).unwrap();
+        assert!(!replacement.is_closed());
+        assert!(!claim_pre_delivery_restart(&mut restarted, true, true));
+        drop(replacement);
+        assert_eq!(host.usage(), ResourceUsage::default());
+    }
+
+    #[test]
     fn ready_cache_read_never_waits_or_publishes_code() {
         let cancel = CancellationToken::default();
         let cache = Mutex::new(CompiledState::Pending);
