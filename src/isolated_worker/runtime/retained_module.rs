@@ -1,6 +1,7 @@
 //! Native-only retained protocol. Product selection/ownership is a separate gate.
 use super::*;
 use crate::isolated_worker::resource_transport::{Client, ResourceReader};
+use crate::isolated_worker::retained_startup;
 use std::{
     ffi::OsString,
     io::{self, Read, Write},
@@ -146,14 +147,22 @@ fn acknowledge(output: &mut impl Write, sequence: u64, slot: u32, timed: bool) -
 }
 
 pub(super) fn run(args: &[OsString]) -> Result<(), String> {
-    run_modules(args, false)
+    run_modules(args, false, false)
 }
 
 pub(super) fn run_compiled(args: &[OsString]) -> Result<(), String> {
-    run_modules(args, true)
+    run_modules(args, true, false)
 }
 
-fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
+pub(super) fn run_compiled_timed(args: &[OsString]) -> Result<(), String> {
+    run_modules(args, true, true)
+}
+
+fn micros(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+fn run_modules(args: &[OsString], compiled: bool, timed_startup: bool) -> Result<(), String> {
     // runtime calls fuel memory, then 1..4 (module, exact length) pairs.
     // The new compile-cache experiment is restricted to one Node/module.
     let stride = if compiled { 4 } else { 2 };
@@ -171,7 +180,27 @@ fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("retained runtime path must be absolute".into());
     }
-    let api = Api::load(path)?;
+    let (api, mut startup_timing) = if timed_startup {
+        use std::time::Instant;
+        let begin = Instant::now();
+        let mut verify_us = 0;
+        let mut load_begin = begin;
+        let api = Api::load_observed(path, || {
+            verify_us = micros(begin);
+            load_begin = Instant::now();
+        })?;
+        (
+            api,
+            Some(retained_startup::Timing {
+                dll_verify_us: verify_us,
+                dll_load_us: micros(load_begin),
+                module_read_us: 0,
+                module_restore_us: 0,
+            }),
+        )
+    } else {
+        (Api::load(path)?, None)
+    };
     let limits = Limits {
         fuel: Some(fuel),
         memory: Some(memory as i64),
@@ -190,6 +219,7 @@ fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
         if !Path::new(&pair[0]).is_absolute() {
             return Err("retained module path must be absolute".into());
         }
+        let read_started = timed_startup.then(std::time::Instant::now);
         let mut bytes = Vec::new();
         std::fs::File::open(&pair[0])
             .map_err(|_| "retained module open failed")?
@@ -199,6 +229,10 @@ fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
         if bytes.len() != length {
             return Err("retained module length mismatch".into());
         }
+        if let (Some(start), Some(timing)) = (read_started, &mut startup_timing) {
+            timing.module_read_us = micros(start);
+        }
+        let restore_started = timed_startup.then(std::time::Instant::now);
         let module = if compiled {
             let digest = pair[2].to_str().ok_or("invalid retained code digest")?;
             let source = pair[3].to_str().ok_or("invalid retained source digest")?;
@@ -209,14 +243,14 @@ fn run_modules(args: &[OsString], compiled: bool) -> Result<(), String> {
         } else {
             Compiled::new(&api, &bytes, limits.clone())?
         };
+        if let (Some(start), Some(timing)) = (restore_started, &mut startup_timing) {
+            timing.module_restore_us = micros(start);
+        }
         modules.push(module);
     }
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
-    output
-        .write_all(b"DIYRDY01")
-        .and_then(|()| output.write_all(&(modules.len() as u32).to_le_bytes()))
-        .and_then(|()| output.flush())
+    retained_startup::write_ready(&mut output, modules.len() as u32, startup_timing)
         .map_err(|_| "retained readiness failed")?;
     for sequence in 1..=calls {
         let Some((slot, timed)) =

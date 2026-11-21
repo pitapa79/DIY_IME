@@ -72,6 +72,7 @@ writeFileSync(managerPath,JSON.stringify(packageManager));
 writeFileSync(hostPath,JSON.stringify({packageManager,resourcePolicy,permissionRoot:join(root,'permissions'),requestBytes:1048576,responseBytes:16777216}));
 
 const journalEnabled=process.env.DIY_PRIMITIVE_PHASE_JOURNAL==='1';
+const nativeStartupTiming=process.env.DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING==='1';
 let journalRemaining=512;
 function journal(role,event,method,pid) {
   if(!journalEnabled || journalRemaining<=0)return;
@@ -113,9 +114,20 @@ class Client {
     journal(this.role,'close-stdin',undefined,this.child.pid);
     this.child.stdin.end();assert.equal(await this.ended,0,Buffer.concat(this.stderr).toString());
     const size=Math.min(65536,this.stderr.reduce((sum,part)=>sum+part.length,0));
-    const audit=Buffer.concat(this.stderr,size).toString().split(/\r?\n/).filter(line=>
+    const lines=Buffer.concat(this.stderr,size).toString().split(/\r?\n/);
+    const audit=lines.filter(line=>
       /^host-trace-loss-audit total=\d{1,20} probeBusy=\d{1,20} reservationFull=\d{1,20} clockUnavailable=\d{1,20} recorderBusy=\d{1,20} hostQueueFull=\d{1,20} invalidNative=\d{1,20} unfinished=\d{1,20}$/.test(line)).slice(0,64);
     if(audit.length)report.traceLossAudit=[...(report.traceLossAudit ?? []),...audit].slice(0,64);
+    if(nativeStartupTiming && this.role==='host') {
+      const records=lines.flatMap(line=>{
+        const match=/^retained-native-startup pid=(\d{1,10}) verify_us=(\d{1,16}) load_us=(\d{1,16}) read_us=(\d{1,16}) restore_us=(\d{1,16})$/.exec(line);
+        if(!match)return [];
+        const [pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleRestoreUs]=match.slice(1).map(Number);
+        if(pid<=0 || ![pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleRestoreUs].every(Number.isSafeInteger))return [];
+        return [{pid,dllVerifyUs,dllLoadUs,moduleReadUs,moduleRestoreUs}];
+      });
+      report.retainedNativeStartup={records:records.slice(0,256),truncated:size===65536||records.length>256};
+    }
   }
 }
 async function until(check) {

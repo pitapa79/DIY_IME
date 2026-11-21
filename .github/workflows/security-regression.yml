@@ -65,6 +65,7 @@ jobs:
       - name: Install Wasm test target
         run: rustup target add wasm32-unknown-unknown --toolchain 1.90.0-x86_64-pc-windows-gnu
       - name: Real v3 Wasm ownership and policy
+        id: real_wasm
         run: ./scripts/check-wasm-v3.ps1
       - name: Node-independent Core boundary
         run: ./scripts/check-core-boundary.ps1
@@ -95,6 +96,33 @@ jobs:
           }
       - name: Dependency advisories
         run: ./scripts/security-audit.ps1
+      - name: Diagnostic retained Native startup profile
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'''
+        run: |
+          $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
+          cargo build --locked --release --target wasm32-unknown-unknown --manifest-path tests/fixtures/wasm_guest/Cargo.toml --target-dir target/retained-native-startup-alt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/run-retained-native-startup-profile.py
+          exit $LASTEXITCODE
+      - name: Preserve Native startup evidence including failures
+        if: always() && matrix.segment == 'primitive-startup'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-native-startup-${{ github.sha }}
+          path: target/retained-native-startup-evidence/
+          if-no-files-found: ignore
+      - name: Preserve exact Native startup measurement binaries
+        if: '!cancelled() && matrix.segment == ''primitive-startup'' && steps.real_wasm.outcome == ''success'''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-native-runtime-${{ github.sha }}
+          path: |
+            target/debug/diy-ime2-external-host.exe
+            target/debug/diy-ime2-node-manager.exe
+            target/debug/diy-ime2-wasm-worker.exe
+            target/retained-native-startup-evidence/manifest.json
+          if-no-files-found: error
+          retention-days: 5
       - name: Build standalone Windows application
         run: |
           $nodeRoot = Split-Path (Get-Command node).Source

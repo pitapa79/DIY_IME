@@ -202,6 +202,16 @@ impl RetainedClient {
         stages: Vec<usize>,
         policy: DriverPolicy,
     ) -> Result<(Self, RetainedWorkerRequest), CoreError> {
+        Self::channel_observed(host, pin, stages, policy, None)
+    }
+
+    pub(in crate::isolated_worker) fn channel_observed(
+        host: ExecutionHost,
+        pin: RetainedReservation,
+        stages: Vec<usize>,
+        policy: DriverPolicy,
+        startup_observer: Option<crate::isolated_worker::retained_startup::Observer>,
+    ) -> Result<(Self, RetainedWorkerRequest), CoreError> {
         if host.resource_domain() != pin.inner.lease.resource_domain()
             || stages.is_empty()
             || stages.len() > 16
@@ -254,14 +264,10 @@ impl RetainedClient {
             let _buffers = io_buffers;
             let result = (|| -> Result<Vec<u8>, String> {
                 let _watchdog = Watchdog::start(driver_shared.clone())?;
-                let mut ready = [0; 12];
-                output
-                    .read_exact(&mut ready)
-                    .map_err(|_| "retained readiness unavailable")?;
-                let modules = u32::from_le_bytes(ready[8..].try_into().unwrap());
-                if &ready[..8] != b"DIYRDY01" || modules == 0 || modules > 4 {
-                    return Err("invalid retained readiness".into());
-                }
+                let (modules, timing) = crate::isolated_worker::retained_startup::read_ready(
+                    &mut output,
+                    startup_observer.is_some(),
+                )?;
                 {
                     let bindings = driver_pin
                         .inner
@@ -279,6 +285,9 @@ impl RetainedClient {
                 ready_send
                     .send(Ok(()))
                     .map_err(|_| "retained client abandoned readiness")?;
+                if let (Some(observe), Some(timing)) = (startup_observer, timing) {
+                    observe(timing);
+                }
                 let mut last = Instant::now();
                 let mut sequence = 0u64;
                 loop {

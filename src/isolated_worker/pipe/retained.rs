@@ -209,7 +209,9 @@ pub(in crate::isolated_worker) fn execute_retained_observed<'a>(
     observation: Option<RetainedObservation>,
 ) -> Result<Outcome<'a>, String> {
     if args.first().is_none_or(|arg| {
-        arg != "--retained-resources-v1" && arg != "--retained-compiled-resources-v1"
+        arg != "--retained-resources-v1"
+            && arg != "--retained-compiled-resources-v1"
+            && arg != crate::isolated_worker::retained_startup::TIMED_FLAG
     }) || control
         .walltime
         .is_none_or(|value| value.is_zero() || value > Duration::from_secs(600))

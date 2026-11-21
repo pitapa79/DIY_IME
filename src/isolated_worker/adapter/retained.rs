@@ -651,6 +651,10 @@ impl Native {
                         len,
                         digest,
                         source: modules[0].0.identity.rsplit(':').next().unwrap().to_owned(),
+                        timed_startup: shared.samples.is_some()
+                            && std::env::var_os("DIY_EXPERIMENT_RETAINED_NATIVE_STARTUP_TIMING")
+                                .as_deref()
+                                == Some(std::ffi::OsStr::new("1")),
                     })
                 }
                 _ => None,
@@ -677,7 +681,19 @@ impl Native {
         }
         let reply_limit = host.policy().max_result_bytes_per_run.min(8 * 1024 * 1024);
         let stages = (0..nodes.len()).collect();
-        let (client, request) = RetainedClient::channel(
+        let startup_observer = compiled.as_ref().filter(|code| code.timed_startup).map(|_| {
+            let process_id = shared.process_id.clone();
+            Box::new(move |timing: crate::isolated_worker::retained_startup::Timing| {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "retained-native-startup pid={} verify_us={} load_us={} read_us={} restore_us={}",
+                    process_id.load(Ordering::Acquire), timing.dll_verify_us, timing.dll_load_us,
+                    timing.module_read_us, timing.module_restore_us,
+                );
+            }) as crate::isolated_worker::retained_startup::Observer
+        });
+        let (client, request) = RetainedClient::channel_observed(
             host.clone(),
             pin.clone(),
             stages,
@@ -688,6 +704,7 @@ impl Native {
                 max_input_bytes: 32 * 1024 * 1024,
                 max_reply_bytes: reply_limit,
             },
+            startup_observer,
         )?;
         let artifact = nodes[0].artifact.clone();
         shared.ready.store(false, Ordering::Release);
@@ -750,6 +767,7 @@ struct RetainedCompiledCode {
     len: usize,
     digest: String,
     source: String,
+    timed_startup: bool,
 }
 
 impl WasmArtifact {
@@ -784,7 +802,9 @@ impl WasmArtifact {
         let mut module_leases = Vec::new();
         let receipt = (|| {
             let mut args: Vec<OsString> = vec![
-                if compiled.is_some() {
+                if compiled.as_ref().is_some_and(|code| code.timed_startup) {
+                    crate::isolated_worker::retained_startup::TIMED_FLAG.into()
+                } else if compiled.is_some() {
                     "--retained-compiled-resources-v1".into()
                 } else {
                     "--retained-resources-v1".into()
