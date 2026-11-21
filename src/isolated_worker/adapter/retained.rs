@@ -9,6 +9,7 @@ use crate::isolated_worker::{
 use std::sync::{Mutex, Weak, mpsc};
 
 type Arguments = (OwnedInvocation, CompletionPermit, CancellationToken);
+const STARTUP_RETRY_WINDOW: Duration = Duration::from_millis(500);
 struct Route {
     owner: Weak<Shared>,
 }
@@ -621,6 +622,26 @@ enum StartupAttempt<'a> {
     },
 }
 
+impl StartupAttempt<'_> {
+    fn check_retry_current(
+        &self,
+        shared: &Shared,
+        controller: &GuardedController,
+    ) -> Result<(), CoreError> {
+        if let Self::Retry { key, cancel, .. } = self
+            && (cancel.is_cancelled()
+                || !current_run(shared, controller, key)
+                || cancel.is_cancelled())
+        {
+            return Err(fail(
+                "worker-cancelled",
+                "startup retry is no longer current",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Native {
     fn start(
         host: &ExecutionHost,
@@ -681,24 +702,14 @@ impl Native {
             })
             .transpose()?;
         shared.record_phase("startup-permit-acquired");
-        if let StartupAttempt::Retry {
-            key,
-            cancel,
-            deadline,
-        } = attempt
+        attempt.check_retry_current(shared, controller)?;
+        if let StartupAttempt::Retry { deadline, .. } = attempt
+            && std::time::Instant::now() >= deadline
         {
-            if cancel.is_cancelled() || !current_run(shared, controller, key) {
-                return Err(fail(
-                    "worker-cancelled",
-                    "startup retry is no longer current",
-                ));
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(fail(
-                    "retained-startup-gate-busy",
-                    "startup retry window elapsed",
-                ));
-            }
+            return Err(fail(
+                "retained-startup-gate-busy",
+                "startup retry window elapsed",
+            ));
         }
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
@@ -813,6 +824,7 @@ impl Native {
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
         }
+        attempt.check_retry_current(shared, controller)?;
         shared.record_phase("code-preparation-started");
         let compiled = if compiled_route {
             // Source selection is this captured Node's own factory. Preparing
@@ -856,6 +868,7 @@ impl Native {
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
         }
+        attempt.check_retry_current(shared, controller)?;
         if !used_compiled
             && shared
                 .startup_gate
@@ -918,6 +931,10 @@ impl Native {
         let owner_shared = shared.clone();
         let cleanup_pin = pin.clone();
         let startup_demand = recovery.cloned();
+        let retry_cancel = match attempt {
+            StartupAttempt::Retry { cancel, .. } => Some(cancel.clone()),
+            _ => None,
+        };
         let control = RunControl {
             cancel: cancel.clone(),
             walltime: Some(Duration::from_secs(600)),
@@ -926,11 +943,10 @@ impl Native {
         let thread = std::thread::Builder::new()
             .name("diyime-retained-native-owner".into())
             .spawn(move || {
-                if startup_demand.is_some_and(|demand| demand.cancel.is_cancelled()) {
-                    return Err(fail(
-                        "worker-cancelled",
-                        "idle startup demand was withdrawn",
-                    ));
+                if startup_demand.is_some_and(|demand| demand.cancel.is_cancelled())
+                    || retry_cancel.is_some_and(|cancel| cancel.is_cancelled())
+                {
+                    return Err(fail("worker-cancelled", "startup request was withdrawn"));
                 }
                 artifact.retained_lifetime(
                     &modules,
@@ -1215,6 +1231,9 @@ fn claim_and_trace_pre_delivery_restart(
     ) {
         return false;
     }
+    command
+        .startup_retry_until
+        .get_or_insert_with(|| std::time::Instant::now() + STARTUP_RETRY_WINDOW);
     shared.record_run_phase(
         "invocation-requeued-after-owner-end",
         Some(command.invocation.key().run_id),
@@ -1407,11 +1426,17 @@ fn coordinate(
                     // Native::start has released its permit. Keep the exact
                     // Core callback charged while older work drains. No input
                     // was delivered, so this only retries Worker preparation.
-                    command.startup_retry_until.get_or_insert_with(|| {
-                        std::time::Instant::now() + Duration::from_millis(500)
-                    });
+                    command
+                        .startup_retry_until
+                        .get_or_insert_with(|| std::time::Instant::now() + STARTUP_RETRY_WINDOW);
                     pending = Some(command);
                     std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error)
+                    if command.restarted_after_owner_end && error.code == "worker-cancelled" =>
+                {
+                    command.fail(error);
                     continue;
                 }
                 Err(_) => {
@@ -1464,7 +1489,13 @@ fn coordinate(
         }
         drop(owner.startup_permit.take());
         shared.ready.store(true, Ordering::Release);
-        if command.cancel.is_cancelled() {
+        if command.cancel.is_cancelled()
+            || (command.restarted_after_owner_end
+                && !current_run(&shared, &controller, command.invocation.key()))
+        {
+            if command.restarted_after_owner_end {
+                drop(native.take());
+            }
             command.fail(fail(
                 "worker-cancelled",
                 "invocation cancelled before delivery",
