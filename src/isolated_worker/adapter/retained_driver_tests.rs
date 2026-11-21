@@ -732,7 +732,7 @@ fn real_verified_runtime_retained_exit_between_readiness_and_input() {
         Fixture::start_observed_in(
             host.clone(),
             policy(),
-            false,
+            true,
             true,
             None,
             RuntimeProof::Matching,
@@ -745,6 +745,8 @@ fn real_verified_runtime_retained_exit_between_readiness_and_input() {
         .unwrap()
         .wait_ready(Duration::from_secs(10))
         .unwrap();
+    assert_eq!(host.usage().physical_jobs, 1);
+    assert_eq!(host.usage().retained_bytes, 8);
     let run = 2;
     let key = fixture_key(run);
     original.lifetime_cancel.cancel();
@@ -767,6 +769,7 @@ fn real_verified_runtime_retained_exit_between_readiness_and_input() {
         "retained-scope"
     );
     assert_eq!(host.usage().physical_jobs, 1);
+    assert_eq!(host.usage().retained_bytes, 8);
     let original_exit = original.close();
     assert_eq!(host.usage(), ResourceUsage::default());
 
@@ -778,7 +781,13 @@ fn real_verified_runtime_retained_exit_between_readiness_and_input() {
         .wait_ready(Duration::from_secs(10))
         .unwrap();
     let cancel = CancellationToken::default();
-    let scope = fixture_empty(&replacement.gate, &replacement.target, run, cancel.clone());
+    let scope = fixture_scope(
+        &replacement.gate,
+        &replacement.target,
+        run,
+        cancel.clone(),
+        replacement.source.clone(),
+    );
     let mut input = replacement
         .client
         .as_mut()
