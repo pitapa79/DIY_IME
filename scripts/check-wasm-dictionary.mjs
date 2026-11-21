@@ -1,15 +1,50 @@
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,rmdirSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,rmdirSync,existsSync,lstatSync,opendirSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join,resolve,dirname} from 'node:path';import {createHash} from 'node:crypto';import {createInterface} from 'node:readline';import {setTimeout as delay} from 'node:timers/promises';import assert from 'node:assert/strict';
 const [exe,managerExe,producer,worker,dll,wasm,policyFile,observer]=process.argv.slice(2);if(!observer)throw Error('usage: HOST MANAGER PRODUCER WORKER DLL WASM RESOURCE_CONTRACT OBSERVER');
 const root=mkdtempSync(join(tmpdir(),'diyime-dictionary-host-')),resources=join(root,'resources'),outside=join(root,'outside');mkdirSync(resources);mkdirSync(outside);
+const clientOwners={spawned:0,closed:0,failed:0};
+const knownRootEntries=new Set(['resources','outside','workers','permissions','data','manager.json','host.json']);
+
+function removeFixtureRoot() {
+ try {
+  rmSync(root,{recursive:true});
+ } catch(error) {
+  const evidence={code:error.code,syscall:error.syscall,clientOwners:{...clientOwners},entries:[]};
+  try {
+   // Observe only the fixture root. Never open or follow any child entry.
+   const stat=lstatSync(root);
+   evidence.rootType=stat.isSymbolicLink()?'link':stat.isDirectory()?'directory':'other';
+   if(evidence.rootType==='directory') {
+    const dir=opendirSync(root);
+    try {
+     for(let i=0;i<16;i++) {
+      const entry=dir.readSync();
+      if(!entry)break;
+      evidence.entries.push({
+       name:knownRootEntries.has(entry.name)?entry.name:'other',
+       type:entry.isSymbolicLink()?'link':entry.isDirectory()?'directory':entry.isFile()?'file':'other'
+      });
+     }
+     evidence.entryLimitReached=evidence.entries.length===16;
+    } finally {
+     dir.closeSync();
+    }
+   }
+  } catch(observationError) {
+   evidence.observationError=observationError.code??'unknown';
+  }
+  console.error('dictionary-fixture-cleanup '+JSON.stringify(evidence));
+  throw error;
+ }
+}
 const link=join(resources,'sub'),module=readFileSync(wasm),policy=JSON.parse(readFileSync(policyFile,'utf8')).resourceProfiles.bounded;Object.assign(policy,{retentionMs:60000,maxPhysicalJobs:2,maxQueuedJobs:4});
 const managerConfig={dataRoot:join(root,'data'),workspace:join(root,'workers'),worker,runtimeDll:dll,policy:{processMemoryBytes:536870912,wasmMemoryBytes:134217728,fuelPerCall:null,walltimeMs:null,terminationGraceMs:5},dictionaryBindings:{dictionary:{root:resources,referencePointer:'/mode',maxFileBytes:128,maxTotalBytes:256,maxFiles:4,budgetMs:500}}};
 const managerPath=join(root,'manager.json'),hostPath=join(root,'host.json');
 function configurations(){writeFileSync(managerPath,JSON.stringify(managerConfig));writeFileSync(hostPath,JSON.stringify({packageManager:managerConfig,permissionRoot:join(root,'permissions'),resourcePolicy:policy,requestBytes:1048576,responseBytes:16777216}));}configurations();
 function command(exe,args){const r=spawnSync(exe,args,{windowsHide:true,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout;}
 class Client{
- constructor(exe,config){this.child=spawn(exe,[config],{stdio:'pipe',windowsHide:true});this.child.stderr.resume();this.pending=new Map();this.serial=0;this.ended=new Promise(resolve=>this.child.on('close',code=>{for(const p of this.pending.values())p.reject(Error('Host ended '+code));this.pending.clear();resolve(code);}));createInterface({input:this.child.stdout}).on('line',line=>{const reply=JSON.parse(line),p=this.pending.get(reply.id);if(p){this.pending.delete(reply.id);p.resolve(reply);}});}
+ constructor(exe,config){this.child=spawn(exe,[config],{stdio:'pipe',windowsHide:true});clientOwners.spawned++;this.child.stderr.resume();this.pending=new Map();this.serial=0;this.ended=new Promise(resolve=>this.child.on('close',code=>{clientOwners.closed++;if(code!==0)clientOwners.failed++;for(const p of this.pending.values())p.reject(Error('Host ended '+code));this.pending.clear();resolve(code);}));createInterface({input:this.child.stdout}).on('line',line=>{const reply=JSON.parse(line),p=this.pending.get(reply.id);if(p){this.pending.delete(reply.id);p.resolve(reply);}});}
  send(operation,payload=Buffer.alloc(0)){const id=String(++this.serial),json=Buffer.from(JSON.stringify({id,operation})),header=Buffer.alloc(12);header.writeUInt32LE(json.length);header.writeBigUInt64LE(BigInt(payload.length),4);const promise=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject}));promise.id=id;this.child.stdin.write(Buffer.concat([header,json,payload]));return promise;}
  async call(operation,payload){const r=await this.send(operation,payload);assert(r.ok,JSON.stringify(r.error));return r.data;}
  async close(){this.child.stdin.end();assert.equal(await this.ended,0);}
@@ -54,4 +89,4 @@ try{
  managerConfig.dictionaryBindings.dictionary.maxFileBytes=256;configurations();host=new Client(exe,hostPath);const changedPolicy=await prepare();assert.equal(changedPolicy.missing.length,changedPolicy.requests.length);await host.close();host=undefined;
  const stored=readFileSync(join(root,'permissions/permissions.json'),'utf8');for(const secret of [text,resources,firstData,'dictionary','echo'])assert(!stored.includes(secret));
  console.log('Dictionary broker: explicit per-resource consent, no pre-approval body read, exact per-Node projection, immutable snapshots/refresh, shared lock/junction/path/size rejection, diagnostic preservation, route/policy reapproval, activation cancel/protect/revoke/EOF, live revoke true ending and recovery passed.');
-}finally{if(unlock)await unlock();if(manager)await manager.close();if(host)await host.close();if(existsSync(link))rmdirSync(link);if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-dictionary-host-')))throw Error('unexpected cleanup root');rmSync(root,{recursive:true});}
+}finally{if(unlock)await unlock();if(manager)await manager.close();if(host)await host.close();if(existsSync(link))rmdirSync(link);if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-dictionary-host-')))throw Error('unexpected cleanup root');removeFixtureRoot();}
