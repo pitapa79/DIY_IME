@@ -62,6 +62,23 @@ impl Fixture {
         observer: Option<crate::isolated_worker::retained_startup::Observer>,
         proof: RuntimeProof,
     ) -> Self {
+        Self::start_observed_in(
+            fixture_host("retained-driver"),
+            policy,
+            counter_resources,
+            captured,
+            observer,
+            proof,
+        )
+    }
+    fn start_observed_in(
+        host: ExecutionHost,
+        policy: DriverPolicy,
+        counter_resources: bool,
+        captured: bool,
+        observer: Option<crate::isolated_worker::retained_startup::Observer>,
+        proof: RuntimeProof,
+    ) -> Self {
         let timed_startup = observer.is_some();
         assert!(captured || (!timed_startup && proof == RuntimeProof::Disabled));
         let required = |name| {
@@ -70,7 +87,6 @@ impl Fixture {
         let worker = required("DIY_RANGE_WORKER_BINARY");
         let dll = required("DIY_RANGE_RUNTIME_DLL");
         let sdk = (!captured).then(|| required("DIY_RESOURCE_SDK_CONSUMER_WASM"));
-        let host = fixture_host("retained-driver");
         let gate = ExecutionGate::default();
         let key = fixture_key(1);
         let target = GrantTarget::new(
@@ -706,6 +722,79 @@ fn real_captured_retained_driver_inflight_cancel_and_deadline() {
 #[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
 fn real_verified_runtime_retained_inflight_cancel_and_deadline() {
     check_inflight_cancel_and_deadline(true, RuntimeProof::Matching);
+}
+
+#[test]
+#[ignore = "requires actual native Worker and pinned DLL; explicit COMPILED_JIT=1"]
+fn real_verified_runtime_retained_exit_between_readiness_and_input() {
+    let host = fixture_host("retained-ready-exit");
+    let start = || {
+        Fixture::start_observed_in(
+            host.clone(),
+            policy(),
+            false,
+            true,
+            None,
+            RuntimeProof::Matching,
+        )
+    };
+    let mut original = start();
+    original
+        .client
+        .as_mut()
+        .unwrap()
+        .wait_ready(Duration::from_secs(10))
+        .unwrap();
+    let run = 2;
+    let key = fixture_key(run);
+    original.lifetime_cancel.cancel();
+    original.receipt = Some(
+        original
+            .ended
+            .recv_timeout(Duration::from_secs(15))
+            .expect("original ready Worker exit")
+            .unwrap(),
+    );
+    assert_eq!(
+        original
+            .client
+            .as_mut()
+            .unwrap()
+            .begin_input(key.clone(), CancellationToken::default())
+            .err()
+            .expect("dead ready Worker cannot begin an input")
+            .code,
+        "retained-scope"
+    );
+    assert_eq!(host.usage().physical_jobs, 1);
+    let original_exit = original.close();
+    assert_eq!(host.usage(), ResourceUsage::default());
+
+    let mut replacement = start();
+    replacement
+        .client
+        .as_mut()
+        .unwrap()
+        .wait_ready(Duration::from_secs(10))
+        .unwrap();
+    let cancel = CancellationToken::default();
+    let scope = fixture_empty(&replacement.gate, &replacement.target, run, cancel.clone());
+    let mut input = replacement
+        .client
+        .as_mut()
+        .unwrap()
+        .begin_input(key, cancel)
+        .unwrap();
+    assert_eq!(
+        input.call(b"{}".to_vec(), scope).unwrap(),
+        json!({"counter":1,"memory":1})
+    );
+    input.finish(|| Ok(())).unwrap();
+    let replacement_exit = replacement.close();
+    assert_ne!(original_exit.process_id(), 0);
+    assert_ne!(replacement_exit.process_id(), 0);
+    assert_ne!(original_exit.process_id(), replacement_exit.process_id());
+    assert_eq!(host.usage(), ResourceUsage::default());
 }
 
 #[test]
