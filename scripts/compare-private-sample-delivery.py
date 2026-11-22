@@ -151,7 +151,7 @@ def main():
             assert data['binaries']['host'] == sha(hosts[version])
             assert data['runtimeBuildSourceCommit'] == current
             assert data['workspaceAfterHostExit'] == [] and owned['allDescendantsExited']
-            assert not owned['timedOut'] and owned['missingProcessMemoryReads'] == 0 and owned['driverExitCode'] == 0
+            assert not owned['timedOut'] and owned['driverExitCode'] == 0
             assert data['traceCollections'] and all(t['dropped'] == 0 for t in data['traceCollections'])
             evidence = data['privateReplyEvidence']
             assert evidence['repeatedSnapshotsChecked'] > 0
@@ -163,10 +163,19 @@ def main():
                     assert evidence['byMethod']['getRun']['repliesWithSamples'] > 0
             else:
                 assert all(row['repliesWithSamples'] == 0 for row in evidence['byMethod'].values())
-            case.update(checksPassed=True, replyEvidence=evidence, measurement=data.get('warmResultMs', data.get('pacing')),
+            missing = owned['missingProcessMemoryReads']
+            case.update(checksPassed=missing == 0, replyEvidence=evidence,
+                        measurement=data.get('warmResultMs', data.get('pacing')),
                         job={k: v for k, v in owned.items() if k != 'samples'})
+            if missing:
+                # This trial's correctness, exit and cleanup have already been checked.
+                # Preserve the failure and collect the other independent trials once.
+                case['failure'] = 'Windows Job process-memory observation missing'
             save()
-            print(json.dumps({'name': name, 'seconds': case['seconds'], 'checksPassed': True}), flush=True)
+            print(json.dumps({'name': name, 'seconds': case['seconds'],
+                              'checksPassed': case['checksPassed'],
+                              'missingProcessMemoryReads': missing}), flush=True)
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Windows Job memory gaps preserved'
         manifest['complete'] = True
     finally:
         save()
