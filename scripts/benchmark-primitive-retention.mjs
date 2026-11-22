@@ -577,11 +577,19 @@ try {
       const wrongTarget=await reject({targets:[{node:'absent-stage',port:'out'}]});
       const stale=await reject({input:{...request.input,revision:1}});
       proof.refusals=[wrongPlan,wrongTarget,stale].map(reply=>({ok:reply.ok,code:reply.error?.code}));
-      assert(proof.refusals.every(reply=>reply.ok===false && typeof reply.code==='string'));
+      assert.deepEqual(proof.refusals,[
+        {ok:false,code:'plan-conflict'},
+        {ok:false,code:'invalid-targets'},
+        {ok:false,code:'stale-input'},
+      ]);
       const stillIdle=await host.call({method:'status'});
-      assert.equal(stillIdle.sessionEpoch,proof.idle.sessionEpoch);
-      assert.equal(stillIdle.retainedWorker.generation,proof.idle.retainedWorker.generation);
-      assert.equal(stillIdle.retainedWorker.physicalJobs,0);
+      proof.afterRefusals={sessionEpoch:stillIdle.sessionEpoch,
+        generation:stillIdle.retainedWorker.generation,processIds:stillIdle.retainedWorker.processIds,
+        workerProcesses:stillIdle.workerProcesses,retainedJobs:stillIdle.retainedWorker.physicalJobs,
+        physicalJobs:stillIdle.physical.physicalJobs,reservedResultBytes:stillIdle.physical.reservedResultBytes};
+      assert.deepEqual(proof.afterRefusals,{sessionEpoch:proof.idle.sessionEpoch,
+        generation:proof.idle.retainedWorker.generation,processIds:[],workerProcesses:0,
+        retainedJobs:0,physicalJobs:0,reservedResultBytes:0});
     }
     await host.call({method:'traceStartDetailed'});
     const latest='  ka-recovered🙂漢字  ';
