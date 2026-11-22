@@ -1988,10 +1988,12 @@ mod tests {
             "../../../tests/contracts/execution_control.json"
         ))
         .unwrap();
+        // Reserve space for the real diagnostic ring as well as the result.
+        let mut fixture_policy = resources["resourceProfiles"]["noTombstones"].clone();
+        fixture_policy["maxRetainedBytes"] = json!(1024 * 1024);
         let host = ExecutionHost::new(
             "real-reviewed-ready-requeue",
-            ResourcePolicy::from_value(resources["resourceProfiles"]["noTombstones"].clone())
-                .unwrap(),
+            ResourcePolicy::from_value(fixture_policy).unwrap(),
         )
         .unwrap();
         let service = ExecutionService::new(host.clone()).unwrap();
