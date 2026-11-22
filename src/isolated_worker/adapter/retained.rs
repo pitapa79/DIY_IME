@@ -2059,7 +2059,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         };
         assert_eq!(result.delivery, RunDelivery::Complete);
-        assert_eq!(result.ports[0].value["packet"]["root"]["text"], text);
+        let output = result
+            .ports
+            .iter()
+            .find(|port| port.endpoint.node == "stage0" && port.endpoint.port == "out")
+            .expect("requested output");
+        assert_eq!(output.value["status"], "data");
+        let echoed_request: Value =
+            serde_json::from_str(output.value["packet"]["root"]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            echoed_request["operation"]["inputs"]["in"]["packet"]["root"]["text"],
+            text
+        );
         assert_eq!(owner.compiled_generations(), 2);
         let replacement_pid = owner.process_id().unwrap();
         assert_ne!(old_pid, replacement_pid);
@@ -2105,7 +2116,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        std::fs::remove_dir(workspace).unwrap();
+        remove_settled_fixture_workspace(&workspace, deadline);
         eprintln!(
             "reviewed ready requeue: original PID {old_pid}, successor PID {replacement_pid}"
         );
@@ -2305,8 +2316,12 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        // Cache::new leaves the shared staging parents in place. This test
-        // owns its workspace, so remove those parents only once they are empty.
+        remove_settled_fixture_workspace(&workspace, deadline);
+    }
+
+    fn remove_settled_fixture_workspace(workspace: &Path, deadline: std::time::Instant) {
+        // Cache::new leaves the staging parents in place. The fixture owns
+        // its workspace and removes those parents only once they are empty.
         let staging = workspace.join("target/appcontainer-probes");
         loop {
             match std::fs::remove_dir(&staging) {
