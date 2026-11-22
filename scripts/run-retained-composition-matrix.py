@@ -102,8 +102,12 @@ def main():
     if args.ready_code_no_prepare_wait and (args.initial_startup_limit != 4
             or args.initial_startup not in ('scoped', 'scoped-safety')):
         parser.error('--ready-code-no-prepare-wait requires scoped startup at limit four')
-    if args.profile_pool and (not args.candidate or args.initial_startup):
-        parser.error('--profile-pool requires --candidate and excludes --initial-startup')
+    if args.profile_pool and not args.candidate:
+        parser.error('--profile-pool requires --candidate')
+    if args.profile_pool and args.initial_startup and not (
+            args.initial_startup == 'scoped-safety'
+            or args.initial_startup == 'scoped' and args.initial_startup_focus):
+        parser.error('combined profile comparisons require focused scoped startup or scoped safety')
     if args.profile_pool and args.lifetime and (not args.ordered_recovery or args.overlap_action):
         parser.error('idle profile comparisons require --ordered-recovery without --overlap-action')
     observe_creation = os.environ.get('DIY_PRIMITIVE_OBSERVE_CREATION_MEMORY') == '1'
@@ -141,7 +145,7 @@ def main():
     assert {c['layout'] for c in cases} == {'serial', 'parallel', 'join', 'unused'}
     assert {c['count'] for c in cases if c['mode'] == 'separate' and c['layout'] == 'serial'} == {1, 2, 4, 8, 16, 20}
     issue, profile = (158, 'retained-snapshot-candidate') if args.candidate else (135, 'reference')
-    if args.profile_pool and not args.lifetime:
+    if args.profile_pool and not (args.lifetime or args.initial_startup):
         case, = (c for c in cases if c['mode'] == 'separate' and c['timing']
                  and c['cadence'] == 'cold-paced' and c['layout'] == 'serial' and c['count'] == 20)
         cases = [case, dict(case, cadence='paced'), dict(case, cadence='safety', samples=1)]
@@ -207,6 +211,8 @@ def main():
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
     base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
     if args.initial_startup:
+        if args.profile_pool:
+            manifest['profilePool'] = args.profile_pool
         base['DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON'] = '1'
         manifest['initialStartupLimit'] = args.initial_startup_limit or 2
         manifest['initialStartupFocus'] = args.initial_startup_focus
