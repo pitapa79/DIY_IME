@@ -41,9 +41,13 @@ class MemorySampleHandleTests(unittest.TestCase):
                 raise OSError('synthetic Job query failure')
             return SimpleNamespace(assigned=len(after_ids), listed=len(after_ids), ids=after_ids)
 
-        open_events = [('open', pid) for pid in expected_order]
-        opened = [pid + 100 for pid in expected_order if pid != 11]
-        close_events = [('close', handle) for handle in reversed(opened)]
+        expected_events = [('query',)]
+        for pid in expected_order:
+            expected_events.append(('open', pid))
+            if pid != 11:
+                expected_events.extend([('read', pid + 100), ('close', pid + 100)])
+                if fail_read:
+                    break
         with patch.object(sampler.base, 'query', side_effect=query), \
              patch.object(sampler, 'open_process', side_effect=open_pid), \
              patch.object(sampler, 'read_live_member_memory', side_effect=read), \
@@ -51,7 +55,7 @@ class MemorySampleHandleTests(unittest.TestCase):
             if fail_read:
                 with self.assertRaisesRegex(RuntimeError, 'synthetic counter failure'):
                     sampler.sample(99, 0, previous_pids)
-                self.assertEqual(events, [('query',)] + open_events + [('read', opened[0])] + close_events)
+                self.assertEqual(events, expected_events)
             else:
                 rows = sampler.sample(99, 0, previous_pids)['processes']
                 self.assertEqual([row['pid'] for row in rows], [10, 11, 12])
@@ -60,16 +64,15 @@ class MemorySampleHandleTests(unittest.TestCase):
                     expected['listedInJobAfterSample'] = 11 in after_ids
                 self.assertEqual(rows[1], expected)
                 self.assertEqual([row['available'] for row in rows], [True, False, True])
-                self.assertEqual(events, [('query',)] + open_events + [('read', handle) for handle in opened]
-                                 + close_events + [('query',)])
+                self.assertEqual(events, expected_events + [('query',)])
 
-    def test_bind_all_pids_before_reading_memory_and_preserve_missing(self):
+    def test_read_before_next_open_and_preserve_missing(self):
         self.run_sample(set(), [10, 11, 12])
 
     def test_open_new_pids_first_and_preserve_enumeration_order_in_report(self):
         self.run_sample({10, 9}, [11, 12, 10])
 
-    def test_close_every_open_handle_if_a_read_raises(self):
+    def test_close_current_handle_and_stop_if_a_read_raises(self):
         self.run_sample({10, 11}, [12, 10, 11], fail_read=True)
 
     def test_report_a_missing_pid_still_listed_in_the_job(self):

@@ -5,7 +5,7 @@ that race process exit or fail are explicit, never filled with zero.
 """
 import ctypes as c
 from ctypes import wintypes as w
-from contextlib import ExitStack, suppress
+from contextlib import suppress
 import importlib.util
 import json
 from pathlib import Path
@@ -145,20 +145,17 @@ def sample(job, origin, previous_pids):
     if pids.assigned > 64 or pids.listed > 64:
         raise RuntimeError('bounded memory sampler PID capacity exceeded')
     rows = [dict(pid=pid, available=False) for pid in pids.ids[:pids.listed]]
-    pending = []
-    with ExitStack() as handles:
-        # Give newly listed processes the earliest open attempt. Keep the
-        # original Job enumeration order in the reported rows.
-        for row in sorted(rows, key=lambda row: row['pid'] in previous_pids):
-            handle = open_process(QUERY_PROCESS_AND_WAIT, False, row['pid'])
-            if handle:
-                handles.callback(base.close, handle)
-                pending.append((handle, row))
-            else:
-                row['error'] = c.get_last_error()
-                row['failureApi'] = 'OpenProcess'
-        for handle, row in pending:
+    # Visit newly listed processes first while keeping the Job's original
+    # enumeration order in the report. Read before opening the next handle.
+    for row in sorted(rows, key=lambda row: row['pid'] in previous_pids):
+        handle = open_process(QUERY_PROCESS_AND_WAIT, False, row['pid'])
+        if not handle:
+            row.update(error=c.get_last_error(), failureApi='OpenProcess')
+            continue
+        try:
             read_live_member_memory(handle, job, row)
+        finally:
+            base.close(handle)
     elapsed_ms = (time.monotonic()-origin)*1000
     missing = [row for row in rows if not row['available']]
     if missing:
