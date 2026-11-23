@@ -685,7 +685,11 @@ impl Native {
                             &demand.cancel,
                             &shared.stop,
                             demand.kind,
-                            scope.rank,
+                            if demand.kind == StartupKind::Initial {
+                                scope.initial_rank
+                            } else {
+                                scope.rank
+                            },
                         ),
                         None => gate.acquire(&demand.cancel),
                     }
@@ -825,6 +829,16 @@ impl Native {
             shared.record_phase("preparation-permit-acquired");
             permit
         };
+        // Let distinct-code followers compete only after the leading stage
+        // has the preparation permit or already holds a captured image.
+        if let Some(gate) = &shared.startup_gate
+            && shared
+                .startup_scope
+                .as_ref()
+                .is_some_and(|scope| scope.rank == 0)
+        {
+            gate.initial_leader_preparing();
+        }
         if let Some(demand) = recovery {
             demand.validate(shared, controller)?;
         }

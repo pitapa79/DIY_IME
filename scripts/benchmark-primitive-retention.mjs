@@ -32,6 +32,7 @@ const callLimit=cadence==='call-limit';
 const overlapAction=process.env.DIY_PRIMITIVE_IDLE_OVERLAP_ACTION;
 const initialStartupComparison=process.env.DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON==='1';
 const deferredInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP==='1';
+const initialCodeOrderComparison=process.env.DIY_PRIMITIVE_INITIAL_CODE_ORDER_COMPARISON==='1';
 const scopedInitialStartup=process.env.DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP==='1';
 const mode=process.env.DIY_EXPERIMENT_REVIEWED_PRIMITIVE_RETENTION ?? '0';
 const timing=process.env.DIY_EXPERIMENT_RETAINED_TIMING==='1';
@@ -222,6 +223,8 @@ if(lifetime && timing) {
   report.requestedControls.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER=process.env.DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER??null;
 }
 if(initialStartupComparison) {
+  report.requestedControls.DIY_EXPERIMENT_RETAINED_DISTINCT_INITIAL_CODE=
+    process.env.DIY_EXPERIMENT_RETAINED_DISTINCT_INITIAL_CODE??null;
   report.requestedControls.DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT=
     process.env.DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT??null;
   report.requestedControls.DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP=
@@ -265,6 +268,29 @@ try {
     report.initialStartupComparison={
       deferred:deferredInitialStartup,scoped:scopedInitialStartup,beforeFirstInput:status,
     };
+    if(initialCodeOrderComparison) {
+      assert.equal(receipt.error?.code,'invalid-targets');
+      const wrongPlan=await host.send({method:'run',request:{startKey:String(++sequence),
+        expectedPlanVersion:String(BigInt(version)+1n),targets,
+        input:{revision:1,text:'rejected fixture',mode:'compose'}}});
+      assert.equal(wrongPlan.ok,false);
+      assert.equal(wrongPlan.error?.code,'plan-conflict');
+      const unchanged=await host.call({method:'status'});
+      assert.equal(unchanged.sessionEpoch,status.sessionEpoch);
+      assert.equal(unchanged.state.activePlanVersion,version);
+      assert.equal(unchanged.retainedWorker.generation,0);
+      assert.deepEqual(unchanged.retainedWorker.processIds,[]);
+      assert.equal(unchanged.workerProcesses,0);
+      assert.equal(unchanged.physical.physicalJobs,0);
+      assert.equal(unchanged.physical.reservedResultBytes,0);
+      report.initialStartupComparison.coldRefusals={
+        wrongTarget:receipt.error.code,wrongPlan:wrongPlan.error.code,
+        sessionEpoch:unchanged.sessionEpoch,planVersion:version,
+        generation:unchanged.retainedWorker.generation,processIds:unchanged.retainedWorker.processIds,
+        workerProcesses:unchanged.workerProcesses,jobs:unchanged.physical.physicalJobs,
+        reservedResultBytes:unchanged.physical.reservedResultBytes,
+      };
+    }
     const scope=status.retainedWorker.idleRecovery?.scopesInitialStartup;
     if(scopedInitialStartup)assert.equal(scope,layout==='serial' && count>1);
     else assert.notEqual(scope,true,'scoped startup was selected in a control case');

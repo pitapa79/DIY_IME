@@ -11,6 +11,7 @@ pub(super) struct StartupGate {
     state: Mutex<StartupState>,
     wake: Condvar,
     limit: usize,
+    wait_for_initial_leader: bool,
     preparation: Option<Arc<StartupGate>>,
 }
 #[derive(Default)]
@@ -18,6 +19,7 @@ struct StartupState {
     busy: usize,
     scoped_waiters: std::collections::BTreeSet<(StartupKind, usize)>,
     retry_waiters: usize,
+    initial_leader_preparing: bool,
 }
 pub(super) struct StartupPermit(Arc<StartupGate>);
 impl Default for StartupGate {
@@ -26,6 +28,7 @@ impl Default for StartupGate {
             state: Mutex::default(),
             wake: Condvar::new(),
             limit: 1,
+            wait_for_initial_leader: false,
             preparation: None,
         }
     }
@@ -53,6 +56,14 @@ impl StartupGate {
             .map(|gate| gate.acquire(cancel))
             .transpose()
     }
+    pub(super) fn initial_leader_preparing(&self) {
+        if self.wait_for_initial_leader {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.initial_leader_preparing = true;
+            self.wake.notify_all();
+        }
+    }
+
     pub(super) fn acquire(
         self: &Arc<Self>,
         cancel: &CancellationToken,
@@ -119,7 +130,10 @@ impl StartupGate {
             let next = match rank {
                 Some((kind, _)) => {
                     state.scoped_waiters.first() == rank.as_ref()
-                        && (kind == StartupKind::Idle || state.retry_waiters == 0)
+                        && (kind == StartupKind::Idle
+                            || (state.retry_waiters == 0
+                                && (!self.wait_for_initial_leader
+                                    || state.initial_leader_preparing)))
                 }
                 None if deadline.is_some() => {
                     !matches!(state.scoped_waiters.first(), Some((StartupKind::Idle, _)))
@@ -227,10 +241,23 @@ impl Drop for StartupLease {
     }
 }
 
+// The leading stage stays first. Then visit one stage per captured cache
+// instance before the remaining dependent stages in their original order.
+fn distinct_initial_order<K: Eq + std::hash::Hash>(
+    order: &[String],
+    cache_key: impl Fn(&str) -> K,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let (first, repeated): (Vec<_>, Vec<_>) =
+        order.iter().partition(|node| seen.insert(cache_key(node)));
+    first.into_iter().chain(repeated).cloned().collect()
+}
+
 struct ScopedStartup {
     target: Endpoint,
     demand: Arc<Mutex<Option<StartupDemand>>>,
     order: Vec<String>,
+    initial_order: Vec<String>,
     idle: bool,
     ordered_idle: bool,
     initial: bool,
@@ -239,6 +266,7 @@ struct ScopedStartup {
 pub(super) struct StartupScope {
     pub(super) demand: Arc<Mutex<Option<StartupDemand>>>,
     pub(super) rank: usize,
+    pub(super) initial_rank: usize,
     pub(super) idle: bool,
     pub(super) ordered_idle: bool,
     pub(super) initial: bool,
@@ -352,6 +380,10 @@ impl Owners {
                 == Some(std::ffi::OsStr::new("1")),
             groups.iter().all(|group| group.len() == 1),
         )?;
+        let prefer_distinct = startup_limit == 4
+            && Self::scoped_initial_requested()
+            && std::env::var_os("DIY_EXPERIMENT_RETAINED_DISTINCT_INITIAL_CODE").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
         if startup_limit > 1
             && groups.len() > 1
             && let Some((target, order)) = startup_chain
@@ -359,16 +391,39 @@ impl Owners {
             let ordered = std::env::var_os("DIY_EXPERIMENT_RETAINED_IDLE_RECOVERY_ORDER")
                 .as_deref()
                 == Some(std::ffi::OsStr::new("1"));
+            let initial_order = if prefer_distinct {
+                use std::collections::BTreeMap;
+                let captured = groups
+                    .iter()
+                    .map(|stages| (stages[0].0.as_str(), Arc::as_ptr(&stages[0].1.artifact.0)))
+                    .collect::<BTreeMap<_, _>>();
+                if order.len() != captured.len()
+                    || order
+                        .iter()
+                        .any(|node| !captured.contains_key(node.as_str()))
+                {
+                    return Err(fail(
+                        "retained-evaluation",
+                        "initial code order lost a stage",
+                    ));
+                }
+                distinct_initial_order(&order, |node| captured[node])
+            } else {
+                order.clone()
+            };
             result.scoped_startup = Some(ScopedStartup {
                 target,
                 demand: Arc::new(Mutex::new(None)),
                 order,
+                initial_order,
                 idle: Self::idle_overlap_requested(),
                 ordered_idle: ordered,
                 initial: Self::scoped_initial_requested(),
             });
         }
-        let startup_gate = Arc::new(StartupGate::bounded(startup_limit)?);
+        let mut startup_gate = StartupGate::bounded(startup_limit)?;
+        startup_gate.wait_for_initial_leader = prefer_distinct && result.scoped_startup.is_some();
+        let startup_gate = Arc::new(startup_gate);
         // Twenty idle coordinators must not fill the Core's existing sixteen
         // request permits with simultaneous liveness probes. Keep every check
         // fresh, with one outstanding probe for this evaluation cohort.
@@ -405,6 +460,11 @@ impl Owners {
                     .map(|(scope, rank)| StartupScope {
                         demand: scope.demand.clone(),
                         rank,
+                        initial_rank: scope
+                            .initial_order
+                            .iter()
+                            .position(|id| id == &scope.order[rank])
+                            .unwrap_or(rank),
                         idle: scope.idle,
                         ordered_idle: scope.ordered_idle,
                         initial: scope.initial,
@@ -568,6 +628,7 @@ mod tests {
             scoped_startup: Some(ScopedStartup {
                 target: Endpoint::new("last", "out"),
                 demand: demand.clone(),
+                initial_order: Vec::new(),
                 order: Vec::new(),
                 idle: true,
                 ordered_idle: false,
@@ -745,6 +806,58 @@ mod tests {
         assert!(gate.state.lock().unwrap().scoped_waiters.is_empty());
         assert_eq!(gate.state.lock().unwrap().busy, 1);
         drop(second);
+    }
+
+    #[test]
+    fn distinct_initial_order_advances_only_the_first_stage_for_each_cache() {
+        let order = ["lead", "same", "other", "repeat", "tail", "other-repeat"].map(str::to_owned);
+        let prioritized = distinct_initial_order(&order, |node| match node {
+            "lead" | "same" | "repeat" => 1,
+            "other" | "other-repeat" => 2,
+            _ => 3,
+        });
+        assert_eq!(
+            prioritized,
+            ["lead", "other", "tail", "same", "repeat", "other-repeat"]
+        );
+    }
+
+    #[test]
+    fn initial_followers_wait_until_the_leader_owns_preparation() {
+        let mut gate = StartupGate::bounded(4).unwrap();
+        gate.wait_for_initial_leader = true;
+        let gate = Arc::new(gate);
+        let (send, receive) = mpsc::channel();
+        let cancel = CancellationToken::default();
+        let token = cancel.clone();
+        let follower = gate.clone();
+        let thread = std::thread::spawn(move || {
+            let permit = follower.acquire_scoped(
+                &token,
+                &CancellationToken::default(),
+                StartupKind::Initial,
+                1,
+            );
+            send.send(permit.map_err(|error| error.code)).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while gate.state.lock().unwrap().scoped_waiters.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let lead = gate.acquire(&cancel).unwrap();
+        let preparation = gate.prepare(&cancel).unwrap().unwrap();
+        assert_eq!(gate.state.lock().unwrap().busy, 1);
+        assert!(receive.try_recv().is_err());
+        gate.initial_leader_preparing();
+        let next = receive
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(gate.state.lock().unwrap().busy, 2);
+        drop((next, preparation, lead));
+        thread.join().unwrap();
+        assert_eq!(gate.state.lock().unwrap().busy, 0);
     }
 
     #[test]

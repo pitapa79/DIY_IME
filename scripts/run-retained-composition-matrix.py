@@ -76,6 +76,8 @@ def main():
                         help='select an existing startup-slot limit for an initial-startup experiment')
     parser.add_argument('--initial-startup-focus', action='store_true',
                         help='select 20-stage serial and 20-registered sparse cold fixtures')
+    parser.add_argument('--initial-code-order', choices=('dependency', 'distinct'),
+                        help='compare order of already captured code on focused scoped startup')
     parser.add_argument('--ready-code-no-prepare-wait', action='store_true',
                         help='use the ready-code lookup before the serial compiler gate')
     parser.add_argument('--profile-pool', choices=('fresh', 'prepared'),
@@ -99,6 +101,10 @@ def main():
         parser.error('--initial-startup-limit requires --initial-startup')
     if args.initial_startup_focus and args.initial_startup not in ('eager', 'deferred', 'scoped'):
         parser.error('--initial-startup-focus requires an initial-startup performance mode')
+    if args.initial_code_order and (args.initial_startup_limit != 4 or not (
+            args.initial_startup == 'scoped-safety'
+            or args.initial_startup == 'scoped' and args.initial_startup_focus)):
+        parser.error('initial code ordering requires focused scoped startup or scoped safety at limit four')
     if args.ready_code_no_prepare_wait and (args.initial_startup_limit != 4
             or args.initial_startup not in ('scoped', 'scoped-safety')):
         parser.error('--ready-code-no-prepare-wait requires scoped startup at limit four')
@@ -209,6 +215,7 @@ def main():
     base.pop('DIY_PRIMITIVE_OBSERVE_PROCESS_V2_MEMORY', None)
     base.pop('GITHUB_SHA', None)
     base.pop('DIY_PRIMITIVE_IDLE_OVERLAP_ACTION', None)
+    base.pop('DIY_PRIMITIVE_INITIAL_CODE_ORDER_COMPARISON', None)
     base.pop('DIY_PRIMITIVE_INITIAL_STARTUP_COMPARISON', None)
     if args.initial_startup:
         if args.profile_pool:
@@ -220,6 +227,9 @@ def main():
     if args.overlap_action:
         base['DIY_PRIMITIVE_IDLE_OVERLAP_ACTION'] = args.overlap_action
         manifest['overlapAction'] = args.overlap_action
+    if args.initial_code_order:
+        base['DIY_PRIMITIVE_INITIAL_CODE_ORDER_COMPARISON'] = '1'
+        manifest['initialCodeOrder'] = args.initial_code_order
     base.update({'DIY_REVIEW_MODULE_A': str(modules[0]), 'DIY_REVIEW_MODULE_B': str(modules[1]),
                  'DIY_PRIMITIVE_MATRIX': '1', 'DIY_PRIMITIVE_SAMPLE_DELIVERY_CHECK': '1',
                  'DIY_PRIMITIVE_PYTHON': sys.executable, 'DIY_MEASUREMENT_SOURCE_SHA': source,
@@ -259,6 +269,8 @@ def main():
                     env['DIY_EXPERIMENT_RETAINED_DEFER_INITIAL_STARTUP'] = '1'
                 if args.initial_startup in ('scoped', 'scoped-safety'):
                     env['DIY_EXPERIMENT_RETAINED_SCOPED_INITIAL_STARTUP'] = '1'
+                if args.initial_code_order == 'distinct':
+                    env['DIY_EXPERIMENT_RETAINED_DISTINCT_INITIAL_CODE'] = '1'
                 if args.ready_code_no_prepare_wait:
                     env['DIY_EXPERIMENT_RETAINED_READY_CODE_NO_PREPARE_WAIT'] = '1'
             command = list(map(str, [sys.executable, repo/'scripts/measure-primitive-retention-job.py', *sampler_options,

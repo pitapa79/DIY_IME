@@ -21,6 +21,10 @@ on:
         description: Compare scoped S1 startup with fresh and prepared profiles at limits two and four
         type: boolean
         default: false
+      compare_distinct_initial_code:
+        description: Compare dependency ordering with earlier distinct-code startup at four permits
+        type: boolean
+        default: false
       observe_creation_memory:
         description: Record supplemental process creation memory in S1 composition checks
         type: boolean
@@ -610,6 +614,30 @@ jobs:
         with:
           name: retained-scoped-profile-limits-${{ github.sha }}
           path: target/scoped-profile-limit-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Compare ordering of admitted distinct S1 initial code
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success' && inputs.compare_distinct_initial_code == true"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($order in @('dependency', 'distinct', 'distinct', 'dependency')) {
+            $trial++
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/initial-code-order-$trial-$order" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped --initial-startup-limit 4 --initial-startup-focus --initial-code-order $order
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          foreach ($order in @('dependency', 'distinct')) {
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/initial-code-order-safety-$order" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped-safety --initial-startup-limit 4 --initial-code-order $order
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve admitted distinct S1 initial code comparison
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/initial-code-order-*/manifest.json') != ''"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-initial-code-order-${{ github.sha }}
+          path: target/initial-code-order-*/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
