@@ -86,13 +86,17 @@ def main():
             assert len(data['reviewedImplementations']) == 2
             assert data['reviewedImplementations'][0]['executableCodeSha256'] != data['reviewedImplementations'][1]['executableCodeSha256']
             assert owned['allDescendantsExited'] and not owned['timedOut']
-            assert owned['driverExitCode'] == 0 and owned['missingProcessMemoryReads'] == 0
+            assert owned['driverExitCode'] == 0
             assert all(trace['dropped'] == 0 for trace in data['traceCollections'])
             if cadence == 'call-limit':
                 proof = data['retainedCallLimit']
                 assert proof['passed'] and proof['inputsVerified'] == proof['callBudget'] + 1 == 4097
-            case['checksPassed'] = True
+            missing = owned['missingProcessMemoryReads']
+            case.update(checksPassed=missing == 0, missingProcessMemoryReads=missing)
+            if missing:
+                case['failure'] = 'Windows Job process-memory observation missing'
             save()
+        assert all(case['checksPassed'] for case in manifest['cases']), 'Job memory gaps preserved'
         manifest['complete'] = True
     finally:
         save()
