@@ -36,7 +36,7 @@ export function measureCoreResidentSpans({ frequency, trace, threads, switches, 
     processors.set(cpu, to);
 
     const outgoing = owned.get(from);
-    if (ownsTime(outgoing, time)) {
+    if (ownsTime(outgoing, time) || outgoing?.runningSince) {
       if (!outgoing.runningSince || outgoing.runningSince.cpu !== cpu)
         throw new Error("unmatched owned switch-out");
       outgoing.slices.push([outgoing.runningSince.time, time]);

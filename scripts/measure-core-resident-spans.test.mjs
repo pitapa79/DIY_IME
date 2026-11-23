@@ -35,6 +35,12 @@ test("accepts equal marker and switch ticks without double counting", () => {
   assert.equal(measureCoreResidentSpans(input)[0].offCpuTicks, 97_000);
 });
 
+test("accepts the final switch-out after an owned thread's exit event", () => {
+  const input = baseline();
+  input.threads[0].end = 103_800;
+  assert.equal(measureCoreResidentSpans(input)[0].residentTicks, 6_000);
+});
+
 for (const [name, alter, message] of [
   ["empty evidence", x => { x.spans.length = 0; }, /missing measurement/],
   ["out-of-order migration", x => { x.switches[2].time = 3_299; }, /unsorted/],

@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      calibrate_core_scheduler:
+        description: Calibrate private Core timing against the Windows scheduler (synthetic)
+        type: boolean
+        default: false
       compare_cold_startup_limits:
         description: Compare existing S1 startup limits on dense and sparse cold fixtures
         type: boolean
@@ -43,6 +47,49 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  core-scheduler-calibration:
+    name: Windows Core scheduler calibration (synthetic)
+    if: github.event_name == 'workflow_dispatch' && inputs.calibrate_core_scheduler == true
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.1'
+          package-manager-cache: false
+      - name: Calibrate against synthetic spin and sleep
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Hosted runner required' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $install) { throw 'Visual C++ tools unavailable' }
+          Import-Module (Join-Path $install 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $root = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+          $work = Join-Path $root ('core-scheduler-calibration-' + [guid]::NewGuid().ToString('N'))
+          $source = (Resolve-Path -LiteralPath scripts/core-scheduler-calibration.cpp).Path
+          $driver = (Resolve-Path -LiteralPath scripts/calibrate-core-scheduler.mjs).Path
+          node --test scripts/measure-core-resident-spans.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic analyzer tests failed' }
+          $null = New-Item -ItemType Directory -Path $work
+          Push-Location -LiteralPath $work
+          try {
+            cl.exe /nologo /std:c++17 /EHsc /W4 /O2 $source /Fe:calibration.exe /link advapi32.lib ole32.lib
+            if ($LASTEXITCODE -ne 0) { throw 'ETW calibration build failed' }
+            node $driver (Join-Path $work 'calibration.exe') (Join-Path $work 'scheduler.etl')
+            if ($LASTEXITCODE -ne 0) { throw 'ETW calibration failed' }
+          } finally {
+            Pop-Location
+            $resolved = (Resolve-Path -LiteralPath $work).Path
+            if ($resolved -ne $work -or (Split-Path -Parent $resolved) -ne $root) {
+              throw 'Unexpected calibration directory'
+            }
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+          }
   windows_regression_segments:
     name: Windows regression (${{ matrix.segment }})
     runs-on: windows-latest
