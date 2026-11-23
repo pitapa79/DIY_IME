@@ -17,6 +17,10 @@ on:
         description: Compare fresh versus prepared AppContainer profiles with scoped initial startup
         type: boolean
         default: false
+      compare_scoped_profile_limits:
+        description: Compare scoped S1 startup with fresh and prepared profiles at limits two and four
+        type: boolean
+        default: false
       observe_creation_memory:
         description: Record supplemental process creation memory in S1 composition checks
         type: boolean
@@ -581,6 +585,31 @@ jobs:
         with:
           name: retained-scoped-startup-profiles-${{ github.sha }}
           path: target/scoped-startup-profile-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Compare scoped S1 profile modes at two and four permits
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && steps.retained_startup_preflight.outcome == 'success' && inputs.compare_scoped_profile_limits == true"
+        run: |
+          $comparisonStatus = 0
+          $trial = 0
+          foreach ($arm in @('fresh/2', 'prepared/2', 'prepared/4', 'fresh/4', 'fresh/4', 'prepared/4', 'prepared/2', 'fresh/2')) {
+            $trial++
+            $mode, $limit = $arm.Split('/')
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/scoped-profile-limit-$trial-$mode-$limit" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped --initial-startup-focus --initial-startup-limit $limit --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          foreach ($mode in @('fresh', 'prepared')) {
+            python scripts/run-retained-composition-matrix.py target/windows-app "target/scoped-profile-limit-safety-$mode-4" target/debug/examples/retained_composition_preflight.exe --candidate --initial-startup scoped-safety --initial-startup-limit 4 --profile-pool $mode
+            if ($LASTEXITCODE -ne 0) { $comparisonStatus = $LASTEXITCODE }
+          }
+          exit $comparisonStatus
+      - name: Preserve scoped profile and startup permit comparison
+        if: "!cancelled() && matrix.segment == 'primitive-startup' && hashFiles('target/scoped-profile-limit-*/manifest.json') != ''"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: retained-scoped-profile-limits-${{ github.sha }}
+          path: target/scoped-profile-limit-*/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
