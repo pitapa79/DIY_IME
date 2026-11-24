@@ -4,6 +4,13 @@
 
 現在の本体は `pitapa79/DIY_IME`。旧 `DIY_IME2` のIssueやコミットは過去の記録であり、新リポジトリへの着手許可ではない。
 
+## Repository routing / リポジトリ選択
+
+- 現行の開発正本は本体 `pitapa79/DIY_IME`、処理Node `pitapa79/DIY_IME_node`。新規Issue・PR・コード変更は責務に応じてこの2件へ行う。
+- `DIY_IME2`、`DIY_IME2_node`、`DIY_IME-private-backup`、`DIY_IME_prototype` は通常の新規開発先ではない。明示指示がない限り書き込まない。
+- GitHubへの書き込み前に owner/name、対象の公開状態、README/移行記録、Issueの所属リポジトリを確認する。旧Issue番号を現行番号として流用しない。矛盾があれば書き込みを止めて確認する。
+- 歴史的な参照・成果物の来歴は維持する。公開先への転記は非公開情報を除外してから行う。
+
 ## 開始時
 
 1. 現在のリポジトリ・ブランチ・対象Issue・PR・依存作業を確認する。
@@ -15,7 +22,7 @@
 ## 作業
 
 - 原則 `1 Issue = 1専用ブランチ/worktree = 1 PR`。他担当のフォルダー・プロセス・未コミット差分には触れない。
-- 本体はCore、system、Host/Worker/broker、権限、Windows/TSF、Editor、配布。外部処理Nodeは別リポジトリ `DIY_IME2_node` 側が担当する。処理Nodeを本体へ戻さない。
+- 本体はCore、system、Host/Worker/broker、権限、Windows/TSF、Editor、配布。外部処理Nodeは別リポジトリ `DIY_IME_node` 側が担当する。処理Nodeを本体へ戻さない。
 - Node側SDKは固定snapshot。API変更は本体で仕様承認・契約・検査を整えてから別PRで反映する。
 - `tests/support` や合成Hostは検査用で、製品Nodeではない。正式fixture、v1 ABI、既存Graph/Packetをテスト都合で弱めない。
 - 文章候補の `Text / Sequence / Choice` は、将来の全IMEデータ型への制限ではない。
