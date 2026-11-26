@@ -1,8 +1,10 @@
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case)]
 
+mod composition;
+mod display;
+mod document;
 pub mod keymap;
-mod probe;
 mod service;
 mod windows_keys;
 

@@ -21,11 +21,12 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout, HKL, SetFocus},
         TextServices::{
-            CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDocumentMgr, ITfEditSession,
-            ITfEditSession_Impl, ITfInputProcessorProfileMgr, ITfKeystrokeMgr,
-            ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE,
-            TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
-            TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
+            CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDisplayAttributeProvider,
+            ITfDocumentMgr, ITfEditSession, ITfEditSession_Impl, ITfInputProcessorProfileMgr,
+            ITfKeystrokeMgr, ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
+            TF_ES_READWRITE, TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE,
+            TF_IPPMF_FORPROCESS, TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS,
+            TF_URP_LOCALPROCESS,
         },
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
@@ -71,6 +72,19 @@ fn class_factory_rejects_foreign_clsid_and_releases_failed_activation() -> Resul
 
     let thread_manager: ITfThreadMgr =
         unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
+    let display: ITfDisplayAttributeProvider = service.cast()?;
+    let enum_attributes = unsafe { display.EnumDisplayAttributeInfo()? };
+    let mut attributes = [None];
+    let mut fetched = 0;
+    unsafe { enum_attributes.Next(&mut attributes, &mut fetched)? };
+    assert_eq!(fetched, 1);
+    let [first] = attributes;
+    let info = first.ok_or(E_FAIL)?;
+    let mut style = windows::Win32::UI::TextServices::TF_DISPLAYATTRIBUTE::default();
+    unsafe { info.GetAttributeInfo(&mut style)? };
+    assert_eq!(style.lsStyle, windows::Win32::UI::TextServices::TF_LS_SOLID);
+    drop((display, enum_attributes, info));
+
     let error = unsafe { service.Activate(&thread_manager, 0) }.unwrap_err();
     assert_eq!(error.code(), E_UNEXPECTED);
     unsafe {
@@ -339,7 +353,9 @@ fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<(
     let mut context = None;
     let mut cookie = 0;
     let scope = Rc::new(Cell::new(IS_DEFAULT));
-    let owner: ITextStoreACP = text_store::Store::new(window.0, scope.clone()).into();
+    let deny_writes = Rc::new(Cell::new(false));
+    let owner: ITextStoreACP =
+        text_store::Store::new(window.0, scope.clone(), deny_writes.clone()).into();
     let owner: IUnknown = owner.cast()?;
     unsafe {
         document.CreateContext(
@@ -422,7 +438,8 @@ fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<(
     if interactive {
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
-        verify_key_edit(context, &keys, client, &scope)?;
+        verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
+        verify_document_switch(context, &document, &thread_manager, &keys, client)?;
     }
     profile.remove()?;
     assert_ne!(
@@ -443,11 +460,12 @@ use windows::Win32::{
     Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, LPARAM, WPARAM},
     System::Com::CoTaskMemAlloc,
     UI::{
-        Input::KeyboardAndMouse::{VK_A, VK_TAB},
+        Input::KeyboardAndMouse::{VK_A, VK_B, VK_BACK, VK_ESCAPE, VK_TAB},
         TextServices::{
-            GUID_COMPARTMENT_KEYBOARD_DISABLED, IS_DEFAULT, IS_PASSWORD, ITextStoreACP,
-            ITfCompartmentMgr, ITfContext, ITfInputScope, ITfInputScope_Impl, InputScope,
-            TF_ES_READ,
+            GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_ATTRIBUTE, IS_DEFAULT, IS_PASSWORD,
+            ITextStoreACP, ITfCompartmentMgr, ITfContext, ITfContextComposition,
+            ITfContextOwnerCompositionServices, ITfInputScope, ITfInputScope_Impl, ITfRangeACP,
+            InputScope, TF_ES_READ,
         },
         WindowsAndMessaging::{
             DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SW_SHOW, SetForegroundWindow,
@@ -494,6 +512,8 @@ impl ITfInputScope_Impl for AppScope_Impl {
 struct ReadDocument {
     context: ITfContext,
     contents: Rc<Cell<(u32, [u16; 2])>>,
+    caret: Rc<Cell<(i32, i32)>>,
+    decorated: Rc<Cell<bool>>,
 }
 
 impl ITfEditSession_Impl for ReadDocument_Impl {
@@ -507,6 +527,36 @@ impl ITfEditSession_Impl for ReadDocument_Impl {
             start.GetText(cookie, 0, &mut text, &mut read)?;
         }
         self.contents.set((read, text));
+        let mut selections = [windows::Win32::UI::TextServices::TF_SELECTION::default()];
+        let mut count = 0;
+        let result = unsafe {
+            self.context.GetSelection(
+                cookie,
+                windows::Win32::UI::TextServices::TF_DEFAULT_SELECTION,
+                &mut selections,
+                &mut count,
+            )
+        };
+        let [selection] = selections;
+        let range = std::mem::ManuallyDrop::into_inner(selection.range).ok_or(E_FAIL)?;
+        result?;
+        assert_eq!(count, 1);
+        let acp: ITfRangeACP = range.cast()?;
+        let mut position = 0;
+        let mut length = 0;
+        unsafe { acp.GetExtent(&mut position, &mut length)? };
+        self.caret.set((position, length));
+        let at_start = unsafe { self.context.GetStart(cookie)? };
+        unsafe { at_start.ShiftEnd(cookie, 1, &mut shifted, ptr::null())? };
+        let value = unsafe {
+            self.context
+                .GetProperty(&GUID_PROP_ATTRIBUTE)?
+                .GetValue(cookie, &at_start)?
+        };
+        self.decorated.set(
+            (unsafe { value.as_raw().Anonymous.Anonymous.vt })
+                == windows::Win32::System::Variant::VT_I4.0,
+        );
         Ok(())
     }
 }
@@ -516,12 +566,17 @@ fn verify_key_edit(
     keys: &ITfKeystrokeMgr,
     client: u32,
     scope: &Cell<InputScope>,
+    deny_writes: &Cell<bool>,
 ) -> Result<()> {
     let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
     let contents = Rc::new(Cell::new((0, [0; 2])));
+    let caret = Rc::new(Cell::new((0, 0)));
+    let decorated = Rc::new(Cell::new(false));
     let reader: ITfEditSession = ReadDocument {
         context: context.clone(),
         contents: contents.clone(),
+        caret: caret.clone(),
+        decorated: decorated.clone(),
     }
     .into();
     let compartments: ITfCompartmentMgr = context.cast()?;
@@ -558,6 +613,181 @@ fn verify_key_edit(
         );
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+        assert_eq!(caret.get(), (1, 0));
+        assert!(decorated.get());
+
+        let second = WPARAM(usize::from(VK_B.0));
+        deny_writes.set(true);
+        assert!(keys.TestKeyDown(second, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(second, LPARAM(0))?.as_bool());
+        deny_writes.set(false);
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+        assert!(keys.KeyDown(second, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (2, [u16::from(b'a'), u16::from(b'b')]));
+        assert_eq!(caret.get(), (2, 0));
+
+        let back = WPARAM(usize::from(VK_BACK.0));
+        assert!(keys.KeyDown(back, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+
+        let compositions: ITfContextComposition = context.cast()?;
+        let owner: ITfContextOwnerCompositionServices = context.cast()?;
+        let mut views = [None];
+        let mut fetched = 0;
+        compositions
+            .EnumCompositions()?
+            .Next(&mut views, &mut fetched)?;
+        assert_eq!(fetched, 1);
+        owner.TerminateComposition(views[0].as_ref().expect("preedit composition"))?;
+        assert!(!keys.KeyDown(back, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+        assert!(keys.KeyDown(second, LPARAM(0))?.as_bool());
+        let escape = WPARAM(usize::from(VK_ESCAPE.0));
+        assert!(keys.KeyDown(escape, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+        assert!(!keys.KeyDown(escape, LPARAM(0))?.as_bool());
+
+        let write = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+        change_selection(context, client, write, Some("𠮷"), 1, 1)?;
+        assert!(
+            !keys.TestKeyDown(key, LPARAM(0))?.as_bool(),
+            "split surrogate"
+        );
+        assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        let original: Vec<_> = "𠮷".encode_utf16().collect();
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get().1.as_slice(), original);
+
+        change_selection(context, client, write, None, 0, 2)?;
+        assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
+        assert!(keys.KeyDown(back, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get().1.as_slice(), original);
+        assert_eq!(
+            caret.get(),
+            (0, 2),
+            "cancel restores the original selection"
+        );
+
+        change_selection(context, client, write, Some(""), 0, 0)?;
+        assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
+        scope.set(IS_PASSWORD);
+        assert!(!keys.TestKeyDown(back, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(back, LPARAM(0))?.as_bool());
+        scope.set(IS_DEFAULT);
+        assert!(
+            !keys.KeyDown(back, LPARAM(0))?.as_bool(),
+            "old preedit must stay invalid"
+        );
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            contents.get(),
+            (1, [u16::from(b'a'), 0]),
+            "protected text must be unchanged"
+        );
+
+        change_selection(context, client, write, Some(""), 0, 0)?;
+    }
+    Ok(())
+}
+
+#[implement(ITfEditSession)]
+struct ChangeSelection {
+    context: ITfContext,
+    replacement: Option<Vec<u16>>,
+    start: i32,
+    end: i32,
+}
+
+impl ITfEditSession_Impl for ChangeSelection_Impl {
+    fn DoEditSession(&self, cookie: u32) -> Result<()> {
+        use windows::Win32::UI::TextServices::{
+            TF_AE_END, TF_ANCHOR_START, TF_SELECTION, TF_SELECTIONSTYLE,
+        };
+        unsafe {
+            if let Some(replacement) = self.replacement.as_ref() {
+                let all = self.context.GetStart(cookie)?;
+                let end = self.context.GetEnd(cookie)?;
+                all.ShiftEndToRange(cookie, &end, TF_ANCHOR_START)?;
+                all.SetText(cookie, 0, replacement)?;
+            }
+            let range = self.context.GetStart(cookie)?;
+            let acp: ITfRangeACP = range.cast()?;
+            acp.SetExtent(self.start, self.end - self.start)?;
+            let selection = TF_SELECTION {
+                range: std::mem::ManuallyDrop::new(Some(range)),
+                style: TF_SELECTIONSTYLE {
+                    ase: TF_AE_END,
+                    fInterimChar: false.into(),
+                },
+            };
+            let outcome = self
+                .context
+                .SetSelection(cookie, std::slice::from_ref(&selection));
+            drop(std::mem::ManuallyDrop::into_inner(selection.range));
+            outcome
+        }
+    }
+}
+
+fn change_selection(
+    context: &ITfContext,
+    client: u32,
+    flags: TF_CONTEXT_EDIT_CONTEXT_FLAGS,
+    replacement: Option<&str>,
+    start: i32,
+    end: i32,
+) -> Result<()> {
+    let session: ITfEditSession = ChangeSelection {
+        context: context.clone(),
+        replacement: replacement.map(|text| text.encode_utf16().collect()),
+        start,
+        end,
+    }
+    .into();
+    unsafe { context.RequestEditSession(client, &session, flags)?.ok() }
+}
+
+fn verify_document_switch(
+    context: &ITfContext,
+    document: &ITfDocumentMgr,
+    thread: &ITfThreadMgr,
+    keys: &ITfKeystrokeMgr,
+    client: u32,
+) -> Result<()> {
+    let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
+    let contents = Rc::new(Cell::new((0, [0; 2])));
+    let reader: ITfEditSession = ReadDocument {
+        context: context.clone(),
+        contents: contents.clone(),
+        caret: Rc::default(),
+        decorated: Rc::default(),
+    }
+    .into();
+    let key = WPARAM(usize::from(VK_A.0));
+    unsafe {
+        assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
+        let other = thread.CreateDocumentMgr()?;
+        thread.SetFocus(&other)?;
+        thread.SetFocus(document)?;
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            contents.get(),
+            (0, [0; 2]),
+            "focus loss must cancel old preedit"
+        );
+        assert!(
+            !keys
+                .KeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
+                .as_bool()
+        );
     }
     Ok(())
 }

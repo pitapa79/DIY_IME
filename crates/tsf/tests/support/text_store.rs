@@ -26,6 +26,7 @@ use super::AppScope;
 pub(super) struct Store {
     window: HWND,
     scope: Rc<Cell<InputScope>>,
+    deny_writes: Rc<Cell<bool>>,
     sink: RefCell<Option<ITextStoreACPSink>>,
     text: RefCell<Vec<u16>>,
     selection: Cell<TS_SELECTION_ACP>,
@@ -34,10 +35,15 @@ pub(super) struct Store {
 }
 
 impl Store {
-    pub(super) fn new(window: HWND, scope: Rc<Cell<InputScope>>) -> Self {
+    pub(super) fn new(
+        window: HWND,
+        scope: Rc<Cell<InputScope>>,
+        deny_writes: Rc<Cell<bool>>,
+    ) -> Self {
         Self {
             window,
             scope,
+            deny_writes,
             sink: RefCell::default(),
             text: RefCell::default(),
             selection: Cell::default(),
@@ -119,7 +125,9 @@ impl ITextStoreACP_Impl for Store_Impl {
     }
 
     fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
-        if self.lock.get() != 0 {
+        if self.lock.get() != 0
+            || (self.deny_writes.get() && flags & TS_LF_READWRITE.0 == TS_LF_READWRITE.0)
+        {
             return Ok(TS_E_SYNCHRONOUS);
         }
         let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;

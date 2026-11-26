@@ -10,9 +10,10 @@ mod windows_probe {
         UI::{
             Input::KeyboardAndMouse::HKL,
             TextServices::{
-                CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD,
-                ITfCategoryMgr, ITfInputProcessorProfileMgr, ITfInputProcessorProfiles,
-                TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
+                CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles,
+                GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr,
+                ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE,
+                TF_PROFILETYPE_INPUTPROCESSOR,
             },
         },
     };
@@ -86,16 +87,33 @@ mod windows_probe {
                     },
                     "register TSF test profile",
                 )?;
-                check(
-                    unsafe {
-                        category.RegisterCategory(
-                            &TEST_SERVICE_CLSID,
-                            &GUID_TFCAT_TIP_KEYBOARD,
-                            &TEST_SERVICE_CLSID,
-                        )
-                    },
-                    "register TSF keyboard category",
-                )?;
+                let mut installed = Vec::new();
+                for id in [GUID_TFCAT_TIP_KEYBOARD, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER] {
+                    let result = unsafe {
+                        category.RegisterCategory(&TEST_SERVICE_CLSID, &id, &TEST_SERVICE_CLSID)
+                    };
+                    if let Err(error) = result {
+                        for registered in installed {
+                            let _ = unsafe {
+                                category.UnregisterCategory(
+                                    &TEST_SERVICE_CLSID,
+                                    &registered,
+                                    &TEST_SERVICE_CLSID,
+                                )
+                            };
+                        }
+                        let _ = unsafe {
+                            profiles.UnregisterProfile(
+                                &TEST_SERVICE_CLSID,
+                                JAPANESE_LANGID,
+                                &TEST_PROFILE_GUID,
+                                0,
+                            )
+                        };
+                        return Err(format!("register TSF test category: {error}"));
+                    }
+                    installed.push(id);
+                }
                 if !registered(&profiles) {
                     return Err("TSF did not return the installed profile".into());
                 }
@@ -105,16 +123,20 @@ mod windows_probe {
                     unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }
                         .map_err(|error| error.to_string())?;
                 if registered(&profiles) {
-                    check(
-                        unsafe {
-                            category.UnregisterCategory(
-                                &TEST_SERVICE_CLSID,
-                                &GUID_TFCAT_TIP_KEYBOARD,
-                                &TEST_SERVICE_CLSID,
-                            )
-                        },
-                        "unregister TSF keyboard category",
-                    )?;
+                    let mut categories = Ok(());
+                    for id in [GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD] {
+                        let outcome = check(
+                            unsafe {
+                                category.UnregisterCategory(
+                                    &TEST_SERVICE_CLSID,
+                                    &id,
+                                    &TEST_SERVICE_CLSID,
+                                )
+                            },
+                            "unregister TSF test category",
+                        );
+                        categories = categories.and(outcome);
+                    }
                     check(
                         unsafe {
                             profiles.UnregisterProfile(
@@ -125,7 +147,8 @@ mod windows_probe {
                             )
                         },
                         "unregister TSF test profile",
-                    )?;
+                    )
+                    .and(categories)?;
                 }
                 if registered(&profiles) {
                     return Err("TSF still returns the test profile".into());
