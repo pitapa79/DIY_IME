@@ -1,24 +1,24 @@
 use std::{cell::Cell, mem::ManuallyDrop, os::raw::c_void, ptr, rc::Rc};
 
 use windows::Win32::{
-    Foundation::WPARAM,
+    Foundation::{LPARAM, WPARAM},
     System::{Com::CoTaskMemFree, Variant::VT_I4},
-    UI::{
-        Input::KeyboardAndMouse::{
-            GetKeyState, VK_A, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-        },
-        TextServices::{
-            GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE,
-            INSERT_TEXT_AT_SELECTION_FLAGS, IS_DEFAULT, ITfCompartmentMgr, ITfContext,
-            ITfEditSession, ITfEditSession_Impl, ITfInputScope, ITfInsertAtSelection, ITfRange,
-            TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE,
-            TF_ES_SYNC, TF_SELECTION, TS_SD_READONLY,
-        },
+    UI::TextServices::{
+        GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, INSERT_TEXT_AT_SELECTION_FLAGS,
+        IS_DEFAULT, ITfCompartmentMgr, ITfContext, ITfEditSession, ITfEditSession_Impl,
+        ITfInputScope, ITfInsertAtSelection, ITfRange, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
+        TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
+        TS_SD_READONLY,
     },
 };
 use windows_core::{IUnknown, Interface, Result, implement};
 
-use crate::{ModuleRef, service::Activation};
+use crate::{
+    ModuleRef,
+    keymap::{self, Action, Context},
+    service::Activation,
+    windows_keys::key_from_message,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProbeState {
@@ -32,9 +32,24 @@ pub(crate) fn probe_key(
     activation: &Rc<Activation>,
     context: &ITfContext,
     key: WPARAM,
+    message: LPARAM,
     insert: bool,
 ) -> bool {
-    if key.0 != usize::from(VK_A.0) || !unmodified_lowercase() || !activation.owns_focus(context) {
+    if !activation.owns_focus(context) {
+        return false;
+    }
+    let action = key_from_message(key, message).and_then(|key| {
+        keymap::action(
+            key,
+            Context {
+                editable: true,
+                preedit: "",
+                selecting_candidate: false,
+            },
+        )
+    });
+    // The stage A diagnostic service still writes only its original probe character.
+    if action != Some(Action::Append('a')) {
         return false;
     }
     let outcome = Rc::new(Cell::new(ProbeState::Pending));
@@ -52,13 +67,6 @@ pub(crate) fn probe_key(
     // The callback's handled flag avoids forwarding that key a second time.
     let _ = unsafe { context.RequestEditSession(activation.client_id, &session, flags) };
     outcome.replace(ProbeState::Disarmed) == ProbeState::Handled
-}
-
-fn unmodified_lowercase() -> bool {
-    [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
-        .into_iter()
-        .all(|key| unsafe { GetKeyState(i32::from(key.0)) >= 0 })
-        && unsafe { GetKeyState(i32::from(VK_CAPITAL.0)) & 1 == 0 }
 }
 
 #[implement(ITfEditSession)]

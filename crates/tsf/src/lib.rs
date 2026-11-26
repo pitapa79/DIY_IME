@@ -1,8 +1,10 @@
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case)]
 
+pub mod keymap;
 mod probe;
 mod service;
+mod windows_keys;
 
 use std::{
     ffi::c_void,
