@@ -140,12 +140,25 @@ pub(crate) struct Bridge {
     worker: Background,
     input: Option<InputState>,
     invalidation: Option<Invalidation>,
-    queued: Option<(DocumentStamp, String)>,
-    submitted: Option<(DocumentStamp, RequestId)>,
+    queued: Option<PendingInput>,
+    submitted: Option<Submission>,
     disconnected: bool,
 }
 
+struct PendingInput {
+    stamp: DocumentStamp,
+    text: String,
+    finalize: bool,
+}
+
+struct Submission {
+    stamp: DocumentStamp,
+    request: RequestId,
+    finalize: bool,
+}
+
 pub(crate) struct Preview {
+    pub(crate) finalize: bool,
     pub(crate) stamp: DocumentStamp,
     pub(crate) text: String,
     pub(crate) candidates: Vec<String>,
@@ -185,12 +198,16 @@ impl Bridge {
         }
     }
 
-    pub(crate) fn convert(&mut self, stamp: DocumentStamp, text: String) {
+    pub(crate) fn convert(&mut self, stamp: DocumentStamp, text: String, finalize: bool) {
         if let Some(input) = self.input.as_mut() {
             if let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable) {
                 self.invalidate(invalidation);
             }
-            self.queued = Some((stamp, text));
+            self.queued = Some(PendingInput {
+                stamp,
+                text,
+                finalize,
+            });
         }
     }
 
@@ -206,27 +223,29 @@ impl Bridge {
             Ok(Some(Event::Ready(plan))) => self.input = Some(InputState::new(plan)),
             Ok(Some(Event::Started(key))) => {
                 if let Some(input) = self.input.as_mut()
-                    && let Some((_, request)) = self.submitted.as_ref()
+                    && let Some(submission) = self.submitted.as_ref()
                 {
-                    let _ = input.accept_run(request, key);
+                    let _ = input.accept_run(&submission.request, key);
                 }
             }
             Ok(Some(Event::Converted(key, result))) => {
                 if let Some(input) = self.input.as_mut()
-                    && let Some((stamp, request)) = self.submitted.as_ref()
+                    && let Some(submission) = self.submitted.as_ref()
                 {
                     let text = match &result.conversion {
                         Conversion::Text(text) => Some(text.clone()),
                         _ => None,
                     };
-                    let stamp = *stamp;
-                    let delivery = input.receive(request, &key, result.conversion);
+                    let stamp = submission.stamp;
+                    let finalize = submission.finalize;
+                    let delivery = input.receive(&submission.request, &key, result.conversion);
                     if delivery.is_ok() {
                         self.submitted = None;
                     }
                     if delivery == Ok(Delivery::Ready) {
                         return text.map(|text| Preview {
                             stamp,
+                            finalize,
                             text,
                             candidates: result.candidates,
                         });
@@ -249,11 +268,25 @@ impl Bridge {
             self.invalidation = None;
         }
         if input.accepts_input()
-            && let Some((stamp, text)) = self.queued.take()
-            && let Ok(request) = input.replace_input(text)
-            && input.dispatch(&request, |_, input| self.worker.submit(input.clone())) == Ok(true)
+            && let Some(pending) = self.queued.take()
         {
-            self.submitted = Some((stamp, request));
+            let request = input.replace_input(pending.text).and_then(|request| {
+                if pending.finalize {
+                    input.commit()
+                } else {
+                    Ok(request)
+                }
+            });
+            if let Ok(request) = request
+                && input.dispatch(&request, |_, input| self.worker.submit(input.clone()))
+                    == Ok(true)
+            {
+                self.submitted = Some(Submission {
+                    stamp: pending.stamp,
+                    request,
+                    finalize: pending.finalize,
+                });
+            }
         }
         None
     }

@@ -9,12 +9,12 @@ use windows::Win32::{
     Foundation::{BOOL, E_FAIL, HWND, RECT},
     System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
     UI::TextServices::{
-        CLSID_TF_CategoryMgr, GUID_PROP_ATTRIBUTE, ITfCategoryMgr, ITfComposition,
-        ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
-        ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl, ITfRange, ITfSource,
-        ITfTextEditSink, ITfTextEditSink_Impl, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
-        TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
-        TF_SELECTIONSTYLE,
+        CLSID_TF_CategoryMgr, GUID_PROP_ATTRIBUTE, GUID_PROP_INPUTSCOPE, ITfCategoryMgr,
+        ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
+        ITfContextComposition, ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl,
+        ITfRange, ITfSource, ITfTextEditSink, ITfTextEditSink_Impl, TF_AE_END, TF_ANCHOR_END,
+        TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC,
+        TF_GTP_INCL_TEXT, TF_SELECTION, TF_SELECTIONSTYLE,
     },
 };
 use windows_core::{Interface, Result, VARIANT, implement};
@@ -40,6 +40,7 @@ pub(crate) struct Preedit {
     busy: Cell<bool>,
     uncertain: Cell<bool>,
     display_atom: Cell<Option<u32>>,
+    pending_finalize: Cell<Option<DocumentStamp>>,
 }
 
 struct Owned {
@@ -84,19 +85,40 @@ impl Observer_Impl {
 impl ITfCompositionSink_Impl for Observer_Impl {
     fn OnCompositionTerminated(&self, _: u32, _: Option<&ITfComposition>) -> Result<()> {
         self.validity.ended.set(true);
+
         self.close_candidates();
         Ok(())
     }
 }
 
 impl ITfTextEditSink_Impl for Observer_Impl {
-    fn OnEndEdit(&self, _: Option<&ITfContext>, _: u32, _: Option<&ITfEditRecord>) -> Result<()> {
-        if !self.validity.own_edit.get() {
+    fn OnEndEdit(
+        &self,
+        _: Option<&ITfContext>,
+        _: u32,
+        record: Option<&ITfEditRecord>,
+    ) -> Result<()> {
+        if !self.validity.own_edit.get() && record.is_none_or(has_document_change) {
             self.validity.modified.set(true);
             self.close_candidates();
         }
         Ok(())
     }
+}
+
+fn has_document_change(record: &ITfEditRecord) -> bool {
+    let change = (|| unsafe {
+        if record.GetSelectionStatus()?.as_bool() {
+            return Ok::<_, windows_core::Error>(true);
+        }
+        let updates =
+            record.GetTextAndPropertyUpdates(TF_GTP_INCL_TEXT, &[&GUID_PROP_INPUTSCOPE])?;
+        let mut ranges = [None];
+        let mut count = 0;
+        updates.Next(&mut ranges, &mut count)?;
+        Ok(count != 0)
+    })();
+    change.unwrap_or(true)
 }
 
 type CandidateSlot = RefCell<Option<Rc<CandidateUi>>>;
@@ -111,6 +133,13 @@ fn close_candidates(slot: &CandidateSlot) {
 enum CandidateUpdate {
     Close,
     Select(usize),
+}
+
+#[derive(Clone, Copy)]
+enum HostAction {
+    Convert,
+    Finalize,
+    FinalizePending,
 }
 
 struct CandidateAnchor {
@@ -177,6 +206,7 @@ impl Preedit {
         self.generation.set(self.generation.get().saturating_add(1));
         self.uncertain.set(false);
         self.current.replace(None);
+        self.pending_finalize.set(None);
         if let Some(owned) = owned.as_ref() {
             close_candidates(&owned.candidates);
         }
@@ -220,19 +250,36 @@ impl Preedit {
         key: Key,
         apply: bool,
     ) -> bool {
+        self.check_key(activation, context, key, apply)
+            .unwrap_or(false)
+    }
+
+    fn check_key(
+        &self,
+        activation: &Rc<Activation>,
+        context: &ITfContext,
+        key: Key,
+        apply: bool,
+    ) -> Option<bool> {
         let generation = self.generation.get();
-        if generation == u64::MAX
-            || self.uncertain.get()
-            || !activation.owns_focus(context)
-            || self.busy.replace(true)
-        {
-            return false;
+        if generation == u64::MAX || self.uncertain.get() || !activation.owns_focus(context) {
+            return Some(false);
+        }
+        if self.busy.replace(true) {
+            return None;
         }
         let _busy = Busy(&self.busy);
         let completed = Rc::new(Cell::new(None));
-        let convert = Rc::new(Cell::new(false));
+        let host_action = Rc::new(Cell::new(None));
         let candidate_update = Rc::new(Cell::new(None));
         let own_edit = Rc::new(RefCell::new(None::<Rc<Validity>>));
+        let reading_host_input = matches!(key, Key::Space | Key::Enter)
+            && !self.showing_candidates()
+            && activation
+                .host
+                .try_borrow()
+                .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available));
+        let writable = apply && !reading_host_input;
         let session: ITfEditSession = Session {
             _module: ModuleRef::new(),
             activation: activation.clone(),
@@ -240,13 +287,18 @@ impl Preedit {
             generation,
             key,
             apply,
+            writable,
             completed: completed.clone(),
-            convert: convert.clone(),
+            host_action: host_action.clone(),
             candidate_update: candidate_update.clone(),
             own_edit: own_edit.clone(),
         }
         .into();
-        let access = if apply { TF_ES_READWRITE } else { TF_ES_READ };
+        let access = if writable {
+            TF_ES_READWRITE
+        } else {
+            TF_ES_READ
+        };
         let _ = unsafe {
             context.RequestEditSession(
                 activation.client_id,
@@ -257,22 +309,29 @@ impl Preedit {
         if let Some(validity) = own_edit.take() {
             validity.own_edit.set(false);
         }
-        let handled = completed.replace(Some(false)) == Some(true);
+        let handled = completed.replace(Some(false));
         if let Some(owned) = self.pending_cleanup.take() {
             Self::cleanup(owned, activation.client_id);
         }
-        if apply && handled {
-            if convert.get() {
+        if apply && handled == Some(true) {
+            if matches!(host_action.get(), Some(HostAction::FinalizePending)) {
+                return handled;
+            }
+            if let Some(action) = host_action.get() {
                 if self.generation.get() == generation
                     && let Some(owned) = self.current.borrow().as_ref()
                     && owned.validity.owned()
                     && let Ok(mut host) = activation.host.try_borrow_mut()
                     && let Some(host) = host.as_mut()
                 {
-                    host.convert(self.stamp(), owned.text.borrow().clone());
+                    let stamp = self.stamp();
+                    let finalize = matches!(action, HostAction::Finalize);
+                    self.pending_finalize.set(finalize.then_some(stamp));
+                    host.convert(stamp, owned.text.borrow().clone(), finalize);
                 }
             } else {
                 self.revision.set(self.revision.get().saturating_add(1));
+                self.pending_finalize.set(None);
                 activation.cancel_host();
                 let owned = self.current.borrow().clone();
                 if let Some(owned) = owned {
@@ -292,6 +351,10 @@ impl Preedit {
         handled
     }
 
+    pub(crate) fn finish_host_request(&self) {
+        self.pending_finalize.set(None);
+    }
+
     pub(crate) fn showing_candidates(&self) -> bool {
         self.current
             .borrow()
@@ -299,11 +362,12 @@ impl Preedit {
             .is_some_and(|owned| owned.candidates.borrow().is_some())
     }
 
-    pub(crate) fn can_deliver(&self, activation: &Rc<Activation>) -> bool {
+    pub(crate) fn can_deliver(&self, activation: &Rc<Activation>) -> Option<bool> {
         let owned = self.current.borrow().clone();
-        owned.is_some_and(|owned| {
-            owned.validity.owned() && self.key(activation, &owned.context, Key::Space, false)
-        })
+        let Some(owned) = owned.filter(|owned| owned.validity.owned()) else {
+            return Some(false);
+        };
+        self.check_key(activation, &owned.context, Key::Space, false)
     }
 
     pub(crate) fn preview(&self, activation: &Rc<Activation>, preview: Preview) {
@@ -330,6 +394,7 @@ impl Preedit {
             owned: owned.clone(),
             stamp: preview.stamp,
             text: preview.text,
+            finalize: preview.finalize,
             armed: armed.clone(),
             anchor: anchor.clone(),
         }
@@ -379,8 +444,9 @@ struct Session {
     generation: u64,
     key: Key,
     apply: bool,
+    writable: bool,
     completed: Rc<Cell<Option<bool>>>,
-    convert: Rc<Cell<bool>>,
+    host_action: Rc<Cell<Option<HostAction>>>,
     candidate_update: Rc<Cell<Option<CandidateUpdate>>>,
     own_edit: Rc<RefCell<Option<Rc<Validity>>>>,
 }
@@ -418,7 +484,15 @@ impl Session_Impl {
                 }
                 owned.text.borrow().clone()
             }
-            Some(owned) if !owned.validity.ended.get() => return None,
+            Some(owned) if !owned.validity.ended.get() => {
+                if self.apply {
+                    self.activation.cancel_host();
+                    self.activation
+                        .preedit
+                        .invalidate(None, self.activation.client_id);
+                }
+                return None;
+            }
             _ if valid_boundaries(&selection, cookie) => String::new(),
             _ => return None,
         };
@@ -441,6 +515,12 @@ impl ITfEditSession_Impl for Session_Impl {
             .and_then(|owned| owned.candidates.borrow().clone());
         let mut candidate_update = CandidateUpdate::Close;
         let mut selected_surface = None;
+        let mut committing = false;
+        let host_ready = self
+            .activation
+            .host
+            .try_borrow()
+            .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available));
         let action = keymap::action(
             self.key,
             Context {
@@ -460,21 +540,35 @@ impl ITfEditSession_Impl for Session_Impl {
                 candidate_update = CandidateUpdate::Select(index);
                 selected_surface = Some(text);
             }
-            Some(Action::Convert)
-                if self
-                    .activation
-                    .host
-                    .try_borrow()
-                    .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available)) =>
-            {
+            Some(Action::Convert) if host_ready => {
                 self.completed.set(Some(true));
-                self.convert.set(self.apply);
+                if self.apply {
+                    self.host_action.set(Some(HostAction::Convert));
+                }
                 return Ok(());
             }
+            Some(Action::Commit) if preedit.pending_finalize.get() == Some(preedit.stamp()) => {
+                self.completed.set(Some(true));
+                if self.apply {
+                    self.host_action.set(Some(HostAction::FinalizePending));
+                }
+                return Ok(());
+            }
+            Some(Action::Commit) if candidates.is_none() && host_ready => {
+                self.completed.set(Some(true));
+                if self.apply {
+                    self.host_action.set(Some(HostAction::Finalize));
+                }
+                return Ok(());
+            }
+            Some(Action::Commit) => committing = true,
             _ => return Ok(()),
         }
         if !self.apply {
             self.completed.set(Some(true));
+            return Ok(());
+        }
+        if !self.writable {
             return Ok(());
         }
         let property = unsafe { self.context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
@@ -531,6 +625,15 @@ impl ITfEditSession_Impl for Session_Impl {
         let text: Vec<u16> = displayed.encode_utf16().collect();
         let replacement = if ending { &owned.original } else { &text };
         let result = (|| unsafe {
+            if committing {
+                property.Clear(cookie, &range)?;
+                if !self.current() || !owned.validity.owned() {
+                    return Err(E_FAIL.into());
+                }
+                owned.composition.EndComposition(cookie)?;
+                owned.validity.ended.set(true);
+                return Ok(());
+            }
             range.SetText(cookie, 0, replacement)?;
             if !self.current()
                 || !owned.validity.owned()
@@ -571,7 +674,7 @@ impl ITfEditSession_Impl for Session_Impl {
                 let _ = unsafe { owned.composition.EndComposition(cookie) };
             }
             preedit.current.replace(None);
-        } else if ending {
+        } else if ending || committing {
             preedit.current.replace(None);
         } else {
             owned.displayed.replace(displayed);
@@ -604,6 +707,7 @@ impl Session_Impl {
             return Err(E_FAIL.into());
         }
         let composition = unsafe { context.StartComposition(cookie, selection, &sink)? };
+
         Ok(Rc::new(Owned {
             context: self.context.clone(),
             composition,
@@ -719,6 +823,7 @@ struct PreviewSession {
     owned: Rc<Owned>,
     stamp: DocumentStamp,
     text: String,
+    finalize: bool,
     armed: Rc<Cell<bool>>,
     anchor: Rc<RefCell<Option<CandidateAnchor>>>,
 }
@@ -773,13 +878,31 @@ impl ITfEditSession_Impl for PreviewSession_Impl {
             {
                 return Err(E_FAIL.into());
             }
+            if self.finalize {
+                property.Clear(cookie, &actual)?;
+                if !self.valid() {
+                    return Err(E_FAIL.into());
+                }
+                set_selection(context, cookie, actual, true)?;
+                if !self.valid() || editable_selection(context, cookie).is_none() || !self.valid() {
+                    return Err(E_FAIL.into());
+                }
+                self.owned.composition.EndComposition(cookie)?;
+                self.owned.validity.ended.set(true);
+                return Ok(());
+            }
             property.SetValue(cookie, &actual, &VARIANT::from(atom as i32))?;
             if !self.valid() {
                 return Err(E_FAIL.into());
             }
             set_selection(context, cookie, actual, true)
         })();
-        if result.is_ok() && self.valid() {
+        if result.is_ok() && self.finalize {
+            if self.stamp == preedit.stamp() {
+                preedit.current.replace(None);
+                preedit.pending_finalize.set(None);
+            }
+        } else if result.is_ok() && self.valid() {
             self.owned.displayed.replace(self.text.clone());
             if let Ok(anchor) = candidate_anchor(context, cookie, &self.owned.composition)
                 && self.valid()

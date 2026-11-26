@@ -82,11 +82,18 @@ impl Activation {
             .try_borrow()
             .is_ok_and(|host| host.as_ref().is_some_and(Bridge::has_work));
         let showing_candidates = self.preedit.showing_candidates();
-        if (has_work || showing_candidates) && !self.preedit.can_deliver(self) {
-            if showing_candidates {
-                self.preedit.invalidate(None, self.client_id);
+        if has_work || showing_candidates {
+            match self.preedit.can_deliver(self) {
+                Some(true) => {}
+                Some(false) => {
+                    if showing_candidates {
+                        self.preedit.invalidate(None, self.client_id);
+                    }
+                    self.cancel_host();
+                }
+                // Windows did not grant a read lock. Wait without delivering input.
+                None => return,
             }
-            self.cancel_host();
         }
         let preview = {
             let Ok(mut host) = self.host.try_borrow_mut() else {
@@ -96,6 +103,13 @@ impl Activation {
         };
         if let Some(preview) = preview {
             self.preedit.preview(self, preview);
+        }
+        let still_pending = self
+            .host
+            .try_borrow()
+            .is_ok_and(|host| host.as_ref().is_some_and(Bridge::has_work));
+        if !still_pending {
+            self.preedit.finish_host_request();
         }
     }
 

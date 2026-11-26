@@ -452,7 +452,14 @@ fn exercise_test_window(
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
         if conversion {
-            verify_conversion(context, &document, &thread_manager, &keys, client)?;
+            verify_conversion(
+                context,
+                &document,
+                &thread_manager,
+                &keys,
+                client,
+                &deny_writes,
+            )?;
         } else {
             verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
             verify_document_switch(context, &document, &thread_manager, &keys, client)?;
@@ -481,7 +488,7 @@ use windows::Win32::{
     System::Com::CoTaskMemAlloc,
     UI::{
         Input::KeyboardAndMouse::{
-            VK_A, VK_B, VK_BACK, VK_DOWN, VK_ESCAPE, VK_SPACE, VK_TAB, VK_UP,
+            VK_A, VK_B, VK_BACK, VK_DOWN, VK_ESCAPE, VK_N, VK_RETURN, VK_SPACE, VK_TAB, VK_UP,
         },
         TextServices::{
             GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_ATTRIBUTE, IS_DEFAULT, IS_PASSWORD,
@@ -820,6 +827,7 @@ fn verify_conversion(
     thread: &ITfThreadMgr,
     keys: &ITfKeystrokeMgr,
     client: u32,
+    deny_writes: &Cell<bool>,
 ) -> Result<()> {
     let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
     let contents = Rc::new(Cell::new((0, [0; 2])));
@@ -844,7 +852,8 @@ fn verify_conversion(
         }
         pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
+        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
+            .inspect_err(|_| eprintln!("starting candidate list"))?;
         let initial = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         assert!(initial.IsShown()?.as_bool());
         assert!(initial.GetCount()? >= 3);
@@ -887,17 +896,85 @@ fn verify_conversion(
         assert_eq!(contents.get(), (2, [u16::from(b'k'), u16::from(b'o')]));
 
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
+            .inspect_err(|_| eprintln!("candidate list after returning to raw input"))?;
+        let enter = WPARAM(usize::from(VK_RETURN.0));
+        let list = candidate_list(thread, document)?.ok_or(E_FAIL)?;
+        assert!(
+            keys.KeyDown(WPARAM(usize::from(VK_DOWN.0)), LPARAM(0))?
+                .as_bool()
+        );
+        let expected: Vec<_> = list
+            .GetString(list.GetSelection()?)?
+            .to_string()
+            .encode_utf16()
+            .collect();
+
+        deny_writes.set(true);
+        assert!(keys.TestKeyDown(enter, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        deny_writes.set(false);
+        assert!(candidate_list(thread, document)?.is_some());
+        assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        assert_eq!(list.GetCount()?, 0);
+        assert!(!keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(escape, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get().1.as_slice(), expected);
+
+        let write = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+        change_selection(context, client, write, Some(""), 0, 0)?;
+        pump_messages();
+        let n = WPARAM(usize::from(VK_N.0));
+        assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
+        assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        let nasal: Vec<_> = "ん".encode_utf16().collect();
+        pump_until(|| {
+            context.RequestEditSession(client, &reader, flags)?.ok()?;
+            Ok(contents.get().0 == 1 && contents.get().1[..1] == nasal)
+        })
+        .inspect_err(|_| eprintln!("finalize contents: {:?}", contents.get()))?;
+        assert!(!keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(escape, LPARAM(0))?.as_bool());
+        assert!(candidate_list(thread, document)?.is_none());
+
+        change_selection(context, client, write, Some(""), 0, 0)?;
+        pump_messages();
+        for key in b"KOUSUI" {
+            assert!(
+                keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
+                    .as_bool()
+            );
+        }
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
         let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         let other = thread.CreateDocumentMgr()?;
         thread.SetFocus(&other)?;
         thread.SetFocus(document)?;
+        pump_messages();
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
         assert!(candidate_list(thread, document)?.is_none());
         assert_eq!(old.GetCount()?, 0);
         assert!(old.GetString(0).is_err());
         assert!(!keys.TestKeyDown(space, LPARAM(0))?.as_bool());
+
+        change_selection(context, client, write, Some(""), 0, 0)?;
+        pump_messages();
+        assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
+        assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        thread.SetFocus(&other)?;
+        thread.SetFocus(document)?;
+        pump_messages();
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            contents.get(),
+            (0, [0; 2]),
+            "pending finalize must not survive focus change"
+        );
+        assert!(!keys.TestKeyDown(enter, LPARAM(0))?.as_bool());
     }
     Ok(())
 }
@@ -934,18 +1011,22 @@ fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
     pump_until(|| Ok(unsafe { manager.IsThreadFocus()? }.as_bool()))
 }
 
+fn pump_messages() {
+    let mut message = MSG::default();
+    unsafe {
+        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 fn pump_until(mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(40);
     loop {
-        let mut message = MSG::default();
-        unsafe {
-            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-            if ready()? {
-                return Ok(());
-            }
+        pump_messages();
+        if ready()? {
+            return Ok(());
         }
         if std::time::Instant::now() >= limit {
             eprintln!("timed out waiting for the TSF test condition");
