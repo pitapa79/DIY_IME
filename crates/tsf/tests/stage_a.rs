@@ -3,6 +3,9 @@
 
 use std::{
     cell::Cell,
+    ffi::c_void,
+    os::windows::ffi::OsStrExt,
+    path::Path,
     ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard},
@@ -13,11 +16,18 @@ use diy_ime2_tsf::{
     DllCanUnloadNow, DllGetClassObject, JAPANESE_LANGID, TEST_PROFILE_GUID, TEST_SERVICE_CLSID,
 };
 use windows::Win32::{
-    Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, HWND, POINT, S_FALSE, S_OK},
+    Foundation::{
+        CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, FreeLibrary, HMODULE, HWND, POINT,
+        S_FALSE, S_OK,
+    },
     System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         CoRegisterClassObject, CoRevokeClassObject, CoUninitialize, IClassFactory,
         REGCLS_MULTIPLEUSE,
+    },
+    System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        LoadLibraryExW,
     },
     UI::{
         Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout, HKL, SetFocus},
@@ -32,7 +42,7 @@ use windows::Win32::{
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
 };
-use windows_core::{GUID, IUnknown, Interface, Result, implement};
+use windows_core::{GUID, HRESULT, IUnknown, Interface, PCWSTR, Result, implement, s};
 
 static PROCESS_PROFILE_TEST: Mutex<()> = Mutex::new(());
 
@@ -308,21 +318,84 @@ impl Drop for ClassRegistration {
     }
 }
 
+struct TestLibrary(HMODULE);
+
+impl TestLibrary {
+    fn open(path: &Path) -> Result<Self> {
+        assert!(path.is_absolute(), "use an absolute test DLL path");
+        let wide: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+        let library = unsafe {
+            LoadLibraryExW(
+                PCWSTR(wide.as_ptr()),
+                None,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            )?
+        };
+        Ok(Self(library))
+    }
+
+    fn factory(&self) -> Result<IClassFactory> {
+        type GetClass =
+            unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
+        let symbol = unsafe { GetProcAddress(self.0, s!("DllGetClassObject")) }.ok_or(E_FAIL)?;
+        let get_class: GetClass = unsafe { std::mem::transmute(symbol) };
+        let mut factory = ptr::null_mut();
+        unsafe {
+            get_class(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory).ok()?;
+            Ok(IClassFactory::from_raw(factory))
+        }
+    }
+}
+
+impl Drop for TestLibrary {
+    fn drop(&mut self) {
+        // The DLL's COM objects may still exist when a test unwinds. Let process
+        // exit unload it in that case, and never unload code that TSF holds.
+        if library_idle(self.0) == Some(true) {
+            let _ = unsafe { FreeLibrary(self.0) };
+        }
+    }
+}
+
+enum ProfileSource<'a> {
+    ProcessLocal,
+    ProcessLocalDll(&'a Path),
+    Machine,
+}
+
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
-    exercise_test_window(false, false, false, None)
+    exercise_test_window(false, ProfileSource::ProcessLocal, false, None)
 }
 
 #[test]
 #[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
 fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
-    exercise_test_window(true, false, false, None)
+    exercise_test_window(true, ProfileSource::ProcessLocal, false, None)
 }
 
 #[test]
 #[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
 fn interactive_machine_registered_app_routes_input() -> Result<()> {
-    exercise_test_window(true, true, false, None)
+    exercise_test_window(true, ProfileSource::Machine, false, None)
+}
+
+#[test]
+#[ignore = "requires the built TSF DLL with an adjacent Stage B Host and an interactive Windows desktop"]
+fn interactive_process_local_dll_converts() -> Result<()> {
+    let dll = std::env::var_os("DIY_IME_TEST_DLL").expect("absolute path of staged test DLL");
+    let dll = Path::new(&dll);
+    eprintln!("process-local DLL: ordinary keys and document switch");
+    exercise_test_window(true, ProfileSource::ProcessLocalDll(dll), false, None)?;
+    eprintln!("process-local DLL: conversion, candidates and finalization");
+    exercise_test_window(true, ProfileSource::ProcessLocalDll(dll), true, None)?;
+    eprintln!("process-local DLL: protected input");
+    exercise_test_window(
+        true,
+        ProfileSource::ProcessLocalDll(dll),
+        false,
+        Some(Observation::default()),
+    )
 }
 
 #[test]
@@ -331,7 +404,7 @@ fn interactive_app_converts_through_official_host() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, false, true, None)
+    exercise_test_window(true, ProfileSource::ProcessLocal, true, None)
 }
 
 #[test]
@@ -340,27 +413,37 @@ fn interactive_app_enforces_protection() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     let observation = diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, false, false, Some(observation))
+    exercise_test_window(true, ProfileSource::ProcessLocal, false, Some(observation))
 }
 
 #[test]
 #[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
 fn interactive_machine_registered_stage_b() -> Result<()> {
-    exercise_test_window(true, true, true, None)
+    exercise_test_window(true, ProfileSource::Machine, true, None)
 }
 
 #[test]
 #[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
 fn interactive_machine_registered_stage_b_protection() -> Result<()> {
-    exercise_test_window(true, true, false, Some(Observation::default()))
+    exercise_test_window(
+        true,
+        ProfileSource::Machine,
+        false,
+        Some(Observation::default()),
+    )
 }
 
 fn exercise_test_window(
     interactive: bool,
-    machine_registered: bool,
+    source: ProfileSource<'_>,
     conversion: bool,
     protection: Option<Observation>,
 ) -> Result<()> {
+    let library = match source {
+        ProfileSource::ProcessLocalDll(path) => Some(TestLibrary::open(path)?),
+        ProfileSource::ProcessLocal | ProfileSource::Machine => None,
+    };
+    let machine_registered = matches!(source, ProfileSource::Machine);
     let _apartment = Apartment::open()?;
     let window = Window(unsafe {
         CreateWindowExW(
@@ -446,11 +529,16 @@ fn exercise_test_window(
         )
     } else {
         // Discover the calling process's active layout without changing desktop input settings.
-        let mut factory_ptr = ptr::null_mut();
-        unsafe {
-            DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr).ok()?
+        let factory = if let Some(library) = library.as_ref() {
+            library.factory()?
+        } else {
+            let mut factory_ptr = ptr::null_mut();
+            unsafe {
+                DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr)
+                    .ok()?;
+                IClassFactory::from_raw(factory_ptr)
+            }
         };
-        let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
         let registration = ClassRegistration(unsafe {
             CoRegisterClassObject(
                 &TEST_SERVICE_CLSID,
@@ -466,6 +554,15 @@ fn exercise_test_window(
     };
     profile.activate(machine_registered)?;
     let keys: ITfKeystrokeMgr = thread_manager.cast()?;
+    if interactive {
+        wait_for_app_focus(&thread_manager)?;
+        pump_until(|| {
+            Ok(unsafe { keys.GetForeground() }.is_ok_and(|service| service == TEST_SERVICE_CLSID))
+        })
+        .inspect_err(|_| {
+            eprintln!("waiting for the test profile to become the TSF foreground service")
+        })?;
+    }
     assert_eq!(
         unsafe { keys.GetForeground() }
             .expect("query TSF foreground after activating test profile"),
@@ -473,7 +570,6 @@ fn exercise_test_window(
     );
     if interactive {
         let context = context.as_ref().expect("real TSF context");
-        wait_for_app_focus(&thread_manager)?;
         if let Some(observation) = protection.as_ref() {
             verify_protection(
                 context,
@@ -481,7 +577,7 @@ fn exercise_test_window(
                 &keys,
                 client,
                 &scope,
-                (!machine_registered).then_some(observation),
+                (!machine_registered && library.is_none()).then_some(observation),
             )?;
         } else if conversion {
             verify_conversion(
@@ -508,8 +604,8 @@ fn exercise_test_window(
         thread_manager.Deactivate()?;
     }
     drop(registration);
-    if conversion || protection.is_some() {
-        if machine_registered {
+    if library.is_some() || conversion || protection.is_some() {
+        if machine_registered || library.is_some() {
             pump_until(installed_service_idle)?;
         } else {
             pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
@@ -823,6 +919,32 @@ fn change_selection(
     unsafe { context.RequestEditSession(client, &session, flags)?.ok() }
 }
 
+fn second_document(
+    thread: &ITfThreadMgr,
+    original: &ITfContext,
+    client: u32,
+) -> Result<ITfDocumentMgr> {
+    let window = unsafe { original.GetActiveView()?.GetWnd()? };
+    let store: ITextStoreACP =
+        text_store::Store::new(window, Rc::new(Cell::new(IS_DEFAULT)), Rc::default()).into();
+    let owner: IUnknown = store.cast()?;
+    let other = unsafe { thread.CreateDocumentMgr()? };
+    let mut context = None;
+    let mut cookie = 0;
+    unsafe {
+        other.CreateContext(client, 0, &owner, &mut context, &mut cookie)?;
+        other.Push(&context.ok_or(E_FAIL)?)?;
+    }
+    Ok(other)
+}
+
+fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()> {
+    unsafe { thread.SetFocus(document)? };
+    pump_messages();
+    assert_eq!(&unsafe { thread.GetFocus()? }, document);
+    Ok(())
+}
+
 fn verify_document_switch(
     context: &ITfContext,
     document: &ITfDocumentMgr,
@@ -842,15 +964,16 @@ fn verify_document_switch(
     let key = WPARAM(usize::from(VK_A.0));
     unsafe {
         assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
-        let other = thread.CreateDocumentMgr()?;
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
+        let other = second_document(thread, context, client)?;
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
             contents.get(),
             (0, [0; 2]),
             "focus loss must cancel old preedit"
         );
+        other.Pop(TF_POPF_ALL)?;
         assert!(
             !keys
                 .KeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
@@ -1004,9 +1127,9 @@ fn verify_conversion(
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
         let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
-        let other = thread.CreateDocumentMgr()?;
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
+        let other = second_document(thread, context, client)?;
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
         pump_messages();
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
@@ -1019,8 +1142,8 @@ fn verify_conversion(
         pump_messages();
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
         pump_messages();
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
@@ -1028,6 +1151,7 @@ fn verify_conversion(
             (0, [0; 2]),
             "pending finalize must not survive focus change"
         );
+        other.Pop(TF_POPF_ALL)?;
         assert!(!keys.TestKeyDown(enter, LPARAM(0))?.as_bool());
     }
     Ok(())
@@ -1035,10 +1159,9 @@ fn verify_conversion(
 
 fn installed_service_idle() -> Result<bool> {
     use windows::Win32::{
-        Foundation::{ERROR_MOD_NOT_FOUND, FreeLibrary, HMODULE},
-        System::LibraryLoader::{GetModuleHandleExW, GetProcAddress},
+        Foundation::ERROR_MOD_NOT_FOUND, System::LibraryLoader::GetModuleHandleExW,
     };
-    use windows_core::{HRESULT, s, w};
+    use windows_core::w;
     let mut module = HMODULE::default();
     if let Err(error) = unsafe { GetModuleHandleExW(0, w!("diy_ime2_tsf.dll"), &mut module) } {
         return if error.code() == ERROR_MOD_NOT_FOUND.to_hresult() {
@@ -1047,13 +1170,17 @@ fn installed_service_idle() -> Result<bool> {
             Err(error)
         };
     }
-    let idle = unsafe { GetProcAddress(module, s!("DllCanUnloadNow")) }.map(|symbol| {
+    let idle = library_idle(module);
+    unsafe { FreeLibrary(module)? };
+    idle.ok_or(E_FAIL.into())
+}
+
+fn library_idle(module: HMODULE) -> Option<bool> {
+    unsafe { GetProcAddress(module, s!("DllCanUnloadNow")) }.map(|symbol| {
         let can_unload: unsafe extern "system" fn() -> HRESULT =
             unsafe { std::mem::transmute(symbol) };
         unsafe { can_unload() == S_OK }
-    });
-    unsafe { FreeLibrary(module)? };
-    idle.ok_or(E_FAIL.into())
+    })
 }
 
 fn candidate_list(

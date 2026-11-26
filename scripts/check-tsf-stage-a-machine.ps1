@@ -80,10 +80,11 @@ $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + [guid]::NewGui
 $release = Join-Path $session 'release.signal'
 $toolHash = (Get-FileHash -LiteralPath $tool).Hash
 $dllHash = (Get-FileHash -LiteralPath $dll).Hash
+$seconds = if ($StageBHostConfiguration) { '300' } else { '150' }
 $arguments = @(
     '-NoProfile', '-File', ('"' + $machineInstaller + '"'),
     '-BuildDirectory', ('"' + $build + '"'), '-ReleaseFile', ('"' + $release + '"'),
-    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', '150'
+    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', $seconds
 )
 if ($StageBHostConfiguration) {
     $arguments += @(
@@ -113,10 +114,12 @@ try {
     if ($StageBHostConfiguration) {
         $tests += @('interactive_machine_registered_stage_b','interactive_machine_registered_stage_b_protection')
     }
+    $failures = [System.Collections.Generic.List[string]]::new()
     foreach ($test in $tests) {
         & $executables[0] --ignored --exact $test --nocapture
-        if ($LASTEXITCODE -ne 0) { throw "The Win32 TSF test failed: $test" }
+        if ($LASTEXITCODE -ne 0) { $failures.Add($test) }
     }
+    if ($failures.Count -ne 0) { throw "The Win32 TSF tests failed: $($failures -join ', ')" }
 } finally {
     try {
         if ($enableAttempted) {
