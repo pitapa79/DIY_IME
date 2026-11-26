@@ -24,7 +24,7 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Guest fixture build failed; install project wasm32 target'}
  & $Cargo clippy --locked --manifest-path $fixture --target wasm32-unknown-unknown --target-dir $target -- -D warnings
  if($LASTEXITCODE -ne 0){throw 'Guest fixture clippy failed'}
- & $Cargo build --locked --bin diy-ime2-wasm-worker --bin diy-ime2-node-package --bin diy-ime2-node-manager --bin diy-ime2-external-host --example wasm_v3_probe --example wasm_package_probe --example wasm_package_manager_probe --example wasm_permission_probe --example wasm_dictionary_probe --example worker_pipe_probe
+ & $Cargo build --locked --bin diy-ime2-wasm-worker --bin diy-ime2-node-package --bin diy-ime2-node-manager --bin diy-ime2-external-host --example ime_external_host_probe --example wasm_v3_probe --example wasm_package_probe --example wasm_package_manager_probe --example wasm_permission_probe --example wasm_dictionary_probe --example worker_pipe_probe
  if($LASTEXITCODE -ne 0){throw 'Host Worker build failed'}
  $worker=Join-Path $target 'debug/diy-ime2-wasm-worker.exe'
  $probe=Join-Path $target 'debug/examples/wasm_v3_probe.exe'
@@ -66,7 +66,7 @@ try {
  if($LASTEXITCODE -ne 0){throw 'Dictionary broker resource consent/isolation/true-ending integration failed'}
  & $Node (Join-Path $root 'scripts/check-wasm-network.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-package.exe') $worker $dll $module (Join-Path $root 'tests/contracts/execution_control.json')
  if($LASTEXITCODE -ne 0){throw 'Network broker consent/continuation/true-ending integration failed'}
- & $Node (Join-Path $root 'scripts/check-official-bootstrap.mjs') (Join-Path $target 'debug/diy-ime2-node-manager.exe') (Join-Path $target 'debug/diy-ime2-external-host.exe') $worker $dll (Join-Path $root 'distribution/official') (Join-Path $root 'tests/contracts/execution_control.json')
+ & $Node (Join-Path $root 'scripts/check-official-bootstrap.mjs') (Join-Path $target 'debug/diy-ime2-node-manager.exe') (Join-Path $target 'debug/diy-ime2-external-host.exe') $worker $dll (Join-Path $root 'distribution/official') (Join-Path $root 'tests/contracts/execution_control.json') (Join-Path $target 'debug/examples/ime_external_host_probe.exe')
  if($LASTEXITCODE -ne 0){throw 'Official bootstrap/catalog/registered graph integration failed'}
  & $Node (Join-Path $root 'scripts/check-retained-host.mjs') (Join-Path $target 'debug/diy-ime2-external-host.exe') (Join-Path $target 'debug/diy-ime2-node-manager.exe') $worker $dll (Join-Path $root 'distribution/official')
  if($LASTEXITCODE -ne 0){throw 'Ordinary retained Host identity/cancellation/replenishment integration failed'}

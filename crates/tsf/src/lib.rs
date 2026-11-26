@@ -3,6 +3,8 @@
 
 mod composition;
 mod display;
+mod host;
+pub use host::set_test_host_configuration;
 mod document;
 pub mod keymap;
 mod service;
