@@ -18,7 +18,7 @@ cargo build --locked -p diy-ime2-tsf
 
 Windows 10 Pro 22H2 x64 build 19045、Rust 1.90.0 GNUで、DLLビルド、COMの異なるCLSIDの拒否と寿命、実TSF Contextの同期編集セッションで固定文字を挿入し、その範囲から読み戻す検査、プロセス内の日本語テストプロファイル導入・存在確認・解除を検証した。通常のアプリや既定プロファイルへ接続する検査は未実施。
 
-非表示の専用ウィンドウにテスト文書を関連付けてから、`TF_RP_LOCALPROCESS` と `TF_IPPMF_FORPROCESS` でプロファイルを選択できた。TSFの前面キー受け口がテスト用CLSIDになり、無効化・解除後には元に戻り、DLLのCOM参照を解放できた。ウィンドウの関連付けがない試行では前面キー受け口を取得できなかった。TSFを使ったプロセス内検査は4件成功した。文字の挿入と保護時のキーパススルーは実アプリで検証する必要がある。[Microsoftのプロファイル登録API](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)。
+非表示の専用ウィンドウにテスト文書を関連付けてから、`TF_RP_LOCALPROCESS` と `TF_IPPMF_FORPROCESS` でプロファイルを選択できた。TSFの前面キー受け口がテスト用CLSIDになり、無効化・解除後には元に戻り、DLLのCOM参照を解放できた。ウィンドウの関連付けがない試行では前面キー受け口を取得できなかった。TSFを使ったプロセス内検査は4件成功した。実アプリでの入力と保護欄の結果は次節に記録する。[Microsoftのプロファイル登録API](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)。
 
 2026-11-26 JSTに、現在のWindowsアカウントでの一時的なユーザー単位の検証について追加承認を受けた。64ビットのユーザーCOM登録に専用CLSIDと検査用DLLのコピーを使い、COM経由のDLL起動を確認した。この状態で別プロセスから照会した結果、TSFプロファイルは登録されていなかった。検証後は専用のCOM/TSFキーがユーザー側とマシン側の両方に存在しないことを確認した。TSFのプロファイルをユーザーだけに新規登録する、プロセスをまたぐ手順は確認できていない。Microsoftの手順では新規登録と現在ユーザーへの有効化を分けている。[MicrosoftのIME導入手順](https://learn.microsoft.com/windows/apps/design/input/input-method-editor-requirements)。
 
@@ -42,8 +42,13 @@ cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interact
 `cargo build --locked -p diy-ime2-tsf` でDLLと専用プロファイル操作ツールを作る。[検証用の登録スクリプト](../scripts/test-tsf-stage-a-registration.ps1)をx64の管理者プロセスで起動すると、同梱ビルドのSHA-256を照合してProgram Filesに置き、専用COMクラスとTSFプロファイル・キーボードカテゴリを登録する。登録は既定で180秒の期限付き。指定した解除ファイルが現れた場合は処理を早める。登録領域を使い回さず、期限、解除指示、途中失敗のいずれでも専用の登録とファイルを片付ける。
 
 通常ユーザー側では、登録前に既定IMEを記録し、`diy-ime2-tsf-test-profile status` と `enable` で専用プロファイルだけを確認・有効化する。実アプリで明示的に選択して検査した後、元の入力方式に戻し、テストを行ったアプリを閉じて `disable` を実行する。解除後は別プロセスの `status` と登録キーの不存在、既定IMEの一致を確認する。
+### Windows 10 x64実機結果
+
+Windows 10 Pro 22H2 x64（ビルド19045）で、一時マシン登録後に別プロセスの専用Win32アプリが登録済みDLLを選択し、編集セッション内で通常欄に `a` を1回挿入した。合成パスワード欄ではキーを通し、文書は変更されなかった。プロセス内の無効化と一時マシン登録の解除まで完走し、COM・TSFの専用登録とProgram Filesの一時配置の不存在、入力方式一覧・既定の上書き設定の事前値との一致を確認した。
+
+入力はアプリから `ITfKeystrokeMgr` に渡した合成キー。メモ帳など一般アプリの物理キーとWindows 11 x64は未検証で、段階Bの総合受入 [#198](https://github.com/pitapa79/DIY_IME/issues/198) に残す。この結果はWindows 10での段階Aに対応する。
 ## 残りの受入検査
 
-- 現在のWindowsアカウントでのユーザー単位の一時検証、または承認済みの隔離Windows 10/11 x64環境を使用する。専用IMEを明示導入・選択・解除する方式を検証する。登録対象と範囲を導入前に確認し、既定IMEを記録する。失敗・中断時はこのサービスが所有する登録だけを取り除き、解除後にプロファイルが見えないことと既定IMEが維持されたことを確認する。管理者権限やマシン全体の登録が必要と分かった場合は、影響を明示して追加承認を得る。
-- 実アプリでサービスのActivate/DeactivateとCOM寿命を確認し、入力が許可された欄で最小の文字挿入を確認する。判定不能や保護欄でキーがアプリに通り、TSF側が編集しないことを記録する。
+- 未検証のWindows 11 x64では承認済みの隔離テスト環境を使用する。専用IMEを明示導入・選択・解除する。登録対象と範囲を導入前に確認し、既定IMEを記録する。失敗・中断時はこのサービスが所有する登録だけを取り除き、解除後にプロファイルが見えないことと既定IMEが維持されたことを確認する。管理者権限やマシン全体の登録が必要と分かった場合は、影響を明示して追加承認を得る。
+- 総合受入では対象アプリごとにサービスのActivate/Deactivate、COM寿命、入力が許可された欄での文字挿入を照合する。判定不能や保護欄でキーがアプリに通り、TSF側が編集しないことを記録する。
 - 上記の結果、環境、アプリ、制限、解除・復旧手順をPRへ残し、Level 3のマージ時承認を得る。
