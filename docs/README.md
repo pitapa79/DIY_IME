@@ -5,7 +5,7 @@
 ## 現在の開発で参照する文書
 
 - [現在の開発方針（IME段階B）](current-development-plan.md): 担当・凍結・停止点と再開用記録。
-- [段階BのTSF接続契約案](tsf-stage-b-connection.md) — 既存資産、承認待ちの仕様、受入検査。
+- [段階BのTSF接続契約](tsf-stage-b-connection.md) — 既存資産、承認済みの検証仕様、受入検査。
 
 | 目的 | 入口 |
 | --- | --- |

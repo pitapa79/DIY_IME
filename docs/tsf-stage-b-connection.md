@@ -1,6 +1,6 @@
-# IME段階BのTSF接続契約案
+# IME段階BのTSF接続契約
 
-[#187 段階B](https://github.com/pitapa79/DIY_IME/issues/187) / [#189 接続契約](https://github.com/pitapa79/DIY_IME/issues/189)。照合した公開版 main は `fed48a6a474d4dc5f2ac36a71d1a7c8872c53bc9`（方針PR #199統合後）。本書では既存の保証、後続実装への内部要件、メンテナー承認待ちの操作・登録仕様を記録する。
+[#187 段階B](https://github.com/pitapa79/DIY_IME/issues/187) / [#189 接続契約](https://github.com/pitapa79/DIY_IME/issues/189)。照合した公開版 main は `fed48a6a474d4dc5f2ac36a71d1a7c8872c53bc9`（方針PR #199統合後）。本書では既存の保証、後続実装への内部要件、メンテナーが承認した検証用の操作・登録仕様を記録する。
 
 ## 再利用する実装
 
@@ -24,11 +24,11 @@
 
 TSFの仕様資料: [編集セッション](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfeditsession)、[RequestEditSession](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession)、[外部composition終了](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcompositionsink-oncompositionterminated)、[キー消費の事前照会](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeyeventsink-ontestkeydown)。
 
-## メンテナー承認待ちの仕様
+## 承認済みの検証仕様
 
-以下は段階A/Bの検証向け提案。承認前に利用者向け挙動・OS登録方式を固定しない。
+5項目の検証方針は2026-11-26 JSTにメンテナーが事前承認した。入力・候補のキー、削除・編集、フォーカスと無効化の動作は段階Bの固定試験構成に適用する暫定仕様。個別のLevel 3実装のマージ時承認と、承認範囲を超える追加仕様の承認は引き続き必要。[PR #200の承認記録](https://github.com/pitapa79/DIY_IME/pull/200#issuecomment-7179299066)。
 
-| 決定 | 検証向け提案と利用者への影響 | 必要時点 |
+| 決定 | 検証範囲と利用者への影響 | 適用Issue |
 | --- | --- | --- |
 | 検証登録と対象 | Windows 10 22H2 x64（ビルド19045）とWindows 11 x64の隔離したテスト環境で、専用の日本語テストプロファイルを明示導入・選択・解除。既定IMEを維持し、事前状態を記録、途中失敗時は当該導入分だけを解除する。既存プロファイルと衝突しない識別子を使用。まずテストユーザーだけの登録を実機で確認する。成立に管理者権限やマシン全体の登録が必要なら、その影響を示して別途承認を得る | #191 |
 | 入力と候補のキー | 独立した試験プロファイルでローマ字入力、Spaceで変換/次候補、上下で移動、Enterで確定。Escは候補選択中なら未確定入力へ戻り、通常の未確定入力中なら取消。未確定がないときのEnter/Space/Esc/Backspace、修飾ショートカット、対象外キーはアプリへ通す。Windowsの入力方式切替を使用 | #192/#195/#196 |
