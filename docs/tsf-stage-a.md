@@ -16,7 +16,7 @@ cargo clippy --locked -p diy-ime2-tsf --all-targets -- -D warnings
 cargo build --locked -p diy-ime2-tsf
 ```
 
-Windows 10 Pro 22H2 x64 build 19045、Rust 1.90.0 GNUで、DLLビルド、COMの異なるCLSIDの拒否と寿命、実TSF Contextの同期編集セッション、プロセス内の日本語テストプロファイル導入・存在確認・解除を検証した。通常のアプリや既定プロファイルへ接続する検査は未実施。
+Windows 10 Pro 22H2 x64 build 19045、Rust 1.90.0 GNUで、DLLビルド、COMの異なるCLSIDの拒否と寿命、実TSF Contextの同期編集セッションで固定文字を挿入し、その範囲から読み戻す検査、プロセス内の日本語テストプロファイル導入・存在確認・解除を検証した。通常のアプリや既定プロファイルへ接続する検査は未実施。
 
 非表示の専用ウィンドウにテスト文書を関連付けてから、`TF_RP_LOCALPROCESS` と `TF_IPPMF_FORPROCESS` でプロファイルを選択できた。TSFの前面キー受け口がテスト用CLSIDになり、無効化・解除後には元に戻り、DLLのCOM参照を解放できた。ウィンドウの関連付けがない試行では前面キー受け口を取得できなかった。TSFを使ったプロセス内検査は4件成功した。文字の挿入と保護時のキーパススルーは実アプリで検証する必要がある。[Microsoftのプロファイル登録API](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)。
 

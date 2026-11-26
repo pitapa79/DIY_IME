@@ -83,17 +83,31 @@ fn class_factory_rejects_foreign_clsid_and_releases_failed_activation() -> Resul
 }
 
 #[implement(ITfEditSession)]
-struct EditReceipt(Rc<Cell<Option<u32>>>);
+struct EditReceipt {
+    context: windows::Win32::UI::TextServices::ITfContext,
+    inserted: Rc<Cell<bool>>,
+}
 
 impl ITfEditSession_Impl for EditReceipt_Impl {
     fn DoEditSession(&self, cookie: u32) -> Result<()> {
-        self.0.set(Some(cookie));
+        use windows::Win32::UI::TextServices::{
+            INSERT_TEXT_AT_SELECTION_FLAGS, ITfInsertAtSelection,
+        };
+        let writer: ITfInsertAtSelection = self.context.cast()?;
+        let text = [u16::from(b'a')];
+        let range = unsafe {
+            writer.InsertTextAtSelection(cookie, INSERT_TEXT_AT_SELECTION_FLAGS(0), &text)?
+        };
+        let mut buffer = [0; 2];
+        let mut read = 0;
+        unsafe { range.GetText(cookie, 0, &mut buffer, &mut read)? };
+        self.inserted.set(read == 1 && buffer[0] == text[0]);
         Ok(())
     }
 }
 
 #[test]
-fn real_tsf_document_grants_a_synchronous_edit_cookie() -> Result<()> {
+fn real_tsf_document_round_trips_text_inside_the_edit_session() -> Result<()> {
     let _apartment = Apartment::open()?;
     let thread_manager: ITfThreadMgr =
         unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
@@ -111,14 +125,18 @@ fn real_tsf_document_grants_a_synchronous_edit_cookie() -> Result<()> {
         )?;
     }
     let context = context.expect("real TSF context");
-    let received = Rc::new(Cell::new(None));
-    let session: ITfEditSession = EditReceipt(received.clone()).into();
+    let inserted = Rc::new(Cell::new(false));
+    let session: ITfEditSession = EditReceipt {
+        context: context.clone(),
+        inserted: inserted.clone(),
+    }
+    .into();
     unsafe {
         document.Push(&context)?;
         thread_manager.SetFocus(&document)?;
         let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
         context.RequestEditSession(client, &session, flags)?.ok()?;
-        assert!(received.get().is_some());
+        assert!(inserted.get());
         document.Pop(TF_POPF_ALL)?;
         thread_manager.Deactivate()?;
     }
