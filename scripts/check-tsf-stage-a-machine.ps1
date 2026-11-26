@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$BuildDirectory,
     [string]$Cargo = 'cargo',
+    [string]$StageBHostConfiguration,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
@@ -38,8 +39,14 @@ function Test-DedicatedKeys {
     return $false
 }
 
-foreach ($file in $tool, $dll) {
-    if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing build output $file" }
+$requiredFiles = @($tool, $dll)
+if ($StageBHostConfiguration) {
+    $StageBHostConfiguration = (Resolve-Path -LiteralPath $StageBHostConfiguration).Path
+    $stageBHost = Join-Path $build 'diy-ime2-external-host.exe'
+    $requiredFiles += @($StageBHostConfiguration, $stageBHost)
+}
+foreach ($file in $requiredFiles) {
+    if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test file $file" }
 }
 $languageBaseline = @(Get-LanguageSettings)
 if ((Test-DedicatedKeys) -or (Test-Path -LiteralPath $staging) -or
@@ -78,6 +85,13 @@ $arguments = @(
     '-BuildDirectory', ('"' + $build + '"'), '-ReleaseFile', ('"' + $release + '"'),
     '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', '150'
 )
+if ($StageBHostConfiguration) {
+    $arguments += @(
+        '-StageBHostConfiguration', ('"' + $StageBHostConfiguration + '"'),
+        '-StageBConfigSha256', (Get-FileHash -LiteralPath $StageBHostConfiguration).Hash,
+        '-StageBHostSha256', (Get-FileHash -LiteralPath $stageBHost).Hash
+    )
+}
 $installer = $null
 $enableAttempted = $false
 try {
@@ -95,8 +109,14 @@ try {
     if ((Get-TestRegistration) -notmatch 'registered=true enabled_for_current_user=true') {
         throw 'The current-user TSF profile did not become enabled.'
     }
-    & $executables[0] --ignored --exact interactive_machine_registered_app_routes_input
-    if ($LASTEXITCODE -ne 0) { throw 'The Win32 TSF input test failed.' }
+    $tests = @('interactive_machine_registered_app_routes_input')
+    if ($StageBHostConfiguration) {
+        $tests += @('interactive_machine_registered_stage_b','interactive_machine_registered_stage_b_protection')
+    }
+    foreach ($test in $tests) {
+        & $executables[0] --ignored --exact $test --nocapture
+        if ($LASTEXITCODE -ne 0) { throw "The Win32 TSF test failed: $test" }
+    }
 } finally {
     try {
         if ($enableAttempted) {

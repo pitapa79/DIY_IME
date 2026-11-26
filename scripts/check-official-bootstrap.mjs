@@ -1,6 +1,7 @@
 // Fixed official bootstrap and registered graph integration; no cross-repository fetch.
 import {spawn} from 'node:child_process';import {createInterface} from 'node:readline';import {readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync,existsSync} from 'node:fs';import {join,dirname,resolve} from 'node:path';import {tmpdir} from 'node:os';import {createHash} from 'node:crypto';import {setTimeout as delay} from 'node:timers/promises';import assert from 'node:assert/strict';
-const [managerExe,hostExe,worker,dll,packages,policyFile,imeProbe,tsfProbe]=process.argv.slice(2);if(!policyFile)throw Error('usage: MANAGER HOST WORKER DLL OFFICIAL_DIRECTORY RESOURCE_CONTRACT');
+const keepStageBFixture=process.argv[2]==='--stage-b-fixture';
+const [managerExe,hostExe,worker,dll,packages,policyFile,imeProbe,tsfProbe]=process.argv.slice(keepStageBFixture?3:2);if(!policyFile)throw Error('usage: [--stage-b-fixture] MANAGER HOST WORKER DLL OFFICIAL_DIRECTORY RESOURCE_CONTRACT [IME_PROBE] [TSF_PROBE]');
 const root=mkdtempSync(join(tmpdir(),'diyime-official-host-')),index=JSON.parse(readFileSync(join(packages,'official-index.json'),'utf8'));assert.equal(index.packages.length,48);
 class Client {
  constructor(exe,config){this.child=spawn(exe,[config],{stdio:'pipe',windowsHide:true});this.stderr=[];this.child.stderr.on('data',b=>this.stderr.push(b));this.serial=0;this.pending=new Map();this.ended=new Promise(resolve=>this.child.on('close',code=>{for(const p of this.pending.values())p.reject(Error('Host ended '+code));resolve(code);}));createInterface({input:this.child.stdout}).on('line',line=>{const r=JSON.parse(line),p=this.pending.get(r.id);if(p){this.pending.delete(r.id);p.resolve(r);}});}
@@ -10,7 +11,7 @@ class Client {
 }
 const managerConfig={officialRoot:packages,dataRoot:join(root,'data'),workspace:join(root,'workers'),worker,runtimeDll:dll,policy:{processMemoryBytes:536870912,wasmMemoryBytes:134217728,fuelPerCall:null,walltimeMs:null,terminationGraceMs:5}};
 const managerPath=join(root,'manager.json'),hostPath=join(root,'host.json');writeFileSync(managerPath,JSON.stringify(managerConfig));
-let manager,host;
+let manager,host,stageBFixtureReady=false;
 async function probe(executable,args,env=process.env) {
  const child=spawn(executable,args,{stdio:'inherit',env,windowsHide:true});
  const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
@@ -61,7 +62,7 @@ try {
  console.log('Official successor transaction: invalid TSV/Graph retained the original Session and bytes; successful preparation atomically replaced it and refused old run keys');
  const revokedPending=await host.call({method:'prepare',graph});await host.call({method:'revoke',id:revokedPending.requests.find(r=>r.kind==='resourceRead').id});assert.equal((await host.send({method:'getRun',key:recovered.key})).ok,false);const revokedState=await host.call({method:'status'});assert.equal(revokedState.phase,'empty');assert.equal(revokedState.reviewId,null);assert.equal(revokedState.workerProcesses,0);
  console.log('Official successor cancellation retained the old plan; explicit revocation invalidated both active and pending owners');
- if(imeProbe||tsfProbe){
+ if(imeProbe||tsfProbe||keepStageBFixture){
   const nonOfficial=await host.send({method:'prepareOfficialIme',graph:{version:1,nodes:[graph.nodes[0]],edges:[]}});
   assert.equal(nonOfficial.error?.code,'external-official');
   const imeReview=await host.call({method:'prepareOfficialIme',graph});
@@ -76,5 +77,6 @@ try {
    }
   }
  }
+ stageBFixtureReady=keepStageBFixture;
  console.log('Official bootstrap + production Main: all isolated installation proofs, exact 52-definition catalog, per-flow/resource consent and registered dictionary pipeline Unicode/tie/unknown/empty/saved-reopen compatibility passed.');
-}finally{if(manager)await manager.close();if(host)await host.close();if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-official-host-')))throw Error('unexpected cleanup root');rmSync(root,{recursive:true});}
+}finally{if(manager)await manager.close();if(host)await host.close();if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-official-host-')))throw Error('unexpected cleanup root');if(stageBFixtureReady)console.log('Stage B Host configuration: '+hostPath);else rmSync(root,{recursive:true});}

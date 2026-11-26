@@ -343,6 +343,18 @@ fn interactive_app_enforces_protection() -> Result<()> {
     exercise_test_window(true, false, false, Some(observation))
 }
 
+#[test]
+#[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
+fn interactive_machine_registered_stage_b() -> Result<()> {
+    exercise_test_window(true, true, true, None)
+}
+
+#[test]
+#[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
+fn interactive_machine_registered_stage_b_protection() -> Result<()> {
+    exercise_test_window(true, true, false, Some(Observation::default()))
+}
+
 fn exercise_test_window(
     interactive: bool,
     machine_registered: bool,
@@ -463,7 +475,14 @@ fn exercise_test_window(
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
         if let Some(observation) = protection.as_ref() {
-            verify_protection(context, &thread_manager, &keys, client, &scope, observation)?;
+            verify_protection(
+                context,
+                &thread_manager,
+                &keys,
+                client,
+                &scope,
+                (!machine_registered).then_some(observation),
+            )?;
         } else if conversion {
             verify_conversion(
                 context,
@@ -490,7 +509,11 @@ fn exercise_test_window(
     }
     drop(registration);
     if conversion || protection.is_some() {
-        pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
+        if machine_registered {
+            pump_until(installed_service_idle)?;
+        } else {
+            pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
+        }
     }
     assert_eq!(DllCanUnloadNow(), S_OK);
     Ok(())
@@ -866,10 +889,19 @@ fn verify_conversion(
                     .as_bool()
             );
         }
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        let waiting_for_host = std::time::Instant::now();
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
+            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
+        let host_ready_ms = waiting_for_host.elapsed().as_millis();
+        let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        let conversion_callback_us = conversion_started.elapsed().as_micros();
         pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
             .inspect_err(|_| eprintln!("starting candidate list"))?;
+        eprintln!(
+            "stage_b_host_ready_ms={host_ready_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
+            conversion_started.elapsed().as_millis()
+        );
         let initial = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         assert!(initial.IsShown()?.as_bool());
         assert!(initial.GetCount()? >= 3);
@@ -943,14 +975,20 @@ fn verify_conversion(
         pump_messages();
         let n = WPARAM(usize::from(VK_N.0));
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
+        let finalize_started = std::time::Instant::now();
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        let finalize_callback_us = finalize_started.elapsed().as_micros();
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
         let nasal: Vec<_> = "ん".encode_utf16().collect();
         pump_until(|| {
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get().0 == 1 && contents.get().1[..1] == nasal)
         })
-        .inspect_err(|_| eprintln!("finalize contents: {:?}", contents.get()))?;
+        .inspect_err(|_| eprintln!("finalize result did not reach the active test document"))?;
+        eprintln!(
+            "stage_b_enter_callback_us={finalize_callback_us} enter_to_commit_ms={}",
+            finalize_started.elapsed().as_millis()
+        );
         assert!(!keys.KeyDown(enter, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(escape, LPARAM(0))?.as_bool());
         assert!(candidate_list(thread, document)?.is_none());
@@ -995,6 +1033,29 @@ fn verify_conversion(
     Ok(())
 }
 
+fn installed_service_idle() -> Result<bool> {
+    use windows::Win32::{
+        Foundation::{ERROR_MOD_NOT_FOUND, FreeLibrary, HMODULE},
+        System::LibraryLoader::{GetModuleHandleExW, GetProcAddress},
+    };
+    use windows_core::{HRESULT, s, w};
+    let mut module = HMODULE::default();
+    if let Err(error) = unsafe { GetModuleHandleExW(0, w!("diy_ime2_tsf.dll"), &mut module) } {
+        return if error.code() == ERROR_MOD_NOT_FOUND.to_hresult() {
+            Ok(true)
+        } else {
+            Err(error)
+        };
+    }
+    let idle = unsafe { GetProcAddress(module, s!("DllCanUnloadNow")) }.map(|symbol| {
+        let can_unload: unsafe extern "system" fn() -> HRESULT =
+            unsafe { std::mem::transmute(symbol) };
+        unsafe { can_unload() == S_OK }
+    });
+    unsafe { FreeLibrary(module)? };
+    idle.ok_or(E_FAIL.into())
+}
+
 fn candidate_list(
     thread: &ITfThreadMgr,
     target: &ITfDocumentMgr,
@@ -1025,6 +1086,7 @@ fn candidate_list(
 
 fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
     pump_until(|| Ok(unsafe { manager.IsThreadFocus()? }.as_bool()))
+        .inspect_err(|_| eprintln!("waiting for the TSF test window to gain foreground focus"))
 }
 
 fn pump_messages() {
@@ -1075,7 +1137,7 @@ fn verify_protection(
     keys: &ITfKeystrokeMgr,
     client: u32,
     scope: &Cell<InputScope>,
-    observation: &Observation,
+    observation: Option<&Observation>,
 ) -> Result<()> {
     let items: ITfLangBarItemMgr = thread.cast()?;
     let button = ProtectionReset(unsafe { items.GetItem(&diy_ime2_tsf::PROTECTION_ITEM)? }.cast()?);
@@ -1095,27 +1157,39 @@ fn verify_protection(
     let space = WPARAM(usize::from(VK_SPACE.0));
     let x = WPARAM(usize::from(b'X'));
     let letter = WPARAM(usize::from(VK_A.0));
-    let before = observation.dispatched();
+    let before = observation.map(Observation::dispatched);
 
     unsafe {
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         assert!(keys.KeyDown(letter, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
+            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(observation.dispatched() > before))?;
+        let document = context.GetDocumentMgr()?;
+        if let Some(observation) = observation {
+            pump_until(|| Ok(observation.dispatched() > before.unwrap_or(0)))?;
+        } else {
+            pump_until(|| Ok(candidate_list(thread, &document)?.is_some()))?;
+        }
 
+        let manual_started = std::time::Instant::now();
         button
             .0
             .OnClick(TF_LBI_CLK_LEFT, POINT::default(), ptr::null())?;
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オン");
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(observation.reaped() >= 1))?;
-        let protected_count = observation.dispatched();
+        if let Some(observation) = observation {
+            pump_until(|| Ok(observation.reaped() >= 1))?;
+            eprintln!(
+                "stage_b_manual_protection_to_host_reaped_ms={}",
+                manual_started.elapsed().as_millis()
+            );
+        }
+        let protected_count = observation.map(Observation::dispatched);
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
-        let document = context.GetDocumentMgr()?;
         assert!(candidate_list(thread, &document)?.is_none());
 
         scope.set(IS_PASSWORD);
@@ -1137,7 +1211,7 @@ fn verify_protection(
         disable.SetValue(client, &VARIANT::from(1_i32))?;
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
         pump_messages();
-        assert_eq!(observation.dispatched(), protected_count);
+        assert_eq!(observation.map(Observation::dispatched), protected_count);
         assert!(candidate_list(thread, &document)?.is_none());
 
         disable.SetValue(client, &VARIANT::from(0_i32))?;
@@ -1149,9 +1223,10 @@ fn verify_protection(
                     .as_bool()
             );
         }
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
+            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
         assert_eq!(
-            observation.dispatched(),
+            observation.map(Observation::dispatched),
             protected_count,
             "old input was replayed"
         );
@@ -1160,18 +1235,33 @@ fn verify_protection(
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get() == (2, [0x964d, 0x6c34]))
         })?;
-        assert_eq!(observation.dispatched(), protected_count + 1);
+        assert_eq!(
+            observation.map(Observation::dispatched),
+            protected_count.map(|count| count + 1)
+        );
 
         let previous = candidate_list(thread, &document)?.ok_or(E_FAIL)?;
-        let reaped = observation.reaped();
+        let reaped = observation.map(Observation::reaped);
+        let automatic_started = std::time::Instant::now();
         scope.set(IS_PASSWORD);
-        pump_until(|| Ok(observation.reaped() > reaped))?;
+        if let Some(observation) = observation {
+            pump_until(|| Ok(observation.reaped() > reaped.unwrap_or(0)))?;
+            eprintln!(
+                "stage_b_automatic_protection_to_host_reaped_ms={}",
+                automatic_started.elapsed().as_millis()
+            );
+        } else {
+            pump_until(|| Ok(candidate_list(thread, &document)?.is_none()))?;
+        }
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
         assert!(candidate_list(thread, &document)?.is_none());
         assert_eq!(previous.GetCount()?, 0);
-        assert_eq!(observation.dispatched(), protected_count + 1);
+        assert_eq!(
+            observation.map(Observation::dispatched),
+            protected_count.map(|count| count + 1)
+        );
     }
     Ok(())
 }

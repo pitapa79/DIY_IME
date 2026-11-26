@@ -3,6 +3,9 @@ param(
     [Parameter(Mandatory)][string]$ReleaseFile,
     [Parameter(Mandatory)][ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$ProfileToolSha256,
     [Parameter(Mandatory)][ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$ServiceDllSha256,
+    [string]$StageBHostConfiguration,
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBConfigSha256,
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBHostSha256,
     [ValidateRange(30, 600)][int]$Seconds = 180
 )
 $ErrorActionPreference = 'Stop'
@@ -24,6 +27,12 @@ $toolName = 'diy-ime2-tsf-test-profile.exe'
 $dll = Join-Path $directory $dllName
 $tool = Join-Path $directory $toolName
 $stamp = Join-Path $directory 'test-status.txt'
+$hostName = 'diy-ime2-external-host.exe'
+$hostFile = Join-Path $directory $hostName
+$hostConfiguration = Join-Path $directory 'ime-execution.json'
+if ($StageBHostConfiguration -and (!$StageBConfigSha256 -or !$StageBHostSha256)) {
+    throw 'The Stage B files require exact checksums.'
+}
 
 function Test-RegistryKey([string]$Path) {
     $key = $machine.OpenSubKey($Path)
@@ -53,6 +62,15 @@ try {
     if ((Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash -ne $ServiceDllSha256 -or
         (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash -ne $ProfileToolSha256) {
         throw 'The staged verification files do not match their source checksums.'
+    }
+
+    if ($StageBHostConfiguration) {
+        [IO.File]::Copy((Join-Path $build $hostName), $hostFile)
+        [IO.File]::Copy([IO.Path]::GetFullPath($StageBHostConfiguration), $hostConfiguration)
+        if ((Get-FileHash -LiteralPath $hostFile -Algorithm SHA256).Hash -ne $StageBHostSha256 -or
+            (Get-FileHash -LiteralPath $hostConfiguration -Algorithm SHA256).Hash -ne $StageBConfigSha256) {
+            throw 'The staged Stage B files do not match their source checksums.'
+        }
     }
 
     $classes = $machine.OpenSubKey($classRoot, $true)
@@ -94,7 +112,7 @@ try {
             Write-Status 'registration removed'
         }
         if ($ownsFiles) {
-            foreach ($path in $dll, $tool) {
+            foreach ($path in $dll, $tool, $hostFile, $hostConfiguration) {
                 if (Test-Path -LiteralPath $path) { [IO.File]::Delete($path) }
             }
             [IO.File]::Delete($stamp)
