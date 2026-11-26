@@ -20,6 +20,7 @@ use crate::{
     composition::Preedit,
     display,
     host::{Bridge, Timer},
+    protection::ManualProtection,
     windows_keys::key_from_message,
 };
 
@@ -34,12 +35,15 @@ pub(crate) struct Activation {
     pub(crate) preedit: Preedit,
     pub(crate) host: RefCell<Option<Bridge>>,
     timer: RefCell<Option<Timer>>,
+    manual: RefCell<Option<ManualProtection>>,
+    protected: Cell<bool>,
 }
 
 impl Activation {
     fn unadvise(&self) -> Result<()> {
         self.active.set(false);
         self.timer.take();
+        self.manual.take();
         self.host.take();
         self.preedit.invalidate(None, self.client_id);
         let document = self.document_subscription.take().map_or(Ok(()), |cookie| {
@@ -65,6 +69,47 @@ impl Activation {
         self.thread_manager.cast()
     }
 
+    pub(crate) fn manually_blocked(&self) -> bool {
+        self.manual
+            .try_borrow()
+            .ok()
+            .is_none_or(|manual| manual.as_ref().is_none_or(ManualProtection::blocked))
+    }
+
+    pub(crate) fn is_protected(&self) -> bool {
+        self.protected.get() || self.manually_blocked()
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        self.active.get()
+    }
+
+    pub(crate) fn protect(&self) {
+        if !self.active() || self.protected.replace(true) {
+            return;
+        }
+        if let Ok(mut host) = self.host.try_borrow_mut()
+            && let Some(host) = host.as_mut()
+        {
+            host.set_protection(true);
+        }
+        self.preedit.invalidate(None, self.client_id);
+    }
+
+    pub(crate) fn allow_ordinary_input(&self) -> bool {
+        if self.manually_blocked() {
+            self.protect();
+            return false;
+        }
+        if self.protected.replace(false)
+            && let Ok(mut host) = self.host.try_borrow_mut()
+            && let Some(host) = host.as_mut()
+        {
+            host.set_protection(false);
+        }
+        true
+    }
+
     pub(crate) fn cancel_host(&self) {
         if let Ok(mut host) = self.host.try_borrow_mut()
             && let Some(host) = host.as_mut()
@@ -77,6 +122,13 @@ impl Activation {
         if !self.active.get() {
             return;
         }
+        if self.manually_blocked() {
+            self.protect();
+            return;
+        }
+        if self.protected.get() {
+            return;
+        }
         let has_work = self
             .host
             .try_borrow()
@@ -85,12 +137,7 @@ impl Activation {
         if has_work || showing_candidates {
             match self.preedit.can_deliver(self) {
                 Some(true) => {}
-                Some(false) => {
-                    if showing_candidates {
-                        self.preedit.invalidate(None, self.client_id);
-                    }
-                    self.cancel_host();
-                }
+                Some(false) => self.protect(),
                 // Windows did not grant a read lock. Wait without delivering input.
                 None => return,
             }
@@ -187,6 +234,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             preedit: Preedit::default(),
             host: RefCell::new(None),
             timer: RefCell::new(None),
+            manual: RefCell::new(None),
+            protected: Cell::new(false),
         });
         let source: ITfSource = manager.cast()?;
         let document_sink: ITfThreadMgrEventSink = DocumentSink {
@@ -232,7 +281,12 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Err(E_FAIL.into());
         }
         activation.active.set(true);
-        if let Some(host) = Bridge::open()
+        activation
+            .manual
+            .replace(ManualProtection::open(manager, &activation).ok());
+        let blocked = activation.manually_blocked();
+        activation.protected.set(blocked);
+        if let Some(host) = Bridge::open(blocked)
             && let Some(timer) = Timer::open(&activation)
         {
             activation.host.replace(Some(host));
@@ -273,8 +327,10 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         Ok(context
             .zip(self.activation.upgrade())
             .is_some_and(|(context, activation)| {
-                key_from_message(key, message)
-                    .is_some_and(|key| activation.preedit.key(&activation, context, key, false))
+                key_from_message(key, message).is_some_and(|key| {
+                    !activation.manually_blocked()
+                        && activation.preedit.key(&activation, context, key, false)
+                })
             })
             .into())
     }
@@ -292,8 +348,14 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         Ok(context
             .zip(self.activation.upgrade())
             .is_some_and(|(context, activation)| {
-                key_from_message(key, message)
-                    .is_some_and(|key| activation.preedit.key(&activation, context, key, true))
+                key_from_message(key, message).is_some_and(|key| {
+                    if activation.manually_blocked() {
+                        activation.protect();
+                        false
+                    } else {
+                        activation.preedit.key(&activation, context, key, true)
+                    }
+                })
             })
             .into())
     }

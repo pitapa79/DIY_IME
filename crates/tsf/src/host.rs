@@ -8,7 +8,7 @@ use std::{
 
 use diy_ime2_ime_host::{
     Conversion, Delivery, DocumentStamp, InputScope, InputState, Invalidation, RequestId,
-    external::{Background, Configuration, Event},
+    external::{Background, Configuration, Event, Observation, Stopped},
 };
 use windows::Win32::{
     Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM},
@@ -29,13 +29,20 @@ use windows_core::PCWSTR;
 use crate::{ModuleRef, service::Activation};
 
 thread_local! {
-    static TEST_CONFIGURATION: RefCell<Option<Configuration>> = const { RefCell::new(None) };
+    static TEST_CONFIGURATION: RefCell<Option<(Configuration, Observation)>> = const { RefCell::new(None) };
     static TIMERS: RefCell<BTreeMap<usize, Weak<Activation>>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Rust test harness entry. COM exposes no configuration or permission grant.
-pub fn set_test_host_configuration(executable: PathBuf, file: PathBuf) {
-    TEST_CONFIGURATION.with(|setting| setting.replace(Some(Configuration { executable, file })));
+pub fn set_test_host_configuration(executable: PathBuf, file: PathBuf) -> Observation {
+    let observation = Observation::default();
+    TEST_CONFIGURATION.with(|setting| {
+        setting.replace(Some((
+            Configuration { executable, file },
+            observation.clone(),
+        )))
+    });
+    observation
 }
 
 fn installed_configuration() -> Option<Configuration> {
@@ -137,7 +144,11 @@ unsafe extern "system" fn tick(
 }
 
 pub(crate) struct Bridge {
-    worker: Background,
+    config: Configuration,
+    observer: Observation,
+    worker: Option<Background>,
+    stopping: Option<Stopped>,
+    protected: bool,
     input: Option<InputState>,
     invalidation: Option<Invalidation>,
     queued: Option<PendingInput>,
@@ -165,13 +176,16 @@ pub(crate) struct Preview {
 }
 
 impl Bridge {
-    pub(crate) fn open() -> Option<Self> {
-        let config = TEST_CONFIGURATION
+    pub(crate) fn open(protected: bool) -> Option<Self> {
+        let (config, observer) = TEST_CONFIGURATION
             .with(|setting| setting.take())
-            .or_else(installed_configuration)?;
-        let worker = Background::spawn(config, ModuleRef::new()).ok()?;
+            .or_else(|| installed_configuration().map(|config| (config, Observation::default())))?;
         Some(Self {
-            worker,
+            config,
+            observer,
+            worker: None,
+            stopping: None,
+            protected,
             input: None,
             invalidation: None,
             queued: None,
@@ -181,11 +195,27 @@ impl Bridge {
     }
 
     pub(crate) fn available(&self) -> bool {
-        !self.disconnected && self.input.is_some()
+        !self.protected && !self.disconnected && self.input.is_some()
     }
 
     pub(crate) fn has_work(&self) -> bool {
         self.queued.is_some() || self.submitted.is_some()
+    }
+
+    pub(crate) fn set_protection(&mut self, enabled: bool) {
+        if self.protected == enabled {
+            return;
+        }
+        self.protected = enabled;
+        if enabled {
+            if let Some(worker) = self.worker.take() {
+                self.stopping = Some(worker.request_stop());
+            }
+            self.queued = None;
+            self.submitted = None;
+            self.input = None;
+            self.invalidation = None;
+        }
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -212,14 +242,40 @@ impl Bridge {
     }
 
     fn invalidate(&mut self, invalidation: Invalidation) {
-        if let Some(revision) = invalidation.revision {
-            self.worker.invalidate(revision);
+        if let Some(revision) = invalidation.revision
+            && let Some(worker) = self.worker.as_ref()
+        {
+            worker.invalidate(revision);
         }
         self.invalidation = Some(invalidation);
     }
 
     pub(crate) fn poll(&mut self) -> Option<Preview> {
-        match self.worker.poll() {
+        if self.disconnected || self.protected {
+            return None;
+        }
+        if self.worker.is_none() {
+            if self
+                .stopping
+                .as_ref()
+                .is_some_and(|stopping| !stopping.confirmed())
+            {
+                return None;
+            }
+            self.stopping = None;
+            self.worker = Background::spawn_observed(
+                self.config.clone(),
+                self.observer.clone(),
+                ModuleRef::new(),
+            )
+            .ok();
+            if self.worker.is_none() {
+                self.disconnected = true;
+            }
+        }
+        let worker = self.worker.as_ref()?;
+        let acknowledged = worker.acknowledged();
+        match worker.poll() {
             Ok(Some(Event::Ready(plan))) => self.input = Some(InputState::new(plan)),
             Ok(Some(Event::Started(key))) => {
                 if let Some(input) = self.input.as_mut()
@@ -255,6 +311,7 @@ impl Bridge {
             Ok(Some(Event::Unavailable)) | Err(_) => {
                 self.cancel();
                 self.disconnected = true;
+                return None;
             }
             Ok(None) => {}
         }
@@ -262,7 +319,7 @@ impl Bridge {
         if let Some(invalidation) = self.invalidation.as_ref()
             && invalidation
                 .revision
-                .is_some_and(|revision| self.worker.acknowledged() >= revision)
+                .is_some_and(|revision| acknowledged >= revision)
         {
             input.acknowledge_invalidation(invalidation);
             self.invalidation = None;
@@ -278,8 +335,11 @@ impl Bridge {
                 }
             });
             if let Ok(request) = request
-                && input.dispatch(&request, |_, input| self.worker.submit(input.clone()))
-                    == Ok(true)
+                && input.dispatch(&request, |_, input| {
+                    self.worker
+                        .as_ref()
+                        .is_some_and(|worker| worker.submit(input.clone()))
+                }) == Ok(true)
             {
                 self.submitted = Some(Submission {
                     stamp: pending.stamp,

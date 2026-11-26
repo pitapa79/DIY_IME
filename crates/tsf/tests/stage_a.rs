@@ -8,11 +8,12 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+use diy_ime2_ime_host::external::Observation;
 use diy_ime2_tsf::{
     DllCanUnloadNow, DllGetClassObject, JAPANESE_LANGID, TEST_PROFILE_GUID, TEST_SERVICE_CLSID,
 };
 use windows::Win32::{
-    Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, HWND, S_FALSE, S_OK},
+    Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, HWND, POINT, S_FALSE, S_OK},
     System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         CoRegisterClassObject, CoRevokeClassObject, CoUninitialize, IClassFactory,
@@ -23,10 +24,10 @@ use windows::Win32::{
         TextServices::{
             CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDisplayAttributeProvider,
             ITfDocumentMgr, ITfEditSession, ITfEditSession_Impl, ITfInputProcessorProfileMgr,
-            ITfKeystrokeMgr, ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
-            TF_ES_READWRITE, TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE,
-            TF_IPPMF_FORPROCESS, TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS,
-            TF_URP_LOCALPROCESS,
+            ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfTextInputProcessor,
+            ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE, TF_ES_SYNC,
+            TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS, TF_LBI_CLK_LEFT,
+            TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
         },
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
@@ -309,19 +310,19 @@ impl Drop for ClassRegistration {
 
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
-    exercise_test_window(false, false, false)
+    exercise_test_window(false, false, false, None)
 }
 
 #[test]
 #[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
 fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
-    exercise_test_window(true, false, false)
+    exercise_test_window(true, false, false, None)
 }
 
 #[test]
 #[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
 fn interactive_machine_registered_app_routes_input() -> Result<()> {
-    exercise_test_window(true, true, false)
+    exercise_test_window(true, true, false, None)
 }
 
 #[test]
@@ -330,13 +331,23 @@ fn interactive_app_converts_through_official_host() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, false, true)
+    exercise_test_window(true, false, true, None)
+}
+
+#[test]
+#[ignore = "requires the approved isolated Host fixture and an interactive Windows desktop"]
+fn interactive_app_enforces_protection() -> Result<()> {
+    let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
+    let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
+    let observation = diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
+    exercise_test_window(true, false, false, Some(observation))
 }
 
 fn exercise_test_window(
     interactive: bool,
     machine_registered: bool,
     conversion: bool,
+    protection: Option<Observation>,
 ) -> Result<()> {
     let _apartment = Apartment::open()?;
     let window = Window(unsafe {
@@ -451,7 +462,9 @@ fn exercise_test_window(
     if interactive {
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
-        if conversion {
+        if let Some(observation) = protection.as_ref() {
+            verify_protection(context, &thread_manager, &keys, client, &scope, observation)?;
+        } else if conversion {
             verify_conversion(
                 context,
                 &document,
@@ -476,7 +489,7 @@ fn exercise_test_window(
         thread_manager.Deactivate()?;
     }
     drop(registration);
-    if conversion {
+    if conversion || protection.is_some() {
         pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
     }
     assert_eq!(DllCanUnloadNow(), S_OK);
@@ -511,6 +524,9 @@ impl ITfInputScope_Impl for AppScope_Impl {
     fn GetInputScopes(&self, scopes: *mut *mut InputScope, count: *mut u32) -> Result<()> {
         if scopes.is_null() || count.is_null() {
             return Err(E_POINTER.into());
+        }
+        if self.0 == InputScope(-1) {
+            return Err(E_FAIL.into());
         }
         let value = unsafe { CoTaskMemAlloc(size_of::<InputScope>()) }.cast::<InputScope>();
         if value.is_null() {
@@ -1038,3 +1054,124 @@ fn pump_until(mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
 
 #[path = "support/text_store.rs"]
 mod text_store;
+
+struct ProtectionReset(ITfLangBarItemButton);
+
+impl Drop for ProtectionReset {
+    fn drop(&mut self) {
+        unsafe {
+            if self.0.GetText().is_ok_and(|text| text == "保護入力 オン") {
+                let _ = self
+                    .0
+                    .OnClick(TF_LBI_CLK_LEFT, POINT::default(), ptr::null());
+            }
+        }
+    }
+}
+
+fn verify_protection(
+    context: &ITfContext,
+    thread: &ITfThreadMgr,
+    keys: &ITfKeystrokeMgr,
+    client: u32,
+    scope: &Cell<InputScope>,
+    observation: &Observation,
+) -> Result<()> {
+    let items: ITfLangBarItemMgr = thread.cast()?;
+    let button = ProtectionReset(unsafe { items.GetItem(&diy_ime2_tsf::PROTECTION_ITEM)? }.cast()?);
+    let compartment_manager: ITfCompartmentMgr = context.cast()?;
+    let disable =
+        unsafe { compartment_manager.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)? };
+    let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
+    let write = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+    let contents = Rc::new(Cell::new((0, [0; 2])));
+    let reader: ITfEditSession = ReadDocument {
+        context: context.clone(),
+        contents: contents.clone(),
+        caret: Rc::default(),
+        decorated: Rc::default(),
+    }
+    .into();
+    let space = WPARAM(usize::from(VK_SPACE.0));
+    let x = WPARAM(usize::from(b'X'));
+    let letter = WPARAM(usize::from(VK_A.0));
+    let before = observation.dispatched();
+
+    unsafe {
+        assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
+        disable.SetValue(client, &VARIANT::from(0_i32))?;
+        assert!(keys.KeyDown(letter, LPARAM(0))?.as_bool());
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        pump_until(|| Ok(observation.dispatched() > before))?;
+
+        button
+            .0
+            .OnClick(TF_LBI_CLK_LEFT, POINT::default(), ptr::null())?;
+        assert_eq!(button.0.GetText()?.to_string(), "保護入力 オン");
+        assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
+        pump_until(|| Ok(observation.reaped() >= 1))?;
+        let protected_count = observation.dispatched();
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (0, [0; 2]));
+        let document = context.GetDocumentMgr()?;
+        assert!(candidate_list(thread, &document)?.is_none());
+
+        scope.set(IS_PASSWORD);
+        button
+            .0
+            .OnClick(TF_LBI_CLK_LEFT, POINT::default(), ptr::null())?;
+        assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
+        assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
+        // The application applies its ordinary fallback after TSF passes the key.
+        change_selection(context, client, write, Some("x"), 1, 1)?;
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (1, [u16::from(b'x'), 0]));
+
+        scope.set(InputScope(-1));
+        assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
+        scope.set(IS_DEFAULT);
+        disable.SetValue(client, &VARIANT::from(1_i32))?;
+        assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
+        pump_messages();
+        assert_eq!(observation.dispatched(), protected_count);
+        assert!(candidate_list(thread, &document)?.is_none());
+
+        disable.SetValue(client, &VARIANT::from(0_i32))?;
+        change_selection(context, client, write, Some(""), 0, 0)?;
+        pump_messages();
+        for key in b"KOUSUI" {
+            assert!(
+                keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
+                    .as_bool()
+            );
+        }
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        assert_eq!(
+            observation.dispatched(),
+            protected_count,
+            "old input was replayed"
+        );
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        pump_until(|| {
+            context.RequestEditSession(client, &reader, flags)?.ok()?;
+            Ok(contents.get() == (2, [0x964d, 0x6c34]))
+        })?;
+        assert_eq!(observation.dispatched(), protected_count + 1);
+
+        let previous = candidate_list(thread, &document)?.ok_or(E_FAIL)?;
+        let reaped = observation.reaped();
+        scope.set(IS_PASSWORD);
+        pump_until(|| Ok(observation.reaped() > reaped))?;
+        assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
+        assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
+        assert!(candidate_list(thread, &document)?.is_none());
+        assert_eq!(previous.GetCount()?, 0);
+        assert_eq!(observation.dispatched(), protected_count + 1);
+    }
+    Ok(())
+}

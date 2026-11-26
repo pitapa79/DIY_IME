@@ -112,10 +112,29 @@ fn main() {
         }
         false
     });
+    assert!(background.submit(RuntimeInput {
+        revision: 7,
+        text: "a".repeat(4096),
+        mode: InputMode::Compose,
+    }));
+    wait(
+        &background,
+        |event| matches!(event, Event::Started(key) if key.input_revision == Some(7)),
+    );
+    let stopped = background.request_stop();
+    assert!(!background.submit(RuntimeInput {
+        revision: 8,
+        text: "synthetic".into(),
+        mode: InputMode::Compose,
+    }));
     drop(background);
     completion
         .recv_timeout(Duration::from_secs(15))
         .expect("Host and pipe threads did not close");
+    assert!(
+        stopped.confirmed(),
+        "Host exited without confirming recovery"
+    );
     println!(
         "Official IME Host compose, finalize, empty text, invalidation and process close passed."
     );
