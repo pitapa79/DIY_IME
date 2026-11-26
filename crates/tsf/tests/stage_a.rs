@@ -443,7 +443,7 @@ use windows::Win32::{
     Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, LPARAM, WPARAM},
     System::Com::CoTaskMemAlloc,
     UI::{
-        Input::KeyboardAndMouse::VK_A,
+        Input::KeyboardAndMouse::{VK_A, VK_TAB},
         TextServices::{
             GUID_COMPARTMENT_KEYBOARD_DISABLED, IS_DEFAULT, IS_PASSWORD, ITextStoreACP,
             ITfCompartmentMgr, ITfContext, ITfInputScope, ITfInputScope_Impl, InputScope,
@@ -493,7 +493,7 @@ impl ITfInputScope_Impl for AppScope_Impl {
 #[implement(ITfEditSession)]
 struct ReadDocument {
     context: ITfContext,
-    first_char: Rc<Cell<Option<u16>>>,
+    contents: Rc<Cell<(u32, [u16; 2])>>,
 }
 
 impl ITfEditSession_Impl for ReadDocument_Impl {
@@ -501,12 +501,12 @@ impl ITfEditSession_Impl for ReadDocument_Impl {
         let start = unsafe { self.context.GetStart(cookie)? };
         let mut shifted = 0;
         let mut read = 0;
-        let mut text = [0];
+        let mut text = [0; 2];
         unsafe {
-            start.ShiftEnd(cookie, 1, &mut shifted, ptr::null())?;
+            start.ShiftEnd(cookie, 2, &mut shifted, ptr::null())?;
             start.GetText(cookie, 0, &mut text, &mut read)?;
         }
-        self.first_char.set((read == 1).then_some(text[0]));
+        self.contents.set((read, text));
         Ok(())
     }
 }
@@ -518,25 +518,31 @@ fn verify_key_edit(
     scope: &Cell<InputScope>,
 ) -> Result<()> {
     let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
-    let first_char = Rc::new(Cell::new(None));
+    let contents = Rc::new(Cell::new((0, [0; 2])));
     let reader: ITfEditSession = ReadDocument {
         context: context.clone(),
-        first_char: first_char.clone(),
+        contents: contents.clone(),
     }
     .into();
     let compartments: ITfCompartmentMgr = context.cast()?;
     unsafe {
-        compartments
-            .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
-            .SetValue(client, &VARIANT::from(0_i32))?;
+        let disabled = compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
         let key = WPARAM(usize::from(VK_A.0));
+        scope.set(IS_DEFAULT);
+        disabled.SetValue(client, &VARIANT::from(1_i32))?;
+        assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        disabled.SetValue(client, &VARIANT::from(0_i32))?;
+        let tab = WPARAM(usize::from(VK_TAB.0));
+        assert!(!keys.TestKeyDown(tab, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(tab, LPARAM(0))?.as_bool());
         scope.set(IS_PASSWORD);
         assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
-            first_char.get(),
-            None,
+            contents.get(),
+            (0, [0; 2]),
             "protected input must not edit the TSF document"
         );
         scope.set(IS_DEFAULT);
@@ -544,12 +550,14 @@ fn verify_key_edit(
             keys.TestKeyDown(key, LPARAM(0))?.as_bool(),
             "ordinary input recognition"
         );
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (0, [0; 2]), "key inspection must not edit");
         assert!(
             keys.KeyDown(key, LPARAM(0))?.as_bool(),
             "key must be consumed by the TIP"
         );
         context.RequestEditSession(client, &reader, flags)?.ok()?;
-        assert_eq!(first_char.get(), Some(u16::from(b'a')));
+        assert_eq!(contents.get(), (1, [u16::from(b'a'), 0]));
     }
     Ok(())
 }

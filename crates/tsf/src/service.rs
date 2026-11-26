@@ -159,11 +159,16 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         Ok(())
     }
 
-    fn OnTestKeyDown(&self, context: Option<&ITfContext>, key: WPARAM, _: LPARAM) -> Result<BOOL> {
+    fn OnTestKeyDown(
+        &self,
+        context: Option<&ITfContext>,
+        key: WPARAM,
+        message: LPARAM,
+    ) -> Result<BOOL> {
         Ok(context
             .zip(self.activation.upgrade())
             .is_some_and(|(context, activation)| {
-                crate::probe::probe_key(&activation, context, key, false)
+                crate::probe::probe_key(&activation, context, key, message, false)
             })
             .into())
     }
@@ -172,11 +177,16 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         Ok(false.into())
     }
 
-    fn OnKeyDown(&self, context: Option<&ITfContext>, key: WPARAM, _: LPARAM) -> Result<BOOL> {
+    fn OnKeyDown(
+        &self,
+        context: Option<&ITfContext>,
+        key: WPARAM,
+        message: LPARAM,
+    ) -> Result<BOOL> {
         Ok(context
             .zip(self.activation.upgrade())
             .is_some_and(|(context, activation)| {
-                crate::probe::probe_key(&activation, context, key, true)
+                crate::probe::probe_key(&activation, context, key, message, true)
             })
             .into())
     }
