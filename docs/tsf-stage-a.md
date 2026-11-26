@@ -34,7 +34,7 @@ cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interact
 cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interactive_machine_registered_app_routes_input
 ```
 
-両方とも前面ウィンドウが必要で、通常のCIとは別に実行する。マシン登録のケースは検査プロセス内で選択・無効化する。専用プロファイル登録の解除は期限付き登録スクリプトが担当する。
+両方とも前面ウィンドウが必要で、通常のCIとは別に実行する。構築済みDLLの導入、ユーザー有効化、Win32入力試験、解除後の照合は [マシン登録検査](../scripts/check-tsf-stage-a-machine.ps1) の `-BuildDirectory target/debug` で一括実行できる。`-CheckPrerequisites` を付けた場合は参照確認のみ。マシン登録のケースは検査プロセス内で選択・無効化する。専用プロファイル登録の解除は期限付き登録スクリプトが担当する。
 ## 一時マシン登録の受入手順
 
 2026-11-26 JSTに、現在のPCでのテスト用IMEの一時マシン登録について明示承認を受けた。通常プロセスには管理者トークンがなく、最初の起動ではWindowsのUACが操作を取り消した。再試行で一時マシン登録と別プロセスからのCOM起動、現在ユーザーでの有効化を確認した。解除後、専用のユーザー・マシン登録とProgram Filesへの一時配置は残っておらず、Windowsの入力方式一覧からも消えた。既定入力方式の上書き設定は事前値と一致した。
