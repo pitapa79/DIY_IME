@@ -23,6 +23,7 @@ $env:DIY_IME_TEST_HOST = Join-Path $bin 'diy-ime2-external-host.exe'
 $env:DIY_IME_TEST_HOST_CONFIG = $hostConfiguration
 cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interactive_app_converts_through_official_host --nocapture
 cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interactive_app_enforces_protection --nocapture
+cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interactive_app_recovers_after_host_startup_failure --nocapture
 
 ./scripts/check-tsf-stage-a-machine.ps1 -BuildDirectory $bin -StageBHostConfiguration $hostConfiguration -CheckPrerequisites
 ./scripts/check-tsf-stage-a-machine.ps1 -BuildDirectory $bin -StageBHostConfiguration $hostConfiguration
@@ -66,7 +67,7 @@ cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interact
 | Windows 10 x64、試験プロセスで読み込んだDLL | マシン登録用と同じDLL、隣接するHostと合成データ設定を使用。独立したテキストストア間の切替、変換・候補・確定、保護入力を確認 |
 | Windows 10 x64、一時マシン登録 | [段階A](tsf-stage-a.md#windows-10-x64実機結果)で固定文字の挿入、パスワード欄での通過、登録解除を実証済み。段階Bの登録と解除、元の入力設定への復帰を確認した。登録済みDLLの検査では文書切替後に旧文書へ未確定の `a` が残った。独立したテキストストアを使う試験へ更新した後の登録起動は、WindowsがUAC操作の取り消しを返した。専用登録と配置の不存在を確認済み。登録済みDLLでの再試験、メモ帳とブラウザーでの受入は未実施 |
 | Windows 11 x64 | メンテナー指示により今回の受入条件から除外。登録・実アプリ・解除は未実施 |
-| Unicodeと異常時の復旧 | 固定公式構成の隔離HostでUnicode、同順位、空・未登録の読み、無効な辞書およびGraphに対する旧構成の保持、設定交換、許可失効後の旧結果拒否を確認。登録済みの実アプリでの異常終了・復旧は未実施 |
+| Unicodeと異常時の復旧 | 実TSFの選択中にサロゲートペアを分割する編集を拒否し、元の文字を保持した。固定公式構成の隔離HostでUnicode、同順位、空・未登録の読み、無効な辞書およびGraphに対する旧構成の保持、設定交換、許可失効後の旧結果拒否を確認。設定を開けないHostは非ゼロで終了し、専用Win32アプリでWorkerに入力を配送せず文字入力を続けられた。正しい設定で試験プロファイルを有効にし直すと実変換が復旧した。登録済みの実アプリでの異常終了・復旧は未実施 |
 
 古い試験設定を再利用した変換試験は待機期限に達した。新規に生成した公式構成で再実行し、変換を含む3試験が成功した。環境差の原因は特定できていない。
 

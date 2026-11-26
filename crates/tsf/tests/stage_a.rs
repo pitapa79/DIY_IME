@@ -5,7 +5,8 @@ use std::{
     cell::Cell,
     ffi::c_void,
     os::windows::ffi::OsStrExt,
-    path::Path,
+    path::{Path, PathBuf},
+    process::Command,
     ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard},
@@ -363,21 +364,29 @@ enum ProfileSource<'a> {
     Machine,
 }
 
+enum WindowChecks {
+    Activation,
+    Keys,
+    Conversion,
+    Protection(Option<Observation>),
+    FailedHost(Observation),
+}
+
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
-    exercise_test_window(false, ProfileSource::ProcessLocal, false, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Activation)
 }
 
 #[test]
 #[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
 fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
-    exercise_test_window(true, ProfileSource::ProcessLocal, false, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Keys)
 }
 
 #[test]
 #[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
 fn interactive_machine_registered_app_routes_input() -> Result<()> {
-    exercise_test_window(true, ProfileSource::Machine, false, None)
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Keys)
 }
 
 #[test]
@@ -386,15 +395,16 @@ fn interactive_process_local_dll_converts() -> Result<()> {
     let dll = std::env::var_os("DIY_IME_TEST_DLL").expect("absolute path of staged test DLL");
     let dll = Path::new(&dll);
     eprintln!("process-local DLL: ordinary keys and document switch");
-    exercise_test_window(true, ProfileSource::ProcessLocalDll(dll), false, None)?;
+    exercise_test_window(ProfileSource::ProcessLocalDll(dll), WindowChecks::Keys)?;
     eprintln!("process-local DLL: conversion, candidates and finalization");
-    exercise_test_window(true, ProfileSource::ProcessLocalDll(dll), true, None)?;
+    exercise_test_window(
+        ProfileSource::ProcessLocalDll(dll),
+        WindowChecks::Conversion,
+    )?;
     eprintln!("process-local DLL: protected input");
     exercise_test_window(
-        true,
         ProfileSource::ProcessLocalDll(dll),
-        false,
-        Some(Observation::default()),
+        WindowChecks::Protection(None),
     )
 }
 
@@ -404,7 +414,7 @@ fn interactive_app_converts_through_official_host() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, ProfileSource::ProcessLocal, true, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Conversion)
 }
 
 #[test]
@@ -413,32 +423,52 @@ fn interactive_app_enforces_protection() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     let observation = diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, ProfileSource::ProcessLocal, false, Some(observation))
+    exercise_test_window(
+        ProfileSource::ProcessLocal,
+        WindowChecks::Protection(Some(observation)),
+    )
+}
+
+#[test]
+#[ignore = "requires the approved isolated Host fixture and an interactive Windows desktop"]
+fn interactive_app_recovers_after_host_startup_failure() -> Result<()> {
+    let exe = PathBuf::from(std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable"));
+    let config = PathBuf::from(
+        std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration"),
+    );
+    assert!(config.is_file(), "the recovery configuration must exist");
+    let unavailable = config.join("nonexistent");
+    let failed_start = Command::new(&exe)
+        .arg(&unavailable)
+        .output()
+        .expect("start the real Host with the invalid configuration");
+    assert!(
+        !failed_start.status.success(),
+        "the Host must reject that path"
+    );
+    let failed = diy_ime2_tsf::set_test_host_configuration(exe.clone(), unavailable);
+    exercise_test_window(
+        ProfileSource::ProcessLocal,
+        WindowChecks::FailedHost(failed),
+    )?;
+    diy_ime2_tsf::set_test_host_configuration(exe, config);
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Conversion)
 }
 
 #[test]
 #[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
 fn interactive_machine_registered_stage_b() -> Result<()> {
-    exercise_test_window(true, ProfileSource::Machine, true, None)
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Conversion)
 }
 
 #[test]
 #[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
 fn interactive_machine_registered_stage_b_protection() -> Result<()> {
-    exercise_test_window(
-        true,
-        ProfileSource::Machine,
-        false,
-        Some(Observation::default()),
-    )
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Protection(None))
 }
 
-fn exercise_test_window(
-    interactive: bool,
-    source: ProfileSource<'_>,
-    conversion: bool,
-    protection: Option<Observation>,
-) -> Result<()> {
+fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Result<()> {
+    let interactive = !matches!(checks, WindowChecks::Activation);
     let library = match source {
         ProfileSource::ProcessLocalDll(path) => Some(TestLibrary::open(path)?),
         ProfileSource::ProcessLocal | ProfileSource::Machine => None,
@@ -570,27 +600,31 @@ fn exercise_test_window(
     );
     if interactive {
         let context = context.as_ref().expect("real TSF context");
-        if let Some(observation) = protection.as_ref() {
-            verify_protection(
+        match &checks {
+            WindowChecks::Protection(observation) => verify_protection(
                 context,
                 &thread_manager,
                 &keys,
                 client,
                 &scope,
-                (!machine_registered && library.is_none()).then_some(observation),
-            )?;
-        } else if conversion {
-            verify_conversion(
+                observation.as_ref(),
+            )?,
+            WindowChecks::Conversion => verify_conversion(
                 context,
                 &document,
                 &thread_manager,
                 &keys,
                 client,
                 &deny_writes,
-            )?;
-        } else {
-            verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
-            verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+            )?,
+            WindowChecks::Keys | WindowChecks::FailedHost(_) => {
+                verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
+                verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+                if let WindowChecks::FailedHost(observation) = &checks {
+                    assert_eq!(observation.dispatched(), 0);
+                }
+            }
+            WindowChecks::Activation => unreachable!("headless activation has no input checks"),
         }
     }
     profile.remove()?;
@@ -604,7 +638,7 @@ fn exercise_test_window(
         thread_manager.Deactivate()?;
     }
     drop(registration);
-    if library.is_some() || conversion || protection.is_some() {
+    if library.is_some() || !matches!(checks, WindowChecks::Activation | WindowChecks::Keys) {
         if machine_registered || library.is_some() {
             pump_until(installed_service_idle)?;
         } else {
