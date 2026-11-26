@@ -2,11 +2,15 @@ param(
     [Parameter(Mandatory)][string]$BuildDirectory,
     [string]$Cargo = 'cargo',
     [string]$StageBHostConfiguration,
+    [ValidateRange(0, 240)][int]$ManualAppSeconds = 0,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
 if (![Environment]::Is64BitProcess -or ![Environment]::UserInteractive) {
     throw 'Run on an interactive x64 Windows desktop.'
+}
+if ($ManualAppSeconds -gt 0 -and !$StageBHostConfiguration) {
+    throw 'Manual application checks require a Stage B Host configuration.'
 }
 
 $service = '{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
@@ -80,7 +84,7 @@ $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + [guid]::NewGui
 $release = Join-Path $session 'release.signal'
 $toolHash = (Get-FileHash -LiteralPath $tool).Hash
 $dllHash = (Get-FileHash -LiteralPath $dll).Hash
-$seconds = if ($StageBHostConfiguration) { '300' } else { '150' }
+$seconds = if ($StageBHostConfiguration) { (300 + $ManualAppSeconds).ToString() } else { '150' }
 $arguments = @(
     '-NoProfile', '-File', ('"' + $machineInstaller + '"'),
     '-BuildDirectory', ('"' + $build + '"'), '-ReleaseFile', ('"' + $release + '"'),
@@ -118,6 +122,16 @@ try {
     foreach ($test in $tests) {
         & $executables[0] --ignored --exact $test --nocapture
         if ($LASTEXITCODE -ne 0) { $failures.Add($test) }
+    }
+    if ($ManualAppSeconds -gt 0) {
+        if ($installer.HasExited -or $clock.Elapsed.TotalSeconds -ge 285) {
+            throw 'Too little registration time remains for the manual application checks.'
+        }
+        "Manual application checks are ready for $ManualAppSeconds seconds."
+        'Before this window ends, select the original input method and close the Notepad and browser windows opened for this test.'
+        if ($installer.WaitForExit(1000 * $ManualAppSeconds)) {
+            throw 'The machine registration ended during the manual application checks.'
+        }
     }
     if ($failures.Count -ne 0) { throw "The Win32 TSF tests failed: $($failures -join ', ')" }
 } finally {
