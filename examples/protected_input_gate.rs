@@ -1,7 +1,5 @@
 //! Fake input adapter demonstration; actual SessionV3 integration is tested separately.
-#[path = "security_support/input_gate.rs"]
-mod input_gate;
-use input_gate::{Denial, InputGate};
+use diy_ime2_ime_host::input_gate::{Denial, InputGate};
 fn main() {
     let mut gate = InputGate::default();
     let (old, text) = gate.dispatch(true, || "normal-canary").unwrap();

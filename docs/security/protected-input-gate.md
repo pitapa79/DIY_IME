@@ -1,7 +1,7 @@
 # S04内部入力ゲート（#223）
 
 開始main: 1bbffe87d90955ee9aa0f5a5bb57bee64989705c（#219統合後）。
-examples/security_support/input_gate.rsは信頼済み入力adapter用の内部核。
+crates/ime-host/src/input_gate.rsは信頼済み入力adapter用の内部核。
 examples/protected_input_gate.rsで偽入力を動かし、tests/execution_session_v3.rsで実v3の失効/取消/計画変更へ接続して検査する。
 現行Editor/CLIの通常経路を自動的に保護する製品機能ではない。外部Node入口/実TSFがまだないため、公開API/保存形式/検出API/実ショートカットを追加しない。
 

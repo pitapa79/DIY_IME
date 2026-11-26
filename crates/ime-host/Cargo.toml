@@ -1,0 +1,8 @@
+[package]
+name = "diy-ime2-ime-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+diy-ime2-runtime = { path = "../runtime" }

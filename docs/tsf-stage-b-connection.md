@@ -9,7 +9,7 @@
 | [偽文書ホスト](ime-host-harness.md)と[実装](../examples/ime_host_harness.rs) | 全文スナップショット、受取と適用の二段階照合、確定成功で操作を消費、未確定中の計画切替拒否。#190の状態遷移と回帰例の起点 | 固定グラフの同期Engineと偽文書。実際の文書範囲、非同期実行、部分的に成功した編集は未検証 |
 | [UTF-16位置境界](windows-text-boundaries.md)と[実装](../examples/utf16_positions.rs) | 同じ文字列のUTF-8/UTF-16境界の相互変換と不正範囲の拒否。#190/#193で使う | 外部UTF-16の妥当性、TSF rangeの所有と寿命、書記素単位の編集 |
 | [Core出力境界](security/output-boundary.md) | Packet検査と原子的な異常出力拒否。Node出力を文章データとして扱う | 実TSFの編集と候補表示 |
-| [保護ゲート](security/protected-input-gate.md)と[実装](../examples/security_support/input_gate.rs) | 手動・自動のOR、配送前の拒否、保護世代と実行世代の失効、失効失敗後も閉じる。#190/#197の起点 | 実OSの自動判定、鍵操作、実アプリでの直接入力・非配送 |
+| [保護ゲート](security/protected-input-gate.md)と[実装](../crates/ime-host/src/input_gate.rs) | 手動・自動のOR、配送前の拒否、保護世代と実行世代の失効、失効失敗後も閉じる。#190/#197の起点 | 実OSの自動判定、鍵操作、実アプリでの直接入力・非配送 |
 | [RuntimeInput](runtime-input-v0.1.md)、[実行制御契約](execution-control-contract-v0.2.md)、[隔離Host](security/wasm-external-host.md) | 入力全文とcompose/finalize、実行キー・配送世代、既存の承認済み計画、AppContainer/Job、取消・実終了確認。#194で既存の製品経路に接続 | 現行Hostの公開操作は手動保護のみ。TSFの自動判定を信頼側で受け、配送を止める接続と、文書・候補への適用 |
 
 公式パッケージにはローマ字変換、完全一致辞書、候補選択等が存在する。#194/#195では [公式配布](security/official-node-distribution.md) の固定版と実際のポートを照合し、既存の許可を使う小さな検証用グラフを固定する。候補表示で使う Choice の出力は候補選択前に取得する。Node ABI、Graph、Packet、隔離方式は現行のまま使う。
@@ -42,7 +42,7 @@ TSFの資料: [登録と解除](https://learn.microsoft.com/en-us/windows/win32/
 
 | Issue | 証拠にする検査 |
 | --- | --- |
-| [#190](https://github.com/pitapa79/DIY_IME/issues/190) | 偽文書で構造を検査。同じ文字の再入力、遅延・重複、計画と文書の変更、通知/書込み順序、非原子的失敗、選択範囲/UTF-16、保護失効を負例にする |
+| [#190](https://github.com/pitapa79/DIY_IME/issues/190) | [入力状態と編集境界](ime-input-state.md)を偽文書で検査。同じ文字の再入力、遅延・重複、計画と文書の変更、通知/書込み順序、非原子的失敗、選択範囲/UTF-16、保護失効を負例にする |
 | [#191](https://github.com/pitapa79/DIY_IME/issues/191) | プロセス内TSF検査と、承認済み方法で実OSへ登録した検査を別々に記録。x64の実アプリでActivate/Deactivate、COM寿命、編集セッション、最小文字入力、部分導入からの復旧、解除後の不在を確認 |
 | [#192](https://github.com/pitapa79/DIY_IME/issues/192) / [#193](https://github.com/pitapa79/DIY_IME/issues/193) | 実アプリで二重消費防止、アプリに通すキー、キャレットと選択、未確定表示、外部終了、サロゲート・結合文字、編集失敗を確認 |
 | [#194](https://github.com/pitapa79/DIY_IME/issues/194) / [#195](https://github.com/pitapa79/DIY_IME/issues/195) / [#196](https://github.com/pitapa79/DIY_IME/issues/196) | 現行の隔離Hostと承認済みNodeでcompose/finalize。遅いNodeの動作中に対象文書を切替。古い結果/候補と二重確定を拒否し、確定・取消・フォーカス境界を確認 |

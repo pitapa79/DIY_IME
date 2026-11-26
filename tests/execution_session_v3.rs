@@ -624,11 +624,9 @@ fn security_foreign_and_mutated_keys_cannot_cancel_or_adopt_another_sessions_res
     assert_eq!(h.count.load(Ordering::SeqCst), 1);
 }
 
-#[path = "../examples/security_support/input_gate.rs"]
-mod security_input_gate;
 #[test]
 fn s04_gate_uses_real_v3_invalidation_and_survives_plan_switches_without_replaying_input() {
-    use security_input_gate::{Denial, InputGate};
+    use diy_ime2_ime_host::input_gate::{Denial, InputGate};
     let mut h = Fixture::new();
     let mut s = h.session();
     activate(&mut s, graph());
