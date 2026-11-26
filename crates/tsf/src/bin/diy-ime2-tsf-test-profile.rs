@@ -11,9 +11,9 @@ mod windows_probe {
             Input::KeyboardAndMouse::HKL,
             TextServices::{
                 CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles,
-                GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr,
-                ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE,
-                TF_PROFILETYPE_INPUTPROCESSOR,
+                GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD,
+                GUID_TFCAT_TIPCAP_UIELEMENTENABLED, ITfCategoryMgr, ITfInputProcessorProfileMgr,
+                ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
             },
         },
     };
@@ -88,7 +88,11 @@ mod windows_probe {
                     "register TSF test profile",
                 )?;
                 let mut installed = Vec::new();
-                for id in [GUID_TFCAT_TIP_KEYBOARD, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER] {
+                for id in [
+                    GUID_TFCAT_TIP_KEYBOARD,
+                    GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+                    GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                ] {
                     let result = unsafe {
                         category.RegisterCategory(&TEST_SERVICE_CLSID, &id, &TEST_SERVICE_CLSID)
                     };
@@ -124,7 +128,11 @@ mod windows_probe {
                         .map_err(|error| error.to_string())?;
                 if registered(&profiles) {
                     let mut categories = Ok(());
-                    for id in [GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD] {
+                    for id in [
+                        GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+                        GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                        GUID_TFCAT_TIP_KEYBOARD,
+                    ] {
                         let outcome = check(
                             unsafe {
                                 category.UnregisterCategory(

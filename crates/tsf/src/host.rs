@@ -148,6 +148,7 @@ pub(crate) struct Bridge {
 pub(crate) struct Preview {
     pub(crate) stamp: DocumentStamp,
     pub(crate) text: String,
+    pub(crate) candidates: Vec<String>,
 }
 
 impl Bridge {
@@ -214,17 +215,21 @@ impl Bridge {
                 if let Some(input) = self.input.as_mut()
                     && let Some((stamp, request)) = self.submitted.as_ref()
                 {
-                    let text = match &result {
+                    let text = match &result.conversion {
                         Conversion::Text(text) => Some(text.clone()),
                         _ => None,
                     };
                     let stamp = *stamp;
-                    let delivery = input.receive(request, &key, result);
+                    let delivery = input.receive(request, &key, result.conversion);
                     if delivery.is_ok() {
                         self.submitted = None;
                     }
                     if delivery == Ok(Delivery::Ready) {
-                        return text.map(|text| Preview { stamp, text });
+                        return text.map(|text| Preview {
+                            stamp,
+                            text,
+                            candidates: result.candidates,
+                        });
                     }
                 }
             }
