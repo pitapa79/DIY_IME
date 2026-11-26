@@ -19,6 +19,7 @@ $build = (Resolve-Path -LiteralPath $BuildDirectory).Path
 $tool = Join-Path $build 'diy-ime2-tsf-test-profile.exe'
 $dll = Join-Path $build 'diy_ime2_tsf.dll'
 $staging = Join-Path $env:ProgramFiles "DIY-IME-Stage-A-$service"
+$installerStatus = Join-Path $staging 'test-status.txt'
 $machineInstaller = Join-Path $PSScriptRoot 'test-tsf-stage-a-registration.ps1'
 $systemPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
 
@@ -102,12 +103,21 @@ $enableAttempted = $false
 try {
     $installer = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru
     $clock = [Diagnostics.Stopwatch]::StartNew()
+    $registrationTimeout = 45
     do {
         $status = Get-TestRegistration
         if ($status -match 'registered=true') { break }
+        if (Test-Path -LiteralPath $installerStatus -PathType Leaf) {
+            $installerError = Get-Content -LiteralPath $installerStatus -ErrorAction SilentlyContinue |
+                Where-Object { $_ -like 'error: *' } | Select-Object -Last 1
+            if ($installerError) { throw "Temporary registration failed: $installerError" }
+        }
         Start-Sleep -Milliseconds 250
-    } while (!$installer.HasExited -and $clock.Elapsed.TotalSeconds -lt 15)
-    if ($status -notmatch 'registered=true') { throw 'The machine profile could not be verified.' }
+    } while (!$installer.HasExited -and $clock.Elapsed.TotalSeconds -lt $registrationTimeout)
+    if ($status -notmatch 'registered=true') {
+        if ($installer.HasExited) { throw "The registration helper exited before verification (code $($installer.ExitCode))." }
+        throw "The machine profile could not be verified within $registrationTimeout seconds."
+    }
     $enableAttempted = $true
     & $tool enable
     if ($LASTEXITCODE -ne 0) { throw 'The current user could not enable the dedicated profile.' }

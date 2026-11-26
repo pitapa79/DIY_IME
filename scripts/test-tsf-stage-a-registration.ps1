@@ -95,6 +95,12 @@ try {
     }
 } catch {
     Write-Status "error: $($_.Exception.Message)"
+    if ($ownsFiles) {
+        $reporting = [Diagnostics.Stopwatch]::StartNew()
+        while ($reporting.Elapsed.TotalSeconds -lt 8 -and !(Test-Path -LiteralPath $release)) {
+            Start-Sleep -Milliseconds 250
+        }
+    }
     throw
 } finally {
     try {
