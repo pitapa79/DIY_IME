@@ -92,6 +92,9 @@ try {
     $enableAttempted = $true
     & $tool enable
     if ($LASTEXITCODE -ne 0) { throw 'The current user could not enable the dedicated profile.' }
+    if ((Get-TestRegistration) -notmatch 'registered=true enabled_for_current_user=true') {
+        throw 'The current-user TSF profile did not become enabled.'
+    }
     & $executables[0] --ignored --exact interactive_machine_registered_app_routes_input
     if ($LASTEXITCODE -ne 0) { throw 'The Win32 TSF input test failed.' }
 } finally {

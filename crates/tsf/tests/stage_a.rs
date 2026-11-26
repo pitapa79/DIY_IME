@@ -24,8 +24,8 @@ use windows::Win32::{
             CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDocumentMgr, ITfEditSession,
             ITfEditSession_Impl, ITfInputProcessorProfileMgr, ITfKeystrokeMgr,
             ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE,
-            TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_FORPROCESS, TF_POPF_ALL,
-            TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
+            TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
+            TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
         },
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
@@ -181,7 +181,13 @@ impl LocalProfile {
         })
     }
 
-    fn activate(&mut self) -> Result<()> {
+    fn activate(&mut self, enable_for_user: bool) -> Result<()> {
+        let flags = TF_IPPMF_FORPROCESS
+            | if enable_for_user {
+                TF_IPPMF_ENABLEPROFILE
+            } else {
+                0
+            };
         let result = unsafe {
             (self.manager.vtable().ActivateProfile)(
                 self.manager.as_raw(),
@@ -190,13 +196,18 @@ impl LocalProfile {
                 &TEST_SERVICE_CLSID,
                 &TEST_PROFILE_GUID,
                 HKL::default(),
-                TF_IPPMF_FORPROCESS,
+                flags,
             )
         };
         if result == S_FALSE {
-            return Err(E_FAIL.into());
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "ActivateProfile returned S_FALSE for the test profile",
+            ));
         }
-        result.ok()?;
+        result.ok().map_err(|error| {
+            windows_core::Error::new(error.code(), "ActivateProfile failed for the test profile")
+        })?;
         self.active = true;
         Ok(())
     }
@@ -401,16 +412,24 @@ fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<(
             Some(registration),
         )
     };
-    profile.activate()?;
+    profile.activate(machine_registered)?;
     let keys: ITfKeystrokeMgr = thread_manager.cast()?;
-    assert_eq!(unsafe { keys.GetForeground()? }, TEST_SERVICE_CLSID);
+    assert_eq!(
+        unsafe { keys.GetForeground() }
+            .expect("query TSF foreground after activating test profile"),
+        TEST_SERVICE_CLSID
+    );
     if interactive {
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
         verify_key_edit(context, &keys, client, &scope)?;
     }
     profile.remove()?;
-    assert_ne!(unsafe { keys.GetForeground()? }, TEST_SERVICE_CLSID);
+    assert_ne!(
+        unsafe { keys.GetForeground() }
+            .expect("query TSF foreground after deactivating test profile"),
+        TEST_SERVICE_CLSID
+    );
     unsafe {
         document.Pop(TF_POPF_ALL)?;
         thread_manager.Deactivate()?;
