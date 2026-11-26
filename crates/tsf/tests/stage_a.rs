@@ -284,17 +284,37 @@ impl Drop for ClassRegistration {
 
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
+    exercise_test_window(false, false)
+}
+
+#[test]
+#[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
+fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
+    exercise_test_window(true, false)
+}
+
+#[test]
+#[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
+fn interactive_machine_registered_app_routes_input() -> Result<()> {
+    exercise_test_window(true, true)
+}
+
+fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<()> {
     let _apartment = Apartment::open()?;
     let window = Window(unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             windows_core::w!("STATIC"),
-            windows_core::w!("DIY IME private test"),
-            WS_POPUP,
+            windows_core::w!("DIY IME TSF input verification"),
+            if interactive {
+                WS_OVERLAPPEDWINDOW
+            } else {
+                WS_POPUP
+            },
             0,
             0,
-            1,
-            1,
+            if interactive { 540 } else { 1 },
+            if interactive { 180 } else { 1 },
             None,
             None,
             None,
@@ -307,8 +327,17 @@ fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Resu
     let document = unsafe { thread_manager.CreateDocumentMgr()? };
     let mut context = None;
     let mut cookie = 0;
+    let scope = Rc::new(Cell::new(IS_DEFAULT));
+    let owner: ITextStoreACP = text_store::Store::new(window.0, scope.clone()).into();
+    let owner: IUnknown = owner.cast()?;
     unsafe {
-        document.CreateContext(client, 0, None::<&IUnknown>, &mut context, &mut cookie)?;
+        document.CreateContext(
+            client,
+            0,
+            interactive.then_some(&owner),
+            &mut context,
+            &mut cookie,
+        )?;
         document.Push(context.as_ref().expect("real TSF context"))?;
         let mut previous = ptr::null_mut();
         (thread_manager.vtable().AssociateFocus)(
@@ -322,31 +351,64 @@ fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Resu
             drop(ITfDocumentMgr::from_raw(previous));
         }
         // A hidden test-owned HWND is enough for the local registration path.
+        if interactive {
+            let _ = ShowWindow(window.0, SW_SHOW);
+            let _ = SetForegroundWindow(window.0);
+        }
         let _ = SetFocus(window.0);
         assert_eq!(GetFocus(), window.0);
         thread_manager.SetFocus(&document)?;
     }
 
-    let mut factory_ptr = ptr::null_mut();
-    unsafe { DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr).ok()? };
-    let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
-    let registration = ClassRegistration(unsafe {
-        CoRegisterClassObject(
-            &TEST_SERVICE_CLSID,
-            &factory,
-            CLSCTX_INPROC_SERVER,
-            REGCLS_MULTIPLEUSE,
-        )?
-    });
     let profiles: ITfInputProcessorProfileMgr =
         unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? };
-    // Match only the test process's active layout. The separately tested Japanese
-    // profile stays fixed, and this test never changes the desktop's input language.
     let language = (unsafe { GetKeyboardLayout(0) }.0 as usize & 0xffff) as u16;
-    let mut profile = LocalProfile::register(profiles, language, true)?;
+    let (mut profile, registration) = if machine_registered {
+        assert_eq!(
+            language, JAPANESE_LANGID,
+            "select the Japanese keyboard language first"
+        );
+        assert!(
+            profile_exists(&profiles),
+            "the temporary machine registration is required"
+        );
+        (
+            LocalProfile {
+                manager: profiles,
+                language,
+                live: false,
+                active: false,
+            },
+            None,
+        )
+    } else {
+        // Discover the calling process's active layout without changing desktop input settings.
+        let mut factory_ptr = ptr::null_mut();
+        unsafe {
+            DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr).ok()?
+        };
+        let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
+        let registration = ClassRegistration(unsafe {
+            CoRegisterClassObject(
+                &TEST_SERVICE_CLSID,
+                &factory,
+                CLSCTX_INPROC_SERVER,
+                REGCLS_MULTIPLEUSE,
+            )?
+        });
+        (
+            LocalProfile::register(profiles, language, true)?,
+            Some(registration),
+        )
+    };
     profile.activate()?;
     let keys: ITfKeystrokeMgr = thread_manager.cast()?;
     assert_eq!(unsafe { keys.GetForeground()? }, TEST_SERVICE_CLSID);
+    if interactive {
+        let context = context.as_ref().expect("real TSF context");
+        wait_for_app_focus(&thread_manager)?;
+        verify_key_edit(context, &keys, client, &scope)?;
+    }
     profile.remove()?;
     assert_ne!(unsafe { keys.GetForeground()? }, TEST_SERVICE_CLSID);
     unsafe {
@@ -354,7 +416,145 @@ fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Resu
         thread_manager.Deactivate()?;
     }
     drop(registration);
-    drop(factory);
     assert_eq!(DllCanUnloadNow(), S_OK);
     Ok(())
 }
+
+use windows::Win32::{
+    Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, LPARAM, WPARAM},
+    System::Com::CoTaskMemAlloc,
+    UI::{
+        Input::KeyboardAndMouse::VK_A,
+        TextServices::{
+            GUID_COMPARTMENT_KEYBOARD_DISABLED, IS_DEFAULT, IS_PASSWORD, ITextStoreACP,
+            ITfCompartmentMgr, ITfContext, ITfInputScope, ITfInputScope_Impl, InputScope,
+            TF_ES_READ,
+        },
+        WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SW_SHOW, SetForegroundWindow,
+            ShowWindow, TranslateMessage, WS_OVERLAPPEDWINDOW,
+        },
+    },
+};
+use windows_core::{BSTR, VARIANT};
+
+#[implement(ITfInputScope)]
+struct AppScope(InputScope);
+
+impl ITfInputScope_Impl for AppScope_Impl {
+    fn GetInputScopes(&self, scopes: *mut *mut InputScope, count: *mut u32) -> Result<()> {
+        if scopes.is_null() || count.is_null() {
+            return Err(E_POINTER.into());
+        }
+        let value = unsafe { CoTaskMemAlloc(size_of::<InputScope>()) }.cast::<InputScope>();
+        if value.is_null() {
+            return Err(E_OUTOFMEMORY.into());
+        }
+        unsafe {
+            value.write(self.0);
+            scopes.write(value);
+            count.write(1);
+        }
+        Ok(())
+    }
+    fn GetPhrase(&self, _: *mut *mut BSTR, _: *mut u32) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetRegularExpression(&self) -> Result<BSTR> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetSRGS(&self) -> Result<BSTR> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetXML(&self) -> Result<BSTR> {
+        Err(E_NOTIMPL.into())
+    }
+}
+
+#[implement(ITfEditSession)]
+struct ReadDocument {
+    context: ITfContext,
+    first_char: Rc<Cell<Option<u16>>>,
+}
+
+impl ITfEditSession_Impl for ReadDocument_Impl {
+    fn DoEditSession(&self, cookie: u32) -> Result<()> {
+        let start = unsafe { self.context.GetStart(cookie)? };
+        let mut shifted = 0;
+        let mut read = 0;
+        let mut text = [0];
+        unsafe {
+            start.ShiftEnd(cookie, 1, &mut shifted, ptr::null())?;
+            start.GetText(cookie, 0, &mut text, &mut read)?;
+        }
+        self.first_char.set((read == 1).then_some(text[0]));
+        Ok(())
+    }
+}
+
+fn verify_key_edit(
+    context: &ITfContext,
+    keys: &ITfKeystrokeMgr,
+    client: u32,
+    scope: &Cell<InputScope>,
+) -> Result<()> {
+    let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
+    let first_char = Rc::new(Cell::new(None));
+    let reader: ITfEditSession = ReadDocument {
+        context: context.clone(),
+        first_char: first_char.clone(),
+    }
+    .into();
+    let compartments: ITfCompartmentMgr = context.cast()?;
+    unsafe {
+        compartments
+            .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+            .SetValue(client, &VARIANT::from(0_i32))?;
+        let key = WPARAM(usize::from(VK_A.0));
+        scope.set(IS_PASSWORD);
+        assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            first_char.get(),
+            None,
+            "protected input must not edit the TSF document"
+        );
+        scope.set(IS_DEFAULT);
+        assert!(
+            keys.TestKeyDown(key, LPARAM(0))?.as_bool(),
+            "ordinary input recognition"
+        );
+        assert!(
+            keys.KeyDown(key, LPARAM(0))?.as_bool(),
+            "key must be consumed by the TIP"
+        );
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(first_char.get(), Some(u16::from(b'a')));
+    }
+    Ok(())
+}
+
+fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
+    let limit = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    loop {
+        let mut message = MSG::default();
+        unsafe {
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            if manager.IsThreadFocus()?.as_bool() {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= limit {
+            eprintln!("the test window did not obtain desktop foreground");
+            return Err(E_FAIL.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[path = "support/text_store.rs"]
+mod text_store;
