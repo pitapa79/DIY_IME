@@ -1,18 +1,18 @@
 use std::{
     cell::{Cell, RefCell},
     mem::ManuallyDrop,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use diy_ime2_ime_host::DocumentStamp;
 use windows::Win32::{
-    Foundation::E_FAIL,
+    Foundation::{BOOL, E_FAIL, HWND, RECT},
     System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
     UI::TextServices::{
         CLSID_TF_CategoryMgr, GUID_PROP_ATTRIBUTE, ITfCategoryMgr, ITfComposition,
         ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
-        ITfEditRecord, ITfEditSession, ITfEditSession_Impl, ITfRange, ITfSource, ITfTextEditSink,
-        ITfTextEditSink_Impl, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
+        ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl, ITfRange, ITfSource,
+        ITfTextEditSink, ITfTextEditSink_Impl, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
         TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
         TF_SELECTIONSTYLE,
     },
@@ -21,6 +21,7 @@ use windows_core::{Interface, Result, VARIANT, implement};
 
 use crate::{
     ModuleRef,
+    candidates::CandidateUi,
     display::PREEDIT_ATTRIBUTE,
     document::{editable_selection, is_utf16_boundary},
     host::{Bridge, Preview},
@@ -49,6 +50,7 @@ struct Owned {
     displayed: RefCell<String>,
     validity: Rc<Validity>,
     _watch: EditWatch,
+    candidates: Rc<CandidateSlot>,
 }
 
 #[derive(Default)]
@@ -68,11 +70,21 @@ impl Validity {
 struct Observer {
     _module: ModuleRef,
     validity: Rc<Validity>,
+    candidates: Weak<CandidateSlot>,
+}
+
+impl Observer_Impl {
+    fn close_candidates(&self) {
+        if let Some(slot) = self.candidates.upgrade() {
+            close_candidates(&slot);
+        }
+    }
 }
 
 impl ITfCompositionSink_Impl for Observer_Impl {
     fn OnCompositionTerminated(&self, _: u32, _: Option<&ITfComposition>) -> Result<()> {
         self.validity.ended.set(true);
+        self.close_candidates();
         Ok(())
     }
 }
@@ -81,9 +93,30 @@ impl ITfTextEditSink_Impl for Observer_Impl {
     fn OnEndEdit(&self, _: Option<&ITfContext>, _: u32, _: Option<&ITfEditRecord>) -> Result<()> {
         if !self.validity.own_edit.get() {
             self.validity.modified.set(true);
+            self.close_candidates();
         }
         Ok(())
     }
+}
+
+type CandidateSlot = RefCell<Option<Rc<CandidateUi>>>;
+
+fn close_candidates(slot: &CandidateSlot) {
+    if let Some(ui) = slot.take() {
+        ui.close();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CandidateUpdate {
+    Close,
+    Select(usize),
+}
+
+struct CandidateAnchor {
+    document: ITfDocumentMgr,
+    owner: HWND,
+    rectangle: Option<RECT>,
 }
 
 struct EditWatch {
@@ -144,6 +177,9 @@ impl Preedit {
         self.generation.set(self.generation.get().saturating_add(1));
         self.uncertain.set(false);
         self.current.replace(None);
+        if let Some(owned) = owned.as_ref() {
+            close_candidates(&owned.candidates);
+        }
         if let Some(owned) = owned
             && !owned.validity.ended.get()
         {
@@ -195,6 +231,7 @@ impl Preedit {
         let _busy = Busy(&self.busy);
         let completed = Rc::new(Cell::new(None));
         let convert = Rc::new(Cell::new(false));
+        let candidate_update = Rc::new(Cell::new(None));
         let own_edit = Rc::new(RefCell::new(None::<Rc<Validity>>));
         let session: ITfEditSession = Session {
             _module: ModuleRef::new(),
@@ -205,6 +242,7 @@ impl Preedit {
             apply,
             completed: completed.clone(),
             convert: convert.clone(),
+            candidate_update: candidate_update.clone(),
             own_edit: own_edit.clone(),
         }
         .into();
@@ -236,9 +274,29 @@ impl Preedit {
             } else {
                 self.revision.set(self.revision.get().saturating_add(1));
                 activation.cancel_host();
+                let owned = self.current.borrow().clone();
+                if let Some(owned) = owned {
+                    match candidate_update.get() {
+                        Some(CandidateUpdate::Select(index)) => {
+                            let candidates = owned.candidates.borrow().clone();
+                            if let Some(candidates) = candidates {
+                                candidates.select(index);
+                            }
+                        }
+                        Some(CandidateUpdate::Close) => close_candidates(&owned.candidates),
+                        None => {}
+                    }
+                }
             }
         }
         handled
+    }
+
+    pub(crate) fn showing_candidates(&self) -> bool {
+        self.current
+            .borrow()
+            .as_ref()
+            .is_some_and(|owned| owned.candidates.borrow().is_some())
     }
 
     pub(crate) fn can_deliver(&self, activation: &Rc<Activation>) -> bool {
@@ -261,6 +319,11 @@ impl Preedit {
         let owned = self.current.borrow().clone();
         let Some(owned) = owned else { return };
         let armed = Rc::new(Cell::new(true));
+        let anchor = Rc::new(RefCell::new(None));
+        let selected = preview
+            .candidates
+            .iter()
+            .position(|candidate| candidate == &preview.text);
         let session: ITfEditSession = PreviewSession {
             _module: ModuleRef::new(),
             activation: activation.clone(),
@@ -268,6 +331,7 @@ impl Preedit {
             stamp: preview.stamp,
             text: preview.text,
             armed: armed.clone(),
+            anchor: anchor.clone(),
         }
         .into();
         let _ = unsafe {
@@ -282,6 +346,28 @@ impl Preedit {
         if let Some(owned) = self.pending_cleanup.take() {
             Self::cleanup(owned, activation.client_id);
         }
+        if let (Some(anchor), Some(selected)) = (anchor.take(), selected)
+            && preview.stamp == self.stamp()
+            && owned.validity.owned()
+            && activation.owns_focus(&owned.context)
+        {
+            close_candidates(&owned.candidates);
+            if let Ok(manager) = activation.ui_manager()
+                && let Ok(ui) = CandidateUi::open(
+                    manager,
+                    anchor.document,
+                    preview.candidates,
+                    selected,
+                    anchor.owner,
+                    anchor.rectangle,
+                )
+                && preview.stamp == self.stamp()
+                && owned.validity.owned()
+                && activation.owns_focus(&owned.context)
+            {
+                owned.candidates.replace(Some(Rc::new(ui)));
+            }
+        }
     }
 }
 
@@ -295,6 +381,7 @@ struct Session {
     apply: bool,
     completed: Rc<Cell<Option<bool>>>,
     convert: Rc<Cell<bool>>,
+    candidate_update: Rc<Cell<Option<CandidateUpdate>>>,
     own_edit: Rc<RefCell<Option<Rc<Validity>>>>,
 }
 
@@ -313,6 +400,7 @@ impl Session_Impl {
         }
         let Some(selection) = editable_selection(&self.context, cookie) else {
             if self.apply {
+                self.activation.cancel_host();
                 self.activation
                     .preedit
                     .invalidate(None, self.activation.client_id);
@@ -348,18 +436,30 @@ impl ITfEditSession_Impl for Session_Impl {
             return Ok(());
         };
         let owned = owned.filter(|owned| !owned.validity.ended.get());
+        let candidates = owned
+            .as_ref()
+            .and_then(|owned| owned.candidates.borrow().clone());
+        let mut candidate_update = CandidateUpdate::Close;
+        let mut selected_surface = None;
         let action = keymap::action(
             self.key,
             Context {
                 editable: true,
                 preedit: &raw,
-                selecting_candidate: false,
+                selecting_candidate: candidates.is_some(),
             },
         );
         match action {
             Some(Action::Append(character)) if raw.len() < MAX_PREEDIT => raw.push(character),
             Some(Action::ReplaceWithPrefix(prefix)) => raw.truncate(prefix),
             Some(Action::Cancel) => raw.clear(),
+            Some(Action::ReturnToPreedit) => {}
+            Some(Action::NextCandidate | Action::PreviousCandidate) => {
+                let candidates = candidates.as_ref().ok_or(E_FAIL)?;
+                let (index, text) = candidates.next(action == Some(Action::NextCandidate));
+                candidate_update = CandidateUpdate::Select(index);
+                selected_surface = Some(text);
+            }
             Some(Action::Convert)
                 if self
                     .activation
@@ -427,7 +527,8 @@ impl ITfEditSession_Impl for Session_Impl {
         // A failed COM call after this point does not prove that the app made no edit.
         self.completed.set(Some(true));
         let ending = raw.is_empty();
-        let text: Vec<u16> = raw.encode_utf16().collect();
+        let displayed = selected_surface.unwrap_or_else(|| raw.clone());
+        let text: Vec<u16> = displayed.encode_utf16().collect();
         let replacement = if ending { &owned.original } else { &text };
         let result = (|| unsafe {
             range.SetText(cookie, 0, replacement)?;
@@ -473,7 +574,8 @@ impl ITfEditSession_Impl for Session_Impl {
         } else if ending {
             preedit.current.replace(None);
         } else {
-            owned.displayed.replace(raw.clone());
+            owned.displayed.replace(displayed);
+            self.candidate_update.set(Some(candidate_update));
             owned.text.replace(raw);
         }
         result
@@ -483,9 +585,11 @@ impl ITfEditSession_Impl for Session_Impl {
 impl Session_Impl {
     fn start(&self, cookie: u32, selection: &ITfRange, original: Vec<u16>) -> Result<Rc<Owned>> {
         let validity = Rc::new(Validity::default());
+        let candidates = Rc::new(RefCell::new(None));
         let sink: ITfCompositionSink = Observer {
             _module: ModuleRef::new(),
             validity: validity.clone(),
+            candidates: Rc::downgrade(&candidates),
         }
         .into();
         let source: ITfSource = self.context.cast()?;
@@ -508,6 +612,7 @@ impl Session_Impl {
             displayed: RefCell::new(String::new()),
             validity,
             _watch: watch,
+            candidates,
         }))
     }
 }
@@ -615,6 +720,7 @@ struct PreviewSession {
     stamp: DocumentStamp,
     text: String,
     armed: Rc<Cell<bool>>,
+    anchor: Rc<RefCell<Option<CandidateAnchor>>>,
 }
 
 impl PreviewSession_Impl {
@@ -675,6 +781,11 @@ impl ITfEditSession_Impl for PreviewSession_Impl {
         })();
         if result.is_ok() && self.valid() {
             self.owned.displayed.replace(self.text.clone());
+            if let Ok(anchor) = candidate_anchor(context, cookie, &self.owned.composition)
+                && self.valid()
+            {
+                self.anchor.replace(Some(anchor));
+            }
         } else {
             self.activation.cancel_host();
             preedit.invalidate(None, self.activation.client_id);
@@ -682,4 +793,26 @@ impl ITfEditSession_Impl for PreviewSession_Impl {
         }
         result
     }
+}
+
+fn candidate_anchor(
+    context: &ITfContext,
+    cookie: u32,
+    composition: &ITfComposition,
+) -> Result<CandidateAnchor> {
+    let document = unsafe { context.GetDocumentMgr()? };
+    let view = unsafe { context.GetActiveView()? };
+    let owner = unsafe { view.GetWnd() }.unwrap_or_default();
+    let range = unsafe { composition.GetRange()? };
+    let mut rectangle = RECT::default();
+    let mut clipped = BOOL::default();
+    let visible = unsafe {
+        view.GetTextExt(cookie, &range, &mut rectangle, &mut clipped)
+            .is_ok()
+    } && !clipped.as_bool();
+    Ok(CandidateAnchor {
+        document,
+        owner,
+        rectangle: visible.then_some(rectangle),
+    })
 }

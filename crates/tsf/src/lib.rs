@@ -1,6 +1,7 @@
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case)]
 
+mod candidates;
 mod composition;
 mod display;
 mod host;

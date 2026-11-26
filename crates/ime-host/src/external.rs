@@ -37,8 +37,13 @@ pub struct Configuration {
 pub enum Event {
     Ready(Plan),
     Started(RunKey),
-    Converted(RunKey, Conversion),
+    Converted(RunKey, Output),
     Unavailable,
+}
+
+pub struct Output {
+    pub conversion: Conversion,
+    pub candidates: Vec<String>,
 }
 
 pub struct Background {
@@ -208,7 +213,7 @@ fn start(host: &mut Transport, plan: &Plan, input: &RuntimeInput) -> Option<RunK
     let start_key = DecimalId::new(input.revision).ok()?;
     let receipt = host.call(json!({"method": "run", "request": {
         "startKey": start_key, "expectedPlanVersion": plan.version,
-        "targets": [{"node": "result", "port": "out"}], "input": input
+        "targets": [{"node": "result", "port": "out"}, {"node": "dictionary", "port": "out"}], "input": input
     }}))?;
     let key: RunKey = serde_json::from_value(receipt["receipt"]["key"].clone()).ok()?;
     (key.session_epoch == plan.session
@@ -218,7 +223,7 @@ fn start(host: &mut Transport, plan: &Plan, input: &RuntimeInput) -> Option<RunK
         .then_some(key)
 }
 
-fn settle(host: &mut Transport, key: &RunKey, revision: &AtomicU64) -> Option<Option<Conversion>> {
+fn settle(host: &mut Transport, key: &RunKey, revision: &AtomicU64) -> Option<Option<Output>> {
     let deadline = Instant::now() + TIMEOUT;
     while !host.shutdown.load(Ordering::Acquire)
         && key.input_revision == Some(revision.load(Ordering::Acquire))
@@ -234,7 +239,11 @@ fn settle(host: &mut Transport, key: &RunKey, revision: &AtomicU64) -> Option<Op
             .into_iter()
             .all(|field| snapshot["physical"][field].as_u64() == Some(0));
         if phase == RunPhase::Terminal && idle {
-            return Some(Some(delivery(&snapshot["result"])));
+            let result = &snapshot["result"];
+            return Some(Some(Output {
+                conversion: delivery(result),
+                candidates: candidates(result),
+            }));
         }
         if Instant::now() >= deadline {
             return None;
@@ -244,21 +253,59 @@ fn settle(host: &mut Transport, key: &RunKey, revision: &AtomicU64) -> Option<Op
     Some(None)
 }
 
+fn candidates(result: &Value) -> Vec<String> {
+    if result["reason"] != "completed"
+        || !matches!(result["delivery"].as_str(), Some("complete" | "recovered"))
+    {
+        return Vec::new();
+    }
+    let Some(value) = output_port(result, "dictionary") else {
+        return Vec::new();
+    };
+    if value["status"] != "data" {
+        return Vec::new();
+    }
+    let Ok(packet) = serde_json::from_value::<Packet>(value["packet"].clone()) else {
+        return Vec::new();
+    };
+    if packet.validate().is_err() {
+        return Vec::new();
+    }
+    let Candidate::Choice { options } = packet.root else {
+        return Vec::new();
+    };
+    options
+        .into_iter()
+        .take(64)
+        .filter_map(|option| match option.value {
+            Candidate::Text { text, .. }
+                if !text.is_empty() && text.encode_utf16().count() <= 4096 =>
+            {
+                Some(text)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn output_port<'a>(result: &'a Value, node: &str) -> Option<&'a Value> {
+    result["ports"]
+        .as_array()?
+        .iter()
+        .find(|port| port["endpoint"]["node"] == node && port["endpoint"]["port"] == "out")
+        .map(|port| &port["value"])
+}
+
 fn delivery(result: &Value) -> Conversion {
     if result["reason"] != "completed" {
         return Conversion::Invalid;
     }
-    let Some(port) = result["ports"].as_array().and_then(|ports| {
-        ports
-            .iter()
-            .find(|port| port["endpoint"] == json!({"node": "result", "port": "out"}))
-    }) else {
+    let Some(value) = output_port(result, "result") else {
         return Conversion::Invalid;
     };
-    let value = &port["value"];
     match (result["delivery"].as_str(), value["status"].as_str()) {
         (Some("no-output"), Some("no-output")) => Conversion::NoOutput,
-        (Some("complete" | "recovered"), Some("data")) => {
+        (Some("complete" | "recovered" | "no-output"), Some("data")) => {
             let parsed = serde_json::from_value::<Packet>(value["packet"].clone());
             if let Ok(packet) = parsed
                 && packet.validate().is_ok()

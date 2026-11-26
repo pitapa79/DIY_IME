@@ -480,12 +480,14 @@ use windows::Win32::{
     Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, LPARAM, WPARAM},
     System::Com::CoTaskMemAlloc,
     UI::{
-        Input::KeyboardAndMouse::{VK_A, VK_B, VK_BACK, VK_ESCAPE, VK_SPACE, VK_TAB},
+        Input::KeyboardAndMouse::{
+            VK_A, VK_B, VK_BACK, VK_DOWN, VK_ESCAPE, VK_SPACE, VK_TAB, VK_UP,
+        },
         TextServices::{
             GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_ATTRIBUTE, IS_DEFAULT, IS_PASSWORD,
-            ITextStoreACP, ITfCompartmentMgr, ITfContext, ITfContextComposition,
-            ITfContextOwnerCompositionServices, ITfInputScope, ITfInputScope_Impl, ITfRangeACP,
-            InputScope, TF_ES_READ,
+            ITextStoreACP, ITfCandidateListUIElement, ITfCompartmentMgr, ITfContext,
+            ITfContextComposition, ITfContextOwnerCompositionServices, ITfInputScope,
+            ITfInputScope_Impl, ITfRangeACP, InputScope, TF_ES_READ,
         },
         WindowsAndMessaging::{
             DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SW_SHOW, SetForegroundWindow,
@@ -842,29 +844,90 @@ fn verify_conversion(
         }
         pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        let text: Vec<_> = "降水".encode_utf16().collect();
-        pump_until(|| {
+        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
+        let initial = candidate_list(thread, document)?.ok_or(E_FAIL)?;
+        assert!(initial.IsShown()?.as_bool());
+        assert!(initial.GetCount()? >= 3);
+        let start = initial.GetSelection()?;
+        assert_eq!(initial.GetString(start)?.to_string(), "降水");
+        for (key, forward) in [(VK_DOWN, true), (VK_SPACE, true), (VK_UP, false)] {
+            let previous = initial.GetSelection()?;
+            let count = initial.GetCount()?;
+            let expected = if forward {
+                (previous + 1) % count
+            } else {
+                (previous + count - 1) % count
+            };
+            assert!(
+                keys.TestKeyDown(WPARAM(usize::from(key.0)), LPARAM(0))?
+                    .as_bool()
+            );
+            assert_eq!(
+                initial.GetSelection()?,
+                previous,
+                "inspection does not move selection"
+            );
+            assert!(
+                keys.KeyDown(WPARAM(usize::from(key.0)), LPARAM(0))?
+                    .as_bool()
+            );
+            assert_eq!(initial.GetSelection()?, expected);
+            let text = initial.GetString(expected)?.to_string();
+            let rendered: Vec<_> = text.encode_utf16().collect();
             context.RequestEditSession(client, &reader, flags)?.ok()?;
-            Ok(contents.get().1.as_slice() == text)
-        })?;
+            assert_eq!(contents.get().1.as_slice(), rendered);
+        }
 
-        assert!(
-            keys.KeyDown(WPARAM(usize::from(VK_ESCAPE.0)), LPARAM(0))?
-                .as_bool()
-        );
-        assert!(
-            keys.KeyDown(WPARAM(usize::from(VK_A.0)), LPARAM(0))?
-                .as_bool()
-        );
+        let escape = WPARAM(usize::from(VK_ESCAPE.0));
+        assert!(keys.KeyDown(escape, LPARAM(0))?.as_bool());
+        assert!(candidate_list(thread, document)?.is_none());
+        assert_eq!(initial.GetCount()?, 0);
+        assert!(initial.GetSelection().is_err());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (2, [u16::from(b'k'), u16::from(b'o')]));
+
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
+        let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         let other = thread.CreateDocumentMgr()?;
         thread.SetFocus(&other)?;
         thread.SetFocus(document)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
+        assert!(candidate_list(thread, document)?.is_none());
+        assert_eq!(old.GetCount()?, 0);
+        assert!(old.GetString(0).is_err());
         assert!(!keys.TestKeyDown(space, LPARAM(0))?.as_bool());
     }
     Ok(())
+}
+
+fn candidate_list(
+    thread: &ITfThreadMgr,
+    target: &ITfDocumentMgr,
+) -> Result<Option<ITfCandidateListUIElement>> {
+    use windows::Win32::UI::TextServices::ITfUIElementMgr;
+    let manager: ITfUIElementMgr = thread.cast()?;
+    unsafe {
+        let elements = manager.EnumUIElements()?;
+        loop {
+            let mut item = [None];
+            let mut fetched = 0;
+            elements.Next(&mut item, &mut fetched)?;
+            if fetched == 0 {
+                return Ok(None);
+            }
+            let [element] = item;
+            if let Some(element) = element
+                && let Ok(list) = element.cast::<ITfCandidateListUIElement>()
+                && list
+                    .GetDocumentMgr()
+                    .is_ok_and(|current| &current == target)
+            {
+                return Ok(Some(list));
+            }
+        }
+    }
 }
 
 fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {

@@ -60,7 +60,16 @@ fn main() {
         wait(&background, |event| {
             if let Event::Converted(key, result) = event {
                 assert_eq!(key.input_revision, Some(revision));
-                assert_eq!(result, Conversion::Text(expected.into()));
+                assert_eq!(result.conversion, Conversion::Text(expected.into()));
+                if revision == 1 {
+                    assert!(result.candidates.len() >= 3);
+                    assert!(
+                        result
+                            .candidates
+                            .iter()
+                            .any(|candidate| candidate == "香水")
+                    );
+                }
                 return true;
             }
             false
@@ -98,7 +107,7 @@ fn main() {
                 Some(6),
                 "invalidated request was delivered"
             );
-            assert_eq!(result, Conversion::Text("きゃ".into()));
+            assert_eq!(result.conversion, Conversion::Text("きゃ".into()));
             return true;
         }
         false

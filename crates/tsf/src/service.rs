@@ -10,7 +10,7 @@ use windows::Win32::{
         ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl, ITfDocumentMgr,
         ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource, ITfTextInputProcessor,
         ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-        ITfThreadMgrEventSink_Impl,
+        ITfThreadMgrEventSink_Impl, ITfUIElementMgr,
     },
 };
 use windows_core::{GUID, IUnknown, Interface, Result, implement};
@@ -61,6 +61,10 @@ impl Activation {
         self.preedit.invalidate(context, self.client_id);
     }
 
+    pub(crate) fn ui_manager(&self) -> Result<ITfUIElementMgr> {
+        self.thread_manager.cast()
+    }
+
     pub(crate) fn cancel_host(&self) {
         if let Ok(mut host) = self.host.try_borrow_mut()
             && let Some(host) = host.as_mut()
@@ -77,7 +81,11 @@ impl Activation {
             .host
             .try_borrow()
             .is_ok_and(|host| host.as_ref().is_some_and(Bridge::has_work));
-        if has_work && !self.preedit.can_deliver(self) {
+        let showing_candidates = self.preedit.showing_candidates();
+        if (has_work || showing_candidates) && !self.preedit.can_deliver(self) {
+            if showing_candidates {
+                self.preedit.invalidate(None, self.client_id);
+            }
             self.cancel_host();
         }
         let preview = {
