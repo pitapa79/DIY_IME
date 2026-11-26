@@ -15,7 +15,13 @@ use windows::Win32::{
 };
 use windows_core::{GUID, IUnknown, Interface, Result, implement};
 
-use crate::{ModuleRef, composition::Preedit, display, windows_keys::key_from_message};
+use crate::{
+    ModuleRef,
+    composition::Preedit,
+    display,
+    host::{Bridge, Timer},
+    windows_keys::key_from_message,
+};
 
 pub(crate) struct Activation {
     thread_manager: ITfThreadMgr,
@@ -26,11 +32,15 @@ pub(crate) struct Activation {
     foreground: Cell<bool>,
     document_subscription: Cell<Option<u32>>,
     pub(crate) preedit: Preedit,
+    pub(crate) host: RefCell<Option<Bridge>>,
+    timer: RefCell<Option<Timer>>,
 }
 
 impl Activation {
     fn unadvise(&self) -> Result<()> {
         self.active.set(false);
+        self.timer.take();
+        self.host.take();
         self.preedit.invalidate(None, self.client_id);
         let document = self.document_subscription.take().map_or(Ok(()), |cookie| {
             let source: ITfSource = self.thread_manager.cast()?;
@@ -42,6 +52,43 @@ impl Activation {
             Ok(())
         };
         document.and(keys)
+    }
+
+    fn observe_context(&self, context: Option<&ITfContext>) {
+        if !self.preedit.matches(context) {
+            self.cancel_host();
+        }
+        self.preedit.invalidate(context, self.client_id);
+    }
+
+    pub(crate) fn cancel_host(&self) {
+        if let Ok(mut host) = self.host.try_borrow_mut()
+            && let Some(host) = host.as_mut()
+        {
+            host.cancel();
+        }
+    }
+
+    pub(crate) fn poll_host(self: &Rc<Self>) {
+        if !self.active.get() {
+            return;
+        }
+        let has_work = self
+            .host
+            .try_borrow()
+            .is_ok_and(|host| host.as_ref().is_some_and(Bridge::has_work));
+        if has_work && !self.preedit.can_deliver(self) {
+            self.cancel_host();
+        }
+        let preview = {
+            let Ok(mut host) = self.host.try_borrow_mut() else {
+                return;
+            };
+            host.as_mut().and_then(Bridge::poll)
+        };
+        if let Some(preview) = preview {
+            self.preedit.preview(self, preview);
+        }
     }
 
     pub(crate) fn owns_focus(&self, context: &ITfContext) -> bool {
@@ -116,6 +163,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             foreground: Cell::new(false),
             document_subscription: Cell::new(None),
             preedit: Preedit::default(),
+            host: RefCell::new(None),
+            timer: RefCell::new(None),
         });
         let source: ITfSource = manager.cast()?;
         let document_sink: ITfThreadMgrEventSink = DocumentSink {
@@ -161,6 +210,12 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Err(E_FAIL.into());
         }
         activation.active.set(true);
+        if let Some(host) = Bridge::open()
+            && let Some(timer) = Timer::open(&activation)
+        {
+            activation.host.replace(Some(host));
+            activation.timer.replace(Some(timer));
+        }
         Ok(())
     }
 
@@ -180,6 +235,7 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         if let Some(activation) = self.activation.upgrade() {
             activation.foreground.set(foreground.as_bool());
             if !foreground.as_bool() {
+                activation.cancel_host();
                 activation.preedit.invalidate(None, activation.client_id);
             }
         }
@@ -255,9 +311,7 @@ impl DocumentSink_Impl {
                     .and_then(|doc| doc.GetTop())
                     .ok()
             };
-            activation
-                .preedit
-                .invalidate(current.as_ref(), activation.client_id);
+            activation.observe_context(current.as_ref());
         }
     }
 }
@@ -279,9 +333,7 @@ impl ITfThreadMgrEventSink_Impl for DocumentSink_Impl {
     ) -> Result<()> {
         if let Some(activation) = self.activation.upgrade() {
             let context = current.and_then(|doc| unsafe { doc.GetTop().ok() });
-            activation
-                .preedit
-                .invalidate(context.as_ref(), activation.client_id);
+            activation.observe_context(context.as_ref());
         }
         Ok(())
     }
@@ -300,10 +352,8 @@ impl ITfThreadMgrEventSink_Impl for DocumentSink_Impl {
                     .and_then(|doc| doc.GetTop())
                     .ok()
             };
-            activation.preedit.invalidate(
-                current.as_ref().filter(|current| Some(*current) != context),
-                activation.client_id,
-            );
+            activation
+                .observe_context(current.as_ref().filter(|current| Some(*current) != context));
         }
         Ok(())
     }

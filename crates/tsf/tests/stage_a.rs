@@ -309,22 +309,35 @@ impl Drop for ClassRegistration {
 
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
-    exercise_test_window(false, false)
+    exercise_test_window(false, false, false)
 }
 
 #[test]
 #[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
 fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
-    exercise_test_window(true, false)
+    exercise_test_window(true, false, false)
 }
 
 #[test]
 #[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
 fn interactive_machine_registered_app_routes_input() -> Result<()> {
-    exercise_test_window(true, true)
+    exercise_test_window(true, true, false)
 }
 
-fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<()> {
+#[test]
+#[ignore = "requires the approved isolated Host fixture and an interactive Windows desktop"]
+fn interactive_app_converts_through_official_host() -> Result<()> {
+    let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
+    let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
+    diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
+    exercise_test_window(true, false, true)
+}
+
+fn exercise_test_window(
+    interactive: bool,
+    machine_registered: bool,
+    conversion: bool,
+) -> Result<()> {
     let _apartment = Apartment::open()?;
     let window = Window(unsafe {
         CreateWindowExW(
@@ -438,8 +451,12 @@ fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<(
     if interactive {
         let context = context.as_ref().expect("real TSF context");
         wait_for_app_focus(&thread_manager)?;
-        verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
-        verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+        if conversion {
+            verify_conversion(context, &document, &thread_manager, &keys, client)?;
+        } else {
+            verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
+            verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+        }
     }
     profile.remove()?;
     assert_ne!(
@@ -452,6 +469,9 @@ fn exercise_test_window(interactive: bool, machine_registered: bool) -> Result<(
         thread_manager.Deactivate()?;
     }
     drop(registration);
+    if conversion {
+        pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
+    }
     assert_eq!(DllCanUnloadNow(), S_OK);
     Ok(())
 }
@@ -460,7 +480,7 @@ use windows::Win32::{
     Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, LPARAM, WPARAM},
     System::Com::CoTaskMemAlloc,
     UI::{
-        Input::KeyboardAndMouse::{VK_A, VK_B, VK_BACK, VK_ESCAPE, VK_TAB},
+        Input::KeyboardAndMouse::{VK_A, VK_B, VK_BACK, VK_ESCAPE, VK_SPACE, VK_TAB},
         TextServices::{
             GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_ATTRIBUTE, IS_DEFAULT, IS_PASSWORD,
             ITextStoreACP, ITfCompartmentMgr, ITfContext, ITfContextComposition,
@@ -792,7 +812,66 @@ fn verify_document_switch(
     Ok(())
 }
 
+fn verify_conversion(
+    context: &ITfContext,
+    document: &ITfDocumentMgr,
+    thread: &ITfThreadMgr,
+    keys: &ITfKeystrokeMgr,
+    client: u32,
+) -> Result<()> {
+    let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
+    let contents = Rc::new(Cell::new((0, [0; 2])));
+    let reader: ITfEditSession = ReadDocument {
+        context: context.clone(),
+        contents: contents.clone(),
+        caret: Rc::default(),
+        decorated: Rc::default(),
+    }
+    .into();
+    let compartment_manager: ITfCompartmentMgr = context.cast()?;
+    let space = WPARAM(usize::from(VK_SPACE.0));
+    unsafe {
+        compartment_manager
+            .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+            .SetValue(client, &VARIANT::from(0_i32))?;
+        for key in b"KOUSUI" {
+            assert!(
+                keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
+                    .as_bool()
+            );
+        }
+        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        let text: Vec<_> = "降水".encode_utf16().collect();
+        pump_until(|| {
+            context.RequestEditSession(client, &reader, flags)?.ok()?;
+            Ok(contents.get().1.as_slice() == text)
+        })?;
+
+        assert!(
+            keys.KeyDown(WPARAM(usize::from(VK_ESCAPE.0)), LPARAM(0))?
+                .as_bool()
+        );
+        assert!(
+            keys.KeyDown(WPARAM(usize::from(VK_A.0)), LPARAM(0))?
+                .as_bool()
+        );
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
+        let other = thread.CreateDocumentMgr()?;
+        thread.SetFocus(&other)?;
+        thread.SetFocus(document)?;
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (0, [0; 2]));
+        assert!(!keys.TestKeyDown(space, LPARAM(0))?.as_bool());
+    }
+    Ok(())
+}
+
 fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
+    pump_until(|| Ok(unsafe { manager.IsThreadFocus()? }.as_bool()))
+}
+
+fn pump_until(mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(40);
     loop {
         let mut message = MSG::default();
@@ -801,12 +880,12 @@ fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
-            if manager.IsThreadFocus()?.as_bool() {
+            if ready()? {
                 return Ok(());
             }
         }
         if std::time::Instant::now() >= limit {
-            eprintln!("the test window did not obtain desktop foreground");
+            eprintln!("timed out waiting for the TSF test condition");
             return Err(E_FAIL.into());
         }
         std::thread::sleep(std::time::Duration::from_millis(25));

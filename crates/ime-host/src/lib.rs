@@ -1,6 +1,7 @@
 //! Trust-side state for platform IME adapters. It owns intent and generations;
 //! the platform owns edit cookies and live document ranges.
 
+pub mod external;
 pub mod input_gate;
 pub mod utf16;
 

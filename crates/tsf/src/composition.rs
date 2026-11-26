@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use diy_ime2_ime_host::DocumentStamp;
 use windows::Win32::{
     Foundation::E_FAIL,
     System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
@@ -22,6 +23,7 @@ use crate::{
     ModuleRef,
     display::PREEDIT_ATTRIBUTE,
     document::{editable_selection, is_utf16_boundary},
+    host::{Bridge, Preview},
     keymap::{self, Action, Context, Key},
     service::Activation,
 };
@@ -33,6 +35,7 @@ pub(crate) struct Preedit {
     current: RefCell<Option<Rc<Owned>>>,
     pending_cleanup: RefCell<Option<Rc<Owned>>>,
     generation: Cell<u64>,
+    revision: Cell<u64>,
     busy: Cell<bool>,
     uncertain: Cell<bool>,
     display_atom: Cell<Option<u32>>,
@@ -43,6 +46,7 @@ struct Owned {
     composition: ITfComposition,
     original: Vec<u16>,
     text: RefCell<String>,
+    displayed: RefCell<String>,
     validity: Rc<Validity>,
     _watch: EditWatch,
 }
@@ -112,6 +116,24 @@ impl Preedit {
         self.display_atom.set(Some(atom));
         Ok(atom)
     }
+    pub(crate) fn matches(&self, context: Option<&ITfContext>) -> bool {
+        self.current
+            .borrow()
+            .as_ref()
+            .is_some_and(|owned| Some(&owned.context) == context && owned.validity.owned())
+    }
+
+    fn stamp(&self) -> DocumentStamp {
+        let generation = self.generation.get();
+        let revision = self.revision.get();
+        DocumentStamp {
+            focus: generation,
+            context: generation,
+            revision,
+            selection: revision,
+        }
+    }
+
     pub(crate) fn invalidate(&self, keep_context: Option<&ITfContext>, client: u32) {
         let owned = self.current.borrow().clone();
         if let Some(owned) = owned.as_ref()
@@ -172,6 +194,7 @@ impl Preedit {
         }
         let _busy = Busy(&self.busy);
         let completed = Rc::new(Cell::new(None));
+        let convert = Rc::new(Cell::new(false));
         let own_edit = Rc::new(RefCell::new(None::<Rc<Validity>>));
         let session: ITfEditSession = Session {
             _module: ModuleRef::new(),
@@ -181,6 +204,7 @@ impl Preedit {
             key,
             apply,
             completed: completed.clone(),
+            convert: convert.clone(),
             own_edit: own_edit.clone(),
         }
         .into();
@@ -199,7 +223,65 @@ impl Preedit {
         if let Some(owned) = self.pending_cleanup.take() {
             Self::cleanup(owned, activation.client_id);
         }
+        if apply && handled {
+            if convert.get() {
+                if self.generation.get() == generation
+                    && let Some(owned) = self.current.borrow().as_ref()
+                    && owned.validity.owned()
+                    && let Ok(mut host) = activation.host.try_borrow_mut()
+                    && let Some(host) = host.as_mut()
+                {
+                    host.convert(self.stamp(), owned.text.borrow().clone());
+                }
+            } else {
+                self.revision.set(self.revision.get().saturating_add(1));
+                activation.cancel_host();
+            }
+        }
         handled
+    }
+
+    pub(crate) fn can_deliver(&self, activation: &Rc<Activation>) -> bool {
+        let owned = self.current.borrow().clone();
+        owned.is_some_and(|owned| {
+            owned.validity.owned() && self.key(activation, &owned.context, Key::Space, false)
+        })
+    }
+
+    pub(crate) fn preview(&self, activation: &Rc<Activation>, preview: Preview) {
+        if preview.stamp != self.stamp()
+            || self.revision.get() == u64::MAX
+            || self.uncertain.get()
+            || preview.text.encode_utf16().count() > MAX_PREEDIT
+            || self.busy.replace(true)
+        {
+            return;
+        }
+        let _busy = Busy(&self.busy);
+        let owned = self.current.borrow().clone();
+        let Some(owned) = owned else { return };
+        let armed = Rc::new(Cell::new(true));
+        let session: ITfEditSession = PreviewSession {
+            _module: ModuleRef::new(),
+            activation: activation.clone(),
+            owned: owned.clone(),
+            stamp: preview.stamp,
+            text: preview.text,
+            armed: armed.clone(),
+        }
+        .into();
+        let _ = unsafe {
+            owned.context.RequestEditSession(
+                activation.client_id,
+                &session,
+                TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0),
+            )
+        };
+        armed.set(false);
+        owned.validity.own_edit.set(false);
+        if let Some(owned) = self.pending_cleanup.take() {
+            Self::cleanup(owned, activation.client_id);
+        }
     }
 }
 
@@ -212,6 +294,7 @@ struct Session {
     key: Key,
     apply: bool,
     completed: Rc<Cell<Option<bool>>>,
+    convert: Rc<Cell<bool>>,
     own_edit: Rc<RefCell<Option<Rc<Validity>>>>,
 }
 
@@ -277,6 +360,17 @@ impl ITfEditSession_Impl for Session_Impl {
             Some(Action::Append(character)) if raw.len() < MAX_PREEDIT => raw.push(character),
             Some(Action::ReplaceWithPrefix(prefix)) => raw.truncate(prefix),
             Some(Action::Cancel) => raw.clear(),
+            Some(Action::Convert)
+                if self
+                    .activation
+                    .host
+                    .try_borrow()
+                    .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available)) =>
+            {
+                self.completed.set(Some(true));
+                self.convert.set(self.apply);
+                return Ok(());
+            }
             _ => return Ok(()),
         }
         if !self.apply {
@@ -379,6 +473,7 @@ impl ITfEditSession_Impl for Session_Impl {
         } else if ending {
             preedit.current.replace(None);
         } else {
+            owned.displayed.replace(raw.clone());
             owned.text.replace(raw);
         }
         result
@@ -410,6 +505,7 @@ impl Session_Impl {
             composition,
             original,
             text: RefCell::new(String::new()),
+            displayed: RefCell::new(String::new()),
             validity,
             _watch: watch,
         }))
@@ -422,10 +518,14 @@ impl Owned {
         if !valid_boundaries(&range, cookie) {
             return None;
         }
-        let expected_units = self.text.borrow().encode_utf16().count();
+        let expected_units = self.displayed.borrow().encode_utf16().count();
         let text = read_range(&range, cookie, expected_units)?;
-        (text.iter().copied().eq(self.text.borrow().encode_utf16()) && self.validity.owned())
-            .then_some(range)
+        (text
+            .iter()
+            .copied()
+            .eq(self.displayed.borrow().encode_utf16())
+            && self.validity.owned())
+        .then_some(range)
     }
 }
 
@@ -504,5 +604,82 @@ impl ITfEditSession_Impl for Cleanup_Impl {
         let end = unsafe { owned.composition.EndComposition(cookie) };
         owned.validity.ended.set(true);
         outcome.and(end)
+    }
+}
+
+#[implement(ITfEditSession)]
+struct PreviewSession {
+    _module: ModuleRef,
+    activation: Rc<Activation>,
+    owned: Rc<Owned>,
+    stamp: DocumentStamp,
+    text: String,
+    armed: Rc<Cell<bool>>,
+}
+
+impl PreviewSession_Impl {
+    fn valid(&self) -> bool {
+        let preedit = &self.activation.preedit;
+        self.stamp == preedit.stamp()
+            && self.owned.validity.owned()
+            && self.activation.owns_focus(&self.owned.context)
+            && self.stamp == preedit.stamp()
+            && self.owned.validity.owned()
+    }
+}
+
+impl ITfEditSession_Impl for PreviewSession_Impl {
+    fn DoEditSession(&self, cookie: u32) -> Result<()> {
+        if !self.armed.replace(false) || !self.valid() {
+            return Ok(());
+        }
+        let preedit = &self.activation.preedit;
+        let context = &self.owned.context;
+        let Some(selection) = editable_selection(context, cookie) else {
+            self.activation.cancel_host();
+            preedit.invalidate(None, self.activation.client_id);
+            return Ok(());
+        };
+        let Some(range) = self.owned.verified_range(cookie) else {
+            return Ok(());
+        };
+        if !unsafe { selection.IsEmpty(cookie)?.as_bool() }
+            || unsafe { selection.CompareStart(cookie, &range, TF_ANCHOR_END)? } != 0
+        {
+            return Ok(());
+        }
+        let atom = preedit.display_atom()?;
+        let property = unsafe { context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
+        if !self.valid() || !selection_is_current(context, cookie, &selection) || !self.valid() {
+            return Ok(());
+        }
+
+        let text: Vec<u16> = self.text.encode_utf16().collect();
+        self.owned.validity.own_edit.set(true);
+        let result = (|| unsafe {
+            range.SetText(cookie, 0, &text)?;
+            if !self.valid() || editable_selection(context, cookie).is_none() || !self.valid() {
+                return Err(E_FAIL.into());
+            }
+            let actual = self.owned.composition.GetRange()?;
+            if read_range(&actual, cookie, text.len()).as_deref() != Some(text.as_slice())
+                || !self.valid()
+            {
+                return Err(E_FAIL.into());
+            }
+            property.SetValue(cookie, &actual, &VARIANT::from(atom as i32))?;
+            if !self.valid() {
+                return Err(E_FAIL.into());
+            }
+            set_selection(context, cookie, actual, true)
+        })();
+        if result.is_ok() && self.valid() {
+            self.owned.displayed.replace(self.text.clone());
+        } else {
+            self.activation.cancel_host();
+            preedit.invalidate(None, self.activation.client_id);
+            preedit.uncertain.set(true);
+        }
+        result
     }
 }

@@ -114,6 +114,9 @@ enum Operation {
     Prepare {
         graph: Graph,
     },
+    PrepareOfficialIme {
+        graph: Graph,
+    },
     Approve {
         review_id: String,
         ids: Vec<String>,
@@ -444,7 +447,9 @@ fn reader(
             token.clone(),
             matches!(
                 request.operation,
-                Operation::Prepare { .. } | Operation::Activate { .. }
+                Operation::Prepare { .. }
+                    | Operation::PrepareOfficialIme { .. }
+                    | Operation::Activate { .. }
             ),
         );
         drop(state);
@@ -618,7 +623,12 @@ impl Runner {
    "activeInput":retained.is_some_and(|owner|owner.active_input()),"decodedReplies":retained.map_or(0,|owner|owner.decoded_replies())}}),
         )
     }
-    fn prepare(&mut self, graph: Graph, cancel: CancellationToken) -> Result<Value, CoreError> {
+    fn prepare(
+        &mut self,
+        graph: Graph,
+        cancel: CancellationToken,
+        require_official: bool,
+    ) -> Result<Value, CoreError> {
         let generation = self
             .controls
             .generation
@@ -724,6 +734,12 @@ impl Runner {
         };
         if cancel.is_cancelled() {
             return Err(error("external-cancelled", "preparation cancelled"));
+        }
+        if require_official && official.is_none() {
+            return Err(error(
+                "external-official",
+                "the pinned official IME pipeline is required",
+            ));
         }
         let used = verified
             .values()
@@ -867,7 +883,8 @@ impl Runner {
                     .remove(&id)?;
                 Ok(json!({"deleted":true,"state":self.status()?}))
             }
-            Operation::Prepare { graph } => self.prepare(graph, cancel),
+            Operation::Prepare { graph } => self.prepare(graph, cancel, false),
+            Operation::PrepareOfficialIme { graph } => self.prepare(graph, cancel, true),
             Operation::Approve {
                 review_id,
                 ids,
@@ -1143,7 +1160,9 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
         };
         let preparing = matches!(
             work.request.operation,
-            Operation::Prepare { .. } | Operation::Activate { .. }
+            Operation::Prepare { .. }
+                | Operation::PrepareOfficialIme { .. }
+                | Operation::Activate { .. }
         );
         let mut result = if controls.closing.load(Ordering::Acquire) {
             Err(error("external-closed", "Host is closing"))
