@@ -2,8 +2,6 @@
 //! All resources below are memory canaries. This is not an OS sandbox test.
 #[path = "../examples/security_support/authority.rs"]
 mod authority;
-#[path = "../examples/security_support/input_gate.rs"]
-mod input_gate;
 use authority::{Authority, Binding, Permit};
 use diy_ime2_core::{
     Candidate, Packet,
@@ -14,7 +12,7 @@ use diy_ime2_core::{
     },
     runtime::{Engine, RunReport},
 };
-use input_gate::{Denial, InputGate, Ticket};
+use diy_ime2_ime_host::input_gate::{Denial, InputGate, Ticket};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,

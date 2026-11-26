@@ -6,12 +6,20 @@ version = 4
 name = "diy-ime2-core"
 version = "0.1.0"
 dependencies = [
+ "diy-ime2-ime-host",
  "diy-ime2-runtime",
  "diy-ime2-wasm-resource-sdk",
  "semver",
  "serde",
  "serde_json",
  "windows-sys",
+]
+
+[[package]]
+name = "diy-ime2-ime-host"
+version = "0.1.0"
+dependencies = [
+ "diy-ime2-runtime",
 ]
 
 [[package]]

@@ -1,65 +1,90 @@
-//! Trusted pre-dispatch gate. No input bodies or Node-provided protection flags.
+//! Trusted pre-dispatch gate. It never receives input bodies or Node-provided flags.
+
 use std::sync::Arc;
+
 #[derive(Clone)]
 pub struct Ticket(Arc<()>);
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Denial {
     Protected,
     NotAllowed,
 }
+
 #[derive(Default)]
 pub struct InputGate {
     manual: bool,
     automatic: bool,
-    failed: bool,
+    pending: Option<Ticket>,
     epoch: Arc<()>,
 }
+
 impl InputGate {
     pub fn manual(&self) -> bool {
         self.manual
     }
+
     pub fn automatic(&self) -> bool {
         self.automatic
     }
+
     pub fn blocked(&self) -> bool {
-        self.manual || self.automatic || self.failed
+        self.manual || self.automatic || self.pending.is_some()
     }
-    /// Only the trusted input adapter may call these setters. On failure remain
-    /// closed, including when leaving protection, until invalidation succeeds.
+
     pub fn set_manual<E>(
         &mut self,
         value: bool,
         invalidate: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), E> {
-        let changed = self.manual != value;
-        self.manual = value;
-        self.transition(changed, invalidate)
+        self.set_flags(value, self.automatic, invalidate)
     }
+
     pub fn set_automatic<E>(
         &mut self,
         value: bool,
         invalidate: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), E> {
-        let changed = self.automatic != value;
-        self.automatic = value;
-        self.transition(changed, invalidate)
+        self.set_flags(self.manual, value, invalidate)
     }
-    fn transition<E>(
+
+    fn set_flags<E>(
         &mut self,
-        changed: bool,
+        manual: bool,
+        automatic: bool,
         invalidate: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), E> {
-        if !changed && !self.failed {
+        if manual == self.manual && automatic == self.automatic && self.pending.is_none() {
             return Ok(());
         }
-        self.epoch = Arc::new(());
-        self.failed = true;
+        let ticket = self.begin_invalidation(manual, automatic);
         invalidate()?;
-        self.failed = false;
+        self.finish_invalidation(&ticket);
         Ok(())
     }
-    /// Place all Node/learning/debug/network delivery inside the closure. This
-    /// gate never receives or stores a body, key event, context, or queued input.
+
+    pub(crate) fn begin_invalidation(&mut self, manual: bool, automatic: bool) -> Ticket {
+        self.manual = manual;
+        self.automatic = automatic;
+        self.epoch = Arc::new(());
+        let ticket = Ticket(self.epoch.clone());
+        self.pending = Some(ticket.clone());
+        ticket
+    }
+
+    pub(crate) fn finish_invalidation(&mut self, ticket: &Ticket) -> bool {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| Arc::ptr_eq(&pending.0, &ticket.0))
+        {
+            return false;
+        }
+        self.pending = None;
+        true
+    }
+
+    /// Deliver Node/learning/debug/network data only inside the closure.
     pub fn dispatch<R>(
         &self,
         allowed: bool,
@@ -73,6 +98,7 @@ impl InputGate {
         }
         Ok((Ticket(self.epoch.clone()), deliver()))
     }
+
     pub fn accepts(&self, ticket: &Ticket) -> bool {
         !self.blocked() && Arc::ptr_eq(&self.epoch, &ticket.0)
     }
