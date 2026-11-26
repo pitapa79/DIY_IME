@@ -4,7 +4,7 @@
 これは実装の依存順序と完了判定であり、全工程の実装完了を示さない。
 引継ぎ [#311](https://github.com/pitapa79/DIY_IME2/issues/311) は当時の記録として扱い、各作業の開始時に最新main・Issue・実装を照合する。
 
-**今回の作業範囲はIME化の開始より前まで。** 詳細計測、実用構成の性能検証・改善、既存の非OS境界の検査を進める。以下の工程3〜6は将来の依存関係を示すだけで、TSF実装・OS登録・実キー操作・IME配布への着手指示ではない。Windows入力方式を変更しない。
+**現行方針（2026-11-26 JST）: IME段階Bまで進める。** [現在の開発方針](current-development-plan.md) / [#187](https://github.com/pitapa79/DIY_IME/issues/187) を優先する。工程1・2の独立した計測・高速化は一時凍結し、完了を工程3の前提にしない。既存資産を利用し、工程3〜5および工程6のうちテスト導入・解除・復旧に必要な部分を進める。性能は記録するが目標達成をBの完了条件にしない。一般配布・正式性能評価・段階Cは今回の対象外。B完了後はメンテナー判断を待つ。下記の旧Issueは経緯の参照であって現行の着手承認ではない。
 
 ## 現在地と責務
 
@@ -12,12 +12,14 @@
 
 | リポジトリ | 所有するもの |
 | --- | --- |
-| [DIY_IME2](https://github.com/pitapa79/DIY_IME2) | Core、system/OS境界、Host/broker/Worker、権限、エディター、TSF、配布と診断 |
-| [DIY_IME2_node](https://github.com/pitapa79/DIY_IME2_node) | 変換・辞書・候補評価などの処理Node、Node側テスト、パッケージ、固定SDKの取り込み |
+| [DIY_IME](https://github.com/pitapa79/DIY_IME) | Core、system/OS境界、Host/broker/Worker、権限、エディター、TSF、配布と診断 |
+| [DIY_IME_node](https://github.com/pitapa79/DIY_IME_node) | 変換・辞書・候補評価などの処理Node、Node側テスト、パッケージ、固定SDKの取り込み |
 
 処理Nodeを本体へ戻さない。Node側の `sdk/runtime` は固定snapshotであり、共通APIの二重開発場所ではない。SDK変更は本体で契約を定義・検証してから別Issue/PRで取り込む。Node側では最新のAGENTS.mdと開発・Issue運用規則を読む。公式採用・同梱・外向け仕様と、技術的実装を区別する。
 
 ## 依存順序と受け入れ基準
+
+以下は従来工程の技術的要件を保存したもの。現行の着手順・停止点は #187 と #189〜#198 に従う。工程1・2は独立した高速化として一時凍結。工程3〜5と必要最小限の工程6を段階Bとして実施する。
 
 | 順序 | 作業 | 開始条件・完成の証拠 |
 | --- | --- | --- |
