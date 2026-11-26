@@ -18,10 +18,12 @@ cargo build --locked -p diy-ime2-tsf
 
 Windows 10 Pro 22H2 x64 build 19045、Rust 1.90.0 GNUで、DLLビルド、COMの異なるCLSIDの拒否と寿命、実TSF Contextの同期編集セッション、プロセス内の日本語テストプロファイル導入・存在確認・解除を検証した。通常のアプリや既定プロファイルへ接続する検査は未実施。
 
-プロセス内のCOMファクトリと `TF_RP_LOCALPROCESS` を組み合わせた試行では、プロファイルの登録を確認できた。プロセス内の選択要求後にも `ITfKeystrokeMgr::GetForeground` はサービスのCLSIDを返さなかった。Activate/Deactivateの成功、キーの配送、編集セッション内からの文字挿入は引き続き実アプリで確認する必要がある。[Microsoftのプロファイル登録API](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)。
+非表示の専用ウィンドウにテスト文書を関連付けてから、`TF_RP_LOCALPROCESS` と `TF_IPPMF_FORPROCESS` でプロファイルを選択できた。TSFの前面キー受け口がテスト用CLSIDになり、無効化・解除後には元に戻り、DLLのCOM参照を解放できた。ウィンドウの関連付けがない試行では前面キー受け口を取得できなかった。TSFを使ったプロセス内検査は4件成功した。文字の挿入と保護時のキーパススルーは実アプリで検証する必要がある。[Microsoftのプロファイル登録API](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)。
+
+2026-11-26 JSTに、現在のWindowsアカウントでの一時的なユーザー単位の検証について追加承認を受けた。64ビットのユーザーCOM登録に専用CLSIDと検査用DLLのコピーを使い、COM経由のDLL起動を確認した。この状態で別プロセスから照会した結果、TSFプロファイルは登録されていなかった。検証後は専用のCOM/TSFキーがユーザー側とマシン側の両方に存在しないことを確認した。TSFのプロファイルをユーザーだけに新規登録する、プロセスをまたぐ手順は確認できていない。Microsoftの手順では新規登録と現在ユーザーへの有効化を分けている。[MicrosoftのIME導入手順](https://learn.microsoft.com/windows/apps/design/input/input-method-editor-requirements)。
 
 ## 残りの受入検査
 
-- 隔離されたWindows 10/11 x64のテストユーザーで、専用IMEを明示導入・選択・解除する方式を検証する。登録対象と範囲を導入前に確認し、既定IMEを記録する。失敗・中断時はこのサービスが所有する登録だけを取り除き、解除後にプロファイルが見えないことと既定IMEが維持されたことを確認する。管理者権限やマシン全体の登録が必要と分かった場合は、影響を明示して追加承認を得る。
+- 現在のWindowsアカウントでのユーザー単位の一時検証、または承認済みの隔離Windows 10/11 x64環境を使用する。専用IMEを明示導入・選択・解除する方式を検証する。登録対象と範囲を導入前に確認し、既定IMEを記録する。失敗・中断時はこのサービスが所有する登録だけを取り除き、解除後にプロファイルが見えないことと既定IMEが維持されたことを確認する。管理者権限やマシン全体の登録が必要と分かった場合は、影響を明示して追加承認を得る。
 - 実アプリでサービスのActivate/DeactivateとCOM寿命を確認し、入力が許可された欄で最小の文字挿入を確認する。判定不能や保護欄でキーがアプリに通り、TSF側が編集しないことを記録する。
 - 上記の結果、環境、アプリ、制限、解除・復旧手順をPRへ残し、Level 3のマージ時承認を得る。

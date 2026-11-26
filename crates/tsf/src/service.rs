@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use windows::Win32::{
@@ -107,7 +107,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         *self.activation.try_borrow_mut().map_err(|_| E_UNEXPECTED)? = Some(activation.clone());
         let sink: ITfKeyEventSink = KeySink {
             _module: ModuleRef::new(),
-            activation: activation.clone(),
+            activation: Rc::downgrade(&activation),
         }
         .into();
         let registered = unsafe {
@@ -148,18 +148,23 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 #[implement(ITfKeyEventSink)]
 struct KeySink {
     _module: ModuleRef,
-    activation: Rc<Activation>,
+    activation: Weak<Activation>,
 }
 
 impl ITfKeyEventSink_Impl for KeySink_Impl {
     fn OnSetFocus(&self, foreground: BOOL) -> Result<()> {
-        self.activation.foreground.set(foreground.as_bool());
+        if let Some(activation) = self.activation.upgrade() {
+            activation.foreground.set(foreground.as_bool());
+        }
         Ok(())
     }
 
     fn OnTestKeyDown(&self, context: Option<&ITfContext>, key: WPARAM, _: LPARAM) -> Result<BOOL> {
         Ok(context
-            .is_some_and(|context| crate::probe::probe_key(&self.activation, context, key, false))
+            .zip(self.activation.upgrade())
+            .is_some_and(|(context, activation)| {
+                crate::probe::probe_key(&activation, context, key, false)
+            })
             .into())
     }
 
@@ -169,7 +174,10 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
 
     fn OnKeyDown(&self, context: Option<&ITfContext>, key: WPARAM, _: LPARAM) -> Result<BOOL> {
         Ok(context
-            .is_some_and(|context| crate::probe::probe_key(&self.activation, context, key, true))
+            .zip(self.activation.upgrade())
+            .is_some_and(|(context, activation)| {
+                crate::probe::probe_key(&activation, context, key, true)
+            })
             .into())
     }
 
