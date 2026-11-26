@@ -67,6 +67,12 @@ if ($CheckPrerequisites) {
 $repo = Split-Path $PSScriptRoot -Parent
 Push-Location -LiteralPath $repo
 try {
+    if ($StageBHostConfiguration) {
+        & $Cargo run --locked -p diy-ime2-ime-host --example ime_external_host_probe -- $stageBHost $StageBHostConfiguration
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The Stage B Host could not run the synthetic fixture. Recreate the fixture using the current binaries before registering the profile.'
+        }
+    }
     $events = & $Cargo test --locked -p diy-ime2-tsf --test stage_a --no-run --message-format=json
     if ($LASTEXITCODE -ne 0) { throw 'The Win32 test executable could not be built.' }
 } finally { Pop-Location }

@@ -31,6 +31,8 @@ cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interact
 
 前半は試験プロセス内でサービスを選択する。最後のコマンドは通常ユーザーから実行し、WindowsのUACを承認する。期限付きの専用マシン登録を使い、別プロセスの試験アプリがシステムの登録からDLLを読み込む。公式Hostはアプリから通常ユーザーとして起動する。終了後は、専用COMとTSFのキー、Program Filesの一時配置、入力方式一覧、既定IMEの上書き設定を照合する。前提検査が古い登録を検出した場合は、状態を記録してから [段階Aの解除手順](tsf-stage-a.md#一時マシン登録の受入手順) で専用プロファイルだけを片付ける。
 
+一時登録の前に、通常ユーザーで合成データの変換、確定、失効とHost終了を検査する。この検査に失敗した場合は、現在のバイナリで試験設定を再生成する。`-CheckPrerequisites` はファイルと未登録状態の確認だけを行う。
+
 マシン登録前にDLL自体を切り分ける場合は、空の試験ディレクトリに `diy_ime2_tsf.dll`、`diy-ime2-external-host.exe`、`ime-execution.json`（上で生成した `host.json` のコピー）を置く。そのDLLの絶対パスを `DIY_IME_TEST_DLL` に設定して、登録を試験プロセス内に限定した以下の検査を実行できる。
 
 ```powershell
