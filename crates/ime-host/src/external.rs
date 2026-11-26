@@ -29,6 +29,7 @@ const TIMEOUT: Duration = Duration::from_secs(45);
 const WAIT: Duration = Duration::from_millis(10);
 const GRAPH: &str = include_str!("../../../examples/graphs/official-dictionary.json");
 
+#[derive(Clone)]
 pub struct Configuration {
     pub executable: PathBuf,
     pub file: PathBuf,
@@ -46,18 +47,51 @@ pub struct Output {
     pub candidates: Vec<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct Observation {
+    dispatched: Arc<AtomicU64>,
+    reaped: Arc<AtomicU64>,
+}
+
+impl Observation {
+    pub fn dispatched(&self) -> u64 {
+        self.dispatched.load(Ordering::Acquire)
+    }
+
+    pub fn reaped(&self) -> u64 {
+        self.reaped.load(Ordering::Acquire)
+    }
+}
+
+pub struct Stopped(Arc<AtomicBool>);
+
+impl Stopped {
+    pub fn confirmed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 pub struct Background {
     requests: SyncSender<RuntimeInput>,
     events: Receiver<Event>,
     revision: Arc<AtomicU64>,
     acknowledged: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Background {
     /// Paths come from the trusted application/test launcher. The client
     /// submits the compiled-in graph and can never grant its own permissions.
     pub fn spawn(config: Configuration, lifetime: impl Send + 'static) -> io::Result<Self> {
+        Self::spawn_observed(config, Observation::default(), lifetime)
+    }
+
+    pub fn spawn_observed(
+        config: Configuration,
+        observation: Observation,
+        lifetime: impl Send + 'static,
+    ) -> io::Result<Self> {
         if !config.executable.is_absolute() || !config.file.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -72,6 +106,8 @@ impl Background {
         let acknowledged = Arc::new(AtomicU64::new(0));
         let applied_revision = acknowledged.clone();
         let closing = shutdown.clone();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let witnessed = stopped.clone();
         thread::Builder::new()
             .name("DIY IME Host".into())
             .spawn(move || {
@@ -80,9 +116,13 @@ impl Background {
                     config,
                     inbox,
                     &outbox,
-                    active_revision,
-                    applied_revision,
-                    closing,
+                    Signals {
+                        revision: active_revision,
+                        acknowledged: applied_revision,
+                        shutdown: closing,
+                        stopped: witnessed,
+                        observation,
+                    },
                 )
                 .is_none()
                 {
@@ -95,13 +135,15 @@ impl Background {
             revision,
             acknowledged,
             shutdown,
+            stopped,
         })
     }
 
     /// Invalidate even when the next work item cannot be enqueued. The
     /// UI retains its local raw preedit and can submit a newer revision.
     pub fn submit(&self, input: RuntimeInput) -> bool {
-        input.validate().is_ok()
+        !self.shutdown.load(Ordering::Acquire)
+            && input.validate().is_ok()
             && self.advance(input.revision)
             && self.requests.try_send(input).is_ok()
     }
@@ -112,6 +154,11 @@ impl Background {
 
     fn advance(&self, revision: u64) -> bool {
         self.revision.fetch_max(revision, Ordering::AcqRel) < revision
+    }
+
+    pub fn request_stop(&self) -> Stopped {
+        self.shutdown.store(true, Ordering::Release);
+        Stopped(self.stopped.clone())
     }
 
     pub fn acknowledged(&self) -> u64 {
@@ -137,15 +184,35 @@ impl Drop for Background {
     }
 }
 
+struct Signals {
+    revision: Arc<AtomicU64>,
+    acknowledged: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    observation: Observation,
+}
+
 fn supervise(
     config: Configuration,
     inbox: Receiver<RuntimeInput>,
     outbox: &SyncSender<Event>,
-    revision: Arc<AtomicU64>,
-    acknowledged: Arc<AtomicU64>,
-    shutdown: Arc<AtomicBool>,
+    signals: Signals,
 ) -> Option<()> {
-    let mut host = Transport::open(&config.executable, &config.file, shutdown.clone()).ok()?;
+    let Signals {
+        revision,
+        acknowledged,
+        shutdown,
+        stopped,
+        observation,
+    } = signals;
+    let mut host = Transport::open(
+        &config.executable,
+        &config.file,
+        shutdown.clone(),
+        stopped,
+        observation.clone(),
+    )
+    .ok()?;
     let graph = serde_json::from_str::<Value>(GRAPH).ok()?;
     let review = host.call(json!({"method": "prepareOfficialIme", "graph": graph}))?;
     if !review["missing"].as_array()?.is_empty() {
@@ -189,6 +256,10 @@ fn supervise(
         if input.revision != revision.load(Ordering::Acquire) {
             continue;
         }
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
+        observation.dispatched.fetch_add(1, Ordering::Relaxed);
         let key = start(&mut host, &plan, &input)?;
         let _ = outbox.try_send(Event::Started(key.clone()));
         match settle(&mut host, &key, &revision)? {
@@ -326,10 +397,18 @@ struct Transport {
     pipes: Vec<JoinHandle<()>>,
     next_id: u64,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    observation: Observation,
 }
 
 impl Transport {
-    fn open(exe: &Path, config: &Path, shutdown: Arc<AtomicBool>) -> io::Result<Self> {
+    fn open(
+        exe: &Path,
+        config: &Path,
+        shutdown: Arc<AtomicBool>,
+        stopped: Arc<AtomicBool>,
+        observation: Observation,
+    ) -> io::Result<Self> {
         let mut command = Command::new(exe);
         command.current_dir(exe.parent().expect("absolute executable path"));
         command
@@ -343,7 +422,13 @@ impl Transport {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command.spawn()?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                stopped.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
         let mut stdin = child.stdin.take().expect("requested piped stdin");
         let stdout = child.stdout.take().expect("requested piped stdout");
         let (writer, writes) = mpsc::sync_channel::<Vec<u8>>(1);
@@ -355,7 +440,10 @@ impl Transport {
             pipes: Vec::new(),
             next_id: 0,
             shutdown,
+            stopped,
+            observation,
         };
+        let writer_shutdown = transport.shutdown.clone();
         transport
             .pipes
             .push(
@@ -363,7 +451,9 @@ impl Transport {
                     .name("IME Host input".into())
                     .spawn(move || {
                         for frame in writes {
-                            if stdin.write_all(&frame).is_err() {
+                            if writer_shutdown.load(Ordering::Acquire)
+                                || stdin.write_all(&frame).is_err()
+                            {
                                 break;
                             }
                         }
@@ -426,19 +516,24 @@ impl Drop for Transport {
     fn drop(&mut self) {
         self.writer.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
+        let clean_exit = loop {
             match self.child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => break status.success(),
                 Ok(None) if Instant::now() < deadline => thread::sleep(WAIT),
                 _ => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
-                    break;
+                    // A forced Host exit does not acknowledge its Worker recovery.
+                    break false;
                 }
             }
-        }
+        };
         for pipe in self.pipes.drain(..) {
             let _ = pipe.join();
+        }
+        if clean_exit {
+            self.observation.reaped.fetch_add(1, Ordering::Release);
+            self.stopped.store(true, Ordering::Release);
         }
     }
 }

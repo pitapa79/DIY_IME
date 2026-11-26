@@ -456,6 +456,7 @@ impl Session_Impl {
         let preedit = &self.activation.preedit;
         preedit.generation.get() == self.generation
             && !preedit.uncertain.get()
+            && !self.activation.manually_blocked()
             && self.activation.owns_focus(&self.context)
             && preedit.generation.get() == self.generation
     }
@@ -466,13 +467,13 @@ impl Session_Impl {
         }
         let Some(selection) = editable_selection(&self.context, cookie) else {
             if self.apply {
-                self.activation.cancel_host();
-                self.activation
-                    .preedit
-                    .invalidate(None, self.activation.client_id);
+                self.activation.protect();
             }
             return None;
         };
+        if self.apply && !self.activation.allow_ordinary_input() {
+            return None;
+        }
         let owned = self.activation.preedit.current.borrow().clone();
         let raw = match owned.as_ref() {
             Some(owned) if owned.context == self.context && owned.validity.owned() => {
@@ -832,6 +833,7 @@ impl PreviewSession_Impl {
     fn valid(&self) -> bool {
         let preedit = &self.activation.preedit;
         self.stamp == preedit.stamp()
+            && !self.activation.is_protected()
             && self.owned.validity.owned()
             && self.activation.owns_focus(&self.owned.context)
             && self.stamp == preedit.stamp()
@@ -847,8 +849,7 @@ impl ITfEditSession_Impl for PreviewSession_Impl {
         let preedit = &self.activation.preedit;
         let context = &self.owned.context;
         let Some(selection) = editable_selection(context, cookie) else {
-            self.activation.cancel_host();
-            preedit.invalidate(None, self.activation.client_id);
+            self.activation.protect();
             return Ok(());
         };
         let Some(range) = self.owned.verified_range(cookie) else {

@@ -69,8 +69,12 @@ try {
   assert.equal((await host.call({method:'prepareOfficialIme',graph})).missing.length,0);
   await host.close();host=null;
   if(imeProbe)await probe(imeProbe,[hostExe,hostPath]);
-  if(tsfProbe)await probe(tsfProbe,['--ignored','--exact','interactive_app_converts_through_official_host'],
-   {...process.env,DIY_IME_TEST_HOST:hostExe,DIY_IME_TEST_HOST_CONFIG:hostPath});
+  if(tsfProbe){
+   const env={...process.env,DIY_IME_TEST_HOST:hostExe,DIY_IME_TEST_HOST_CONFIG:hostPath};
+   for(const test of ['interactive_app_converts_through_official_host','interactive_app_enforces_protection']){
+    await probe(tsfProbe,['--ignored','--exact',test],env);
+   }
+  }
  }
  console.log('Official bootstrap + production Main: all isolated installation proofs, exact 52-definition catalog, per-flow/resource consent and registered dictionary pipeline Unicode/tie/unknown/empty/saved-reopen compatibility passed.');
 }finally{if(manager)await manager.close();if(host)await host.close();if(dirname(root)!==resolve(tmpdir())||!root.startsWith(join(tmpdir(),'diyime-official-host-')))throw Error('unexpected cleanup root');rmSync(root,{recursive:true});}
