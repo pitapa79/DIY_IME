@@ -43,7 +43,7 @@ TSFの資料: [登録と解除](https://learn.microsoft.com/en-us/windows/win32/
 | Issue | 証拠にする検査 |
 | --- | --- |
 | [#190](https://github.com/pitapa79/DIY_IME/issues/190) | [入力状態と編集境界](ime-input-state.md)を偽文書で検査。同じ文字の再入力、遅延・重複、計画と文書の変更、通知/書込み順序、非原子的失敗、選択範囲/UTF-16、保護失効を負例にする |
-| [#191](https://github.com/pitapa79/DIY_IME/issues/191) | プロセス内TSF検査と、承認済み方法で実OSへ登録した検査を別々に記録。x64の実アプリでActivate/Deactivate、COM寿命、編集セッション、最小文字入力、部分導入からの復旧、解除後の不在を確認 |
+| [#191](https://github.com/pitapa79/DIY_IME/issues/191) | [プロセス内TSF検査](tsf-stage-a.md)と、承認済み方法で実OSへ登録した検査を別々に記録。x64の実アプリでActivate/Deactivate、COM寿命、編集セッション、最小文字入力、部分導入からの復旧、解除後の不在を確認 |
 | [#192](https://github.com/pitapa79/DIY_IME/issues/192) / [#193](https://github.com/pitapa79/DIY_IME/issues/193) | 実アプリで二重消費防止、アプリに通すキー、キャレットと選択、未確定表示、外部終了、サロゲート・結合文字、編集失敗を確認 |
 | [#194](https://github.com/pitapa79/DIY_IME/issues/194) / [#195](https://github.com/pitapa79/DIY_IME/issues/195) / [#196](https://github.com/pitapa79/DIY_IME/issues/196) | 現行の隔離Hostと承認済みNodeでcompose/finalize。遅いNodeの動作中に対象文書を切替。古い結果/候補と二重確定を拒否し、確定・取消・フォーカス境界を確認 |
 | [#197](https://github.com/pitapa79/DIY_IME/issues/197) | 通常欄、実アプリのパスワード欄、制御可能なテスト欄で機密通知あり/判定不能/手動/併用を検査。合成文字列のみを用い、アプリ直接入力、配送回数ゼロ、旧結果拒否、Host/Worker回収を確認 |

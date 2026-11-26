@@ -25,8 +25,8 @@ diy-ime2-wasm-resource-sdk = { path = "crates/wasm-resource-sdk" }
 
 [workspace]
 resolver = "3"
-members = ["crates/runtime", "crates/wasm-resource-sdk", "crates/ime-host"]
-default-members = [".", "crates/runtime", "crates/wasm-resource-sdk", "crates/ime-host"]
+members = ["crates/runtime", "crates/wasm-resource-sdk", "crates/ime-host", "crates/tsf"]
+default-members = [".", "crates/runtime", "crates/wasm-resource-sdk", "crates/ime-host", "crates/tsf"]
 
 [dev-dependencies]
 diy-ime2-ime-host = { path = "crates/ime-host" }
