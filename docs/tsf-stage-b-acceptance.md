@@ -41,6 +41,8 @@ cargo test --locked -p diy-ime2-tsf --test stage_a -- --ignored --exact interact
 
 ## メモ帳とブラウザーでの確認
 
+準備・事前検査を済ませた後、手動試験の実行者が「テストを開始できる」と伝えるまで、UACを伴う登録を開始しない。実行者の応答を待つ間にUACを表示したままにしない。
+
 手動操作の締切を設けずに確認する場合は `-FreshStaging -ManualUntilStopped` を使う。自動試験後に表示される `finish.signal` が作成されるまで待機する。実行者が手動結果を確認し、元のIMEへ戻して試験アプリを閉じた後、そのファイルを作る。管理プロセスの終了は、PIDと開始時刻を照合して検出し、登録側が解除を行う。管理者側プロセス自体の強制終了やOS異常終了後は、次回の登録前検査で残存を確認して復旧する。
 
 再ビルドを行わずに試験する場合は、検査済みの `stage_a-*.exe` を `-TestExecutable`、`ime_external_host_probe.exe` を `-HostProbeExecutable` で指定する。バイナリの版と使用した設定を試験結果に記録する。配置に必要なファイルサイズと記録用64 MiBの空きを登録前に検査する。
