@@ -6,9 +6,15 @@ param(
     [switch]$WaitForManualReady,
     [switch]$ReuseMatchingStaging,
     [switch]$FreshStaging,
+    [switch]$ManualUntilStopped,
+    [string]$TestExecutable,
+    [string]$HostProbeExecutable,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
+if ($ManualUntilStopped -and (!$StageBHostConfiguration -or $ManualAppSeconds -gt 0 -or $WaitForManualReady)) {
+    throw 'ManualUntilStopped requires a Stage B configuration and uses its own completion signal.'
+}
 if ($FreshStaging -and $ReuseMatchingStaging) {
     throw 'Choose either fresh staging or reuse of matching staging.'
 }
@@ -78,6 +84,11 @@ if ($StageBHostConfiguration) {
 foreach ($file in $requiredFiles) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test file $file" }
 }
+$requiredSpace = ($requiredFiles | ForEach-Object { (Get-Item -LiteralPath $_).Length } | Measure-Object -Sum).Sum
+$drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($staging))
+if ($drive.AvailableFreeSpace -lt ($requiredSpace + 64MB)) {
+    throw "Insufficient staging space. Need $requiredSpace bytes plus 64 MiB for test records."
+}
 $languageBaseline = @(Get-LanguageSettings)
 if ((Test-DedicatedKeys) -or
     ($languageBaseline -match $profile) -or ((Get-TestRegistration) -notmatch 'registered=false enabled_for_current_user=false')) {
@@ -101,20 +112,29 @@ if ($CheckPrerequisites) {
     return
 }
 
-# Compile before triggering UAC so the registration window is used only for verification.
 $repo = Split-Path $PSScriptRoot -Parent
+function Invoke-HostProbe([string]$HostPath, [string]$ConfigurationPath) {
+    if ($HostProbeExecutable) {
+        & $HostProbeExecutable $HostPath $ConfigurationPath
+    } else {
+        & $Cargo run --locked -p diy-ime2-ime-host --example ime_external_host_probe -- $HostPath $ConfigurationPath
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'The Stage B Host failed the synthetic fixture check.' }
+}
+if ($TestExecutable) { $TestExecutable = (Resolve-Path -LiteralPath $TestExecutable).Path }
+if ($HostProbeExecutable) { $HostProbeExecutable = (Resolve-Path -LiteralPath $HostProbeExecutable).Path }
 Push-Location -LiteralPath $repo
 try {
     if ($StageBHostConfiguration) {
-        & $Cargo run --locked -p diy-ime2-ime-host --example ime_external_host_probe -- $stageBHost $StageBHostConfiguration
-        if ($LASTEXITCODE -ne 0) {
-            throw 'The Stage B Host could not run the synthetic fixture. Recreate the fixture using the current binaries before registering the profile.'
-        }
+        Invoke-HostProbe $stageBHost $StageBHostConfiguration
     }
-    $events = & $Cargo test --locked -p diy-ime2-tsf --test stage_a --no-run --message-format=json
-    if ($LASTEXITCODE -ne 0) { throw 'The Win32 test executable could not be built.' }
+    if (!$TestExecutable) {
+        $events = & $Cargo test --locked -p diy-ime2-tsf --test stage_a --no-run --message-format=json
+        if ($LASTEXITCODE -ne 0) { throw 'The Win32 test executable could not be built.' }
+    }
 } finally { Pop-Location }
 $executables = @(
+    if ($TestExecutable) { $TestExecutable }
     foreach ($event in $events) {
         $item = $event | ConvertFrom-Json
         if ($item.reason -eq 'compiler-artifact' -and $item.target.name -eq 'stage_a' -and $item.executable) {
@@ -128,6 +148,8 @@ $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + $runId.ToStrin
 [void][IO.Directory]::CreateDirectory($session)
 $release = Join-Path $session 'release.signal'
 $ready = Join-Path $session 'ready.signal'
+$finish = Join-Path $session 'finish.signal'
+$languageBaseline | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $session 'input-baseline.json') -Encoding utf8
 $toolHash = $hashes['diy-ime2-tsf-test-profile.exe']
 $dllHash = $hashes['diy_ime2_tsf.dll']
 $readyWaitSeconds = if ($WaitForManualReady) { 300 } else { 0 }
@@ -147,6 +169,12 @@ if ($StageBHostConfiguration) {
 }
 if ($ReuseMatchingStaging) { $arguments += '-ReuseMatchingStaging' }
 if ($FreshStaging) { $arguments += '-FreshStaging' }
+if ($ManualUntilStopped) {
+    $controller = Get-Process -Id $PID
+    $arguments += @('-ControllerProcessId', $PID.ToString(), '-ControllerStartTicks',
+        $controller.StartTime.ToUniversalTime().Ticks.ToString())
+    $controller.Dispose()
+}
 $installer = $null
 $enableAttempted = $false
 try {
@@ -173,9 +201,7 @@ try {
     if ($StageBHostConfiguration) {
         Push-Location -LiteralPath $repo
         try {
-            & $Cargo run --locked -p diy-ime2-ime-host --example ime_external_host_probe -- `
-                (Join-Path $staging 'diy-ime2-external-host.exe') (Join-Path $staging 'ime-execution.json')
-            if ($LASTEXITCODE -ne 0) { throw 'The staged Stage B Host failed the synthetic fixture check.' }
+            Invoke-HostProbe (Join-Path $staging 'diy-ime2-external-host.exe') (Join-Path $staging 'ime-execution.json')
         } finally { Pop-Location }
     }
     $enableAttempted = $true
@@ -193,7 +219,15 @@ try {
         & $executables[0] --ignored --exact $test --nocapture
         if ($LASTEXITCODE -ne 0) { $failures.Add($test) }
     }
-    if ($ManualAppSeconds -gt 0) {
+    if ($ManualUntilStopped) {
+        'Manual application checks are ready until explicitly stopped.'
+        "Manual application completion signal: $finish"
+        'Return to the original input method and close test applications before completing.'
+        while (![IO.File]::Exists($finish)) {
+            if ($installer.HasExited) { throw 'The registration helper ended during manual checks.' }
+            Start-Sleep -Milliseconds 300
+        }
+    } elseif ($ManualAppSeconds -gt 0) {
         $manualStartDeadline = $seconds - $ManualAppSeconds - 15
         if ($WaitForManualReady) {
             $remaining = [int][Math]::Floor($manualStartDeadline - $clock.Elapsed.TotalSeconds)
@@ -256,6 +290,8 @@ try {
             if (!$installer -or $installer.HasExited) {
                 [IO.File]::Delete($release)
                 [IO.File]::Delete($ready)
+                [IO.File]::Delete($finish)
+                [IO.File]::Delete((Join-Path $session 'input-baseline.json'))
                 [IO.Directory]::Delete($session)
             }
             if ($installer) { $installer.Dispose() }

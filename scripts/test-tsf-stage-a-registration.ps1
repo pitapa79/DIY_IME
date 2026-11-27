@@ -9,9 +9,15 @@ param(
     [ValidateRange(30, 900)][int]$Seconds = 180,
     [switch]$ReuseMatchingStaging,
     [switch]$FreshStaging,
+    [int]$ControllerProcessId,
+    [long]$ControllerStartTicks,
     [guid]$RunId = [guid]::NewGuid()
 )
 $ErrorActionPreference = 'Stop'
+if (($ControllerProcessId -ne 0 -or $ControllerStartTicks -ne 0) -and
+    ($ControllerProcessId -le 0 -or $ControllerStartTicks -le 0)) {
+    throw 'Controller identity requires both a positive process ID and start timestamp.'
+}
 if ($FreshStaging -and $ReuseMatchingStaging) {
     throw 'Choose either fresh staging or reuse of matching staging.'
 }
@@ -53,6 +59,16 @@ function Write-Status([string]$Text) {
     if ($ownsFiles) { [IO.File]::AppendAllText($stamp, $Text + [Environment]::NewLine) }
 }
 
+function Test-ControllerAlive {
+    if (!$ControllerProcessId) { return $true }
+    try {
+        $controller = Get-Process -Id $ControllerProcessId -ErrorAction Stop
+        try {
+            return !$controller.HasExited -and $controller.StartTime.ToUniversalTime().Ticks -eq $ControllerStartTicks
+        } finally { $controller.Dispose() }
+    } catch { return $false }
+}
+
 $ownsFiles = $false
 $ownsRegistration = $false
 $installerLock = [Threading.Mutex]::new($false, "Global\DIY-IME-Stage-A-$service")
@@ -64,6 +80,7 @@ try {
         $locked = $true
     }
     if (!$locked) { throw 'Another TSF test registration is in progress.' }
+    if (!(Test-ControllerAlive)) { throw 'The test controller is no longer running.' }
     Write-Status 'started'
     if ((Test-RegistryKey "$classRoot\$service") -or (Test-RegistryKey "$tsfRoot\$service")) {
         throw 'The dedicated test service already exists.'
@@ -100,6 +117,9 @@ try {
         }
     }
 
+    if (!(Test-ControllerAlive) -or (Test-Path -LiteralPath $release)) {
+        throw 'The test controller ended before registration.'
+    }
     $classes = $machine.OpenSubKey($classRoot, $true)
     try {
         $ownedClass = $classes.CreateSubKey($service)
@@ -117,7 +137,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw ($registerOutput -join ' ') }
     Write-Status 'installed'
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    while ($timer.Elapsed.TotalSeconds -lt $Seconds -and !(Test-Path -LiteralPath $release)) {
+    while (($ControllerProcessId -or $timer.Elapsed.TotalSeconds -lt $Seconds) -and
+        (Test-ControllerAlive) -and !(Test-Path -LiteralPath $release)) {
         Start-Sleep -Milliseconds 300
     }
 } catch {
@@ -132,6 +153,10 @@ try {
 } finally {
     try {
         if ($ownsRegistration) {
+            if ($ControllerProcessId) {
+                & $tool disable
+                if ($LASTEXITCODE -ne 0) { Write-Status 'current-user disable failed' }
+            }
             $removeOutput = & $tool remove 2>&1
             if ($LASTEXITCODE -ne 0) { Write-Status "TSF API cleanup: $($removeOutput -join ' ')" }
             foreach ($root in $classRoot, $tsfRoot) {
