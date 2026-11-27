@@ -5,9 +5,13 @@ param(
     [ValidateRange(0, 300)][int]$ManualAppSeconds = 0,
     [switch]$WaitForManualReady,
     [switch]$ReuseMatchingStaging,
+    [switch]$FreshStaging,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
+if ($FreshStaging -and $ReuseMatchingStaging) {
+    throw 'Choose either fresh staging or reuse of matching staging.'
+}
 if (![Environment]::Is64BitProcess -or ![Environment]::UserInteractive) {
     throw 'Run on an interactive x64 Windows desktop.'
 }
@@ -23,11 +27,12 @@ $profile = '8c73cb26-1ccf-45e1-a259-f29b674219e0'
 $build = (Resolve-Path -LiteralPath $BuildDirectory).Path
 $tool = Join-Path $build 'diy-ime2-tsf-test-profile.exe'
 $dll = Join-Path $build 'diy_ime2_tsf.dll'
-$staging = Join-Path $env:ProgramFiles "DIY-IME-Stage-A-$service"
-$installerStatus = Join-Path $staging 'test-status.txt'
 $machineInstaller = Join-Path $PSScriptRoot 'test-tsf-stage-a-registration.ps1'
 $systemPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
 . (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
+$runId = [guid]::NewGuid()
+$staging = Get-TsfStagingDirectory $runId $FreshStaging.IsPresent
+$installerStatus = Join-Path $staging 'test-status.txt'
 
 function Get-LanguageSettings {
     $query = '$ProgressPreference = "SilentlyContinue"; (Get-WinDefaultInputMethodOverride).InputMethodTip; foreach ($language in Get-WinUserLanguageList) { foreach ($method in $language.InputMethodTips) { $method } }'
@@ -119,7 +124,6 @@ $executables = @(
 )
 if ($executables.Count -ne 1) { throw 'Expected exactly one Win32 test executable.' }
 
-$runId = [guid]::NewGuid()
 $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + $runId.ToString('N'))
 [void][IO.Directory]::CreateDirectory($session)
 $release = Join-Path $session 'release.signal'
@@ -142,6 +146,7 @@ if ($StageBHostConfiguration) {
     )
 }
 if ($ReuseMatchingStaging) { $arguments += '-ReuseMatchingStaging' }
+if ($FreshStaging) { $arguments += '-FreshStaging' }
 $installer = $null
 $enableAttempted = $false
 try {

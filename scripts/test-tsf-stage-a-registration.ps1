@@ -8,9 +8,14 @@ param(
     [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBHostSha256,
     [ValidateRange(30, 900)][int]$Seconds = 180,
     [switch]$ReuseMatchingStaging,
+    [switch]$FreshStaging,
     [guid]$RunId = [guid]::NewGuid()
 )
 $ErrorActionPreference = 'Stop'
+if ($FreshStaging -and $ReuseMatchingStaging) {
+    throw 'Choose either fresh staging or reuse of matching staging.'
+}
+. (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
 $service = '{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
 $classRoot = 'Software\Classes\CLSID'
 $tsfRoot = 'Software\Microsoft\CTF\TIP'
@@ -23,7 +28,7 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $release = [IO.Path]::GetFullPath($ReleaseFile)
 $build = [IO.Path]::GetFullPath($BuildDirectory)
 $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
-$directory = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) "DIY-IME-Stage-A-$service"
+$directory = Get-TsfStagingDirectory $RunId $FreshStaging.IsPresent
 $dllName = 'diy_ime2_tsf.dll'
 $toolName = 'diy-ime2-tsf-test-profile.exe'
 $dll = Join-Path $directory $dllName
@@ -32,7 +37,6 @@ $stamp = Join-Path $directory 'test-status.txt'
 $hostName = 'diy-ime2-external-host.exe'
 $hostFile = Join-Path $directory $hostName
 $hostConfiguration = Join-Path $directory 'ime-execution.json'
-. (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
 if ($StageBHostConfiguration -and (!$StageBConfigSha256 -or !$StageBHostSha256)) {
     throw 'The Stage B files require exact checksums.'
 }

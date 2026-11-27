@@ -1,3 +1,9 @@
+function Get-TsfStagingDirectory([guid]$RunId, [bool]$FreshStaging) {
+    $name = 'DIY-IME-Stage-A-{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
+    if ($FreshStaging) { $name += '-' + $RunId.ToString('N') }
+    return Join-Path ([Environment]::GetFolderPath('ProgramFiles')) $name
+}
+
 function Assert-ReusableTsfStaging([string]$Directory, [hashtable]$Hashes) {
     $folder = Get-Item -LiteralPath $Directory -Force
     if (!$folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
