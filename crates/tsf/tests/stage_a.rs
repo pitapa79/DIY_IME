@@ -958,14 +958,25 @@ fn change_selection(
     unsafe { context.RequestEditSession(client, &session, flags)?.ok() }
 }
 
-fn second_document(
-    thread: &ITfThreadMgr,
-    original: &ITfContext,
-    client: u32,
-) -> Result<ITfDocumentMgr> {
-    let window = unsafe { original.GetActiveView()?.GetWnd()? };
+fn second_document(thread: &ITfThreadMgr, client: u32) -> Result<(ITfDocumentMgr, Window)> {
+    let window = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("STATIC"),
+            windows_core::w!("DIY IME TSF second document"),
+            WS_OVERLAPPEDWINDOW,
+            50,
+            50,
+            540,
+            180,
+            None,
+            None,
+            None,
+            None,
+        )?
+    });
     let store: ITextStoreACP =
-        text_store::Store::new(window, Rc::new(Cell::new(IS_DEFAULT)), Rc::default()).into();
+        text_store::Store::new(window.0, Rc::new(Cell::new(IS_DEFAULT)), Rc::default()).into();
     let owner: IUnknown = store.cast()?;
     let other = unsafe { thread.CreateDocumentMgr()? };
     let mut context = None;
@@ -974,7 +985,8 @@ fn second_document(
         other.CreateContext(client, 0, &owner, &mut context, &mut cookie)?;
         other.Push(&context.ok_or(E_FAIL)?)?;
     }
-    Ok(other)
+    associate_document(thread, window.0, &other)?;
+    Ok((other, window))
 }
 
 fn associate_document(
@@ -995,11 +1007,15 @@ fn associate_document(
 
 fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()> {
     let window = unsafe { document.GetTop()?.GetActiveView()?.GetWnd()? };
-    associate_document(thread, window, document)?;
-    unsafe { thread.SetFocus(document)? };
-    pump_messages();
-    assert_eq!(&unsafe { thread.GetFocus()? }, document);
-    Ok(())
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOW);
+        let _ = SetForegroundWindow(window);
+        let _ = SetFocus(window);
+    }
+    pump_until(|| unsafe {
+        Ok(GetFocus() == window && thread.GetFocus().is_ok_and(|focused| &focused == document))
+    })
+    .inspect_err(|_| eprintln!("Windows did not focus the requested test document window"))
 }
 
 fn wait_for_conversion(
@@ -1048,7 +1064,7 @@ fn verify_document_switch(
     let key = WPARAM(usize::from(VK_A.0));
     unsafe {
         assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
-        let other = second_document(thread, context, client)?;
+        let (other, _other_window) = second_document(thread, client)?;
         focus_document(thread, &other)?;
         focus_document(thread, document)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
@@ -1096,6 +1112,12 @@ fn verify_conversion(
                     .as_bool()
             );
         }
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            contents.get(),
+            (2, [u16::from(b'k'), u16::from(b'o')]),
+            "the synthetic preedit must be displayed before waiting for the Host"
+        );
         let waiting_for_host = std::time::Instant::now();
         wait_for_conversion(thread, document, keys, space)?;
         let host_ready_ms = waiting_for_host.elapsed().as_millis();
@@ -1210,7 +1232,7 @@ fn verify_conversion(
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
         let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
-        let other = second_document(thread, context, client)?;
+        let (other, _other_window) = second_document(thread, client)?;
         focus_document(thread, &other)?;
         focus_document(thread, document)?;
         pump_messages();
