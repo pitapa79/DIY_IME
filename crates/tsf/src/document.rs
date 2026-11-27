@@ -6,9 +6,17 @@ use windows::Win32::{
         Com::CoTaskMemFree,
         Variant::{VT_EMPTY, VT_I4},
     },
-    UI::TextServices::{
-        GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, IS_DEFAULT, ITfCompartmentMgr,
-        ITfContext, ITfInputScope, ITfRange, TF_DEFAULT_SELECTION, TF_SELECTION, TS_SD_READONLY,
+    UI::{
+        Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled},
+        TextServices::{
+            GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, IS_DEFAULT,
+            ITfCompartmentMgr, ITfContext, ITfInputScope, ITfRange, TF_DEFAULT_SELECTION,
+            TF_SELECTION, TS_SD_READONLY,
+        },
+        WindowsAndMessaging::{
+            ES_PASSWORD, ES_READONLY, GWL_STYLE, GetClassNameW, GetWindowLongW, WS_CHILD,
+            WS_DISABLED,
+        },
     },
 };
 use windows_core::{IUnknown, Interface};
@@ -22,17 +30,24 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     };
     let flag = unsafe { compartment.GetValue().ok()? };
     let fields = unsafe { flag.as_raw().Anonymous.Anonymous };
+    let native = native_edit_state(context);
+    if native == Some(false) {
+        trace!("DIY IME Stage B: native Edit attributes reject input");
+        return None;
+    }
     if fields.vt != VT_I4.0 {
         if fields.vt == VT_EMPTY.0 {
             trace!("DIY IME Stage B: keyboard compartment has no value (VT_EMPTY)");
         } else {
             trace!("DIY IME Stage B: keyboard compartment has an unsupported value type");
         }
-        #[cfg(feature = "stage-b-diagnostics")]
-        trace_input_scope(context, cookie);
-        return None;
+        if fields.vt != VT_EMPTY.0 || native != Some(true) {
+            #[cfg(feature = "stage-b-diagnostics")]
+            trace_input_scope(context, cookie);
+            return None;
+        }
     }
-    if unsafe { fields.Anonymous.lVal } != 0 {
+    if fields.vt == VT_I4.0 && unsafe { fields.Anonymous.lVal } != 0 {
         trace!("DIY IME Stage B: keyboard compartment explicitly disables input");
         return None;
     }
@@ -52,12 +67,46 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     }
     let property = unsafe { context.GetAppProperty(&GUID_PROP_INPUTSCOPE).ok()? };
     let value = unsafe { property.GetValue(cookie, &range).ok()? };
+    if unsafe { value.as_raw().Anonymous.Anonymous.vt } == VT_EMPTY.0 {
+        if native_edit_state(context) == Some(true) {
+            trace!("DIY IME Stage B: ordinary native Edit attributes verified");
+            return Some(range);
+        }
+        return None;
+    }
     let scope: ITfInputScope = IUnknown::try_from(&value).ok()?.cast().ok()?;
     if !ordinary_scope(&scope) {
         trace!("DIY IME Stage B: InputScope did not confirm ordinary field");
         return None;
     }
+    if native.is_some() && native_edit_state(context) != Some(true) {
+        return None;
+    }
     Some(range)
+}
+
+fn native_edit_state(context: &ITfContext) -> Option<bool> {
+    let window = unsafe {
+        context
+            .GetActiveView()
+            .and_then(|view| view.GetWnd())
+            .ok()?
+    };
+    if window.0.is_null() {
+        return None;
+    }
+    let mut name = [0; 16];
+    let length = unsafe { GetClassNameW(window, &mut name) };
+    let class_is_edit = length == 4 && name[..4].iter().copied().eq("Edit".encode_utf16());
+    if !class_is_edit {
+        return None;
+    }
+    let style = unsafe { GetWindowLongW(window, GWL_STYLE) } as u32;
+    Some(
+        style & WS_CHILD.0 != 0
+            && style & ((ES_PASSWORD | ES_READONLY) as u32 | WS_DISABLED.0) == 0
+            && unsafe { IsWindowEnabled(window).as_bool() && GetFocus() == window },
+    )
 }
 
 #[cfg(feature = "stage-b-diagnostics")]
@@ -133,3 +182,6 @@ pub(crate) fn is_utf16_boundary(caret: &ITfRange, cookie: u32) -> bool {
     (left == 0 || !(0xd800..=0xdbff).contains(&text[0]))
         && (right == 0 || !(0xdc00..=0xdfff).contains(&text[(-left) as usize]))
 }
+
+#[cfg(test)]
+mod native_tests;
