@@ -6,7 +6,9 @@ param(
     [string]$StageBHostConfiguration,
     [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBConfigSha256,
     [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBHostSha256,
-    [ValidateRange(30, 600)][int]$Seconds = 180
+    [ValidateRange(30, 600)][int]$Seconds = 180,
+    [switch]$ReuseMatchingStaging,
+    [guid]$RunId = [guid]::NewGuid()
 )
 $ErrorActionPreference = 'Stop'
 $service = '{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
@@ -30,6 +32,7 @@ $stamp = Join-Path $directory 'test-status.txt'
 $hostName = 'diy-ime2-external-host.exe'
 $hostFile = Join-Path $directory $hostName
 $hostConfiguration = Join-Path $directory 'ime-execution.json'
+. (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
 if ($StageBHostConfiguration -and (!$StageBConfigSha256 -or !$StageBHostSha256)) {
     throw 'The Stage B files require exact checksums.'
 }
@@ -48,28 +51,48 @@ function Write-Status([string]$Text) {
 
 $ownsFiles = $false
 $ownsRegistration = $false
+$installerLock = [Threading.Mutex]::new($false, "Global\DIY-IME-Stage-A-$service")
+$locked = $false
 try {
+    try {
+        $locked = $installerLock.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $locked = $true
+    }
+    if (!$locked) { throw 'Another TSF test registration is in progress.' }
     Write-Status 'started'
-    if ((Test-Path -LiteralPath $directory) -or
-        (Test-RegistryKey "$classRoot\$service") -or (Test-RegistryKey "$tsfRoot\$service")) {
-        throw 'The dedicated test directory or service already exists.'
+    if ((Test-RegistryKey "$classRoot\$service") -or (Test-RegistryKey "$tsfRoot\$service")) {
+        throw 'The dedicated test service already exists.'
     }
 
-    New-Item -ItemType Directory -Path $directory | Out-Null
-    $ownsFiles = $true
-    [IO.File]::Copy((Join-Path $build $dllName), $dll)
-    [IO.File]::Copy((Join-Path $build $toolName), $tool)
-    if ((Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash -ne $ServiceDllSha256 -or
-        (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash -ne $ProfileToolSha256) {
-        throw 'The staged verification files do not match their source checksums.'
-    }
-
+    $hashes = @{}
+    $hashes[$dllName] = $ServiceDllSha256
+    $hashes[$toolName] = $ProfileToolSha256
+    $sources = @{}
+    $sources[$dllName] = Join-Path $build $dllName
+    $sources[$toolName] = Join-Path $build $toolName
     if ($StageBHostConfiguration) {
-        [IO.File]::Copy((Join-Path $build $hostName), $hostFile)
-        [IO.File]::Copy([IO.Path]::GetFullPath($StageBHostConfiguration), $hostConfiguration)
-        if ((Get-FileHash -LiteralPath $hostFile -Algorithm SHA256).Hash -ne $StageBHostSha256 -or
-            (Get-FileHash -LiteralPath $hostConfiguration -Algorithm SHA256).Hash -ne $StageBConfigSha256) {
-            throw 'The staged Stage B files do not match their source checksums.'
+        $hashes[$hostName] = $StageBHostSha256
+        $hashes['ime-execution.json'] = $StageBConfigSha256
+        $sources[$hostName] = Join-Path $build $hostName
+        $sources['ime-execution.json'] = [IO.Path]::GetFullPath($StageBHostConfiguration)
+    }
+    if (Test-Path -LiteralPath $directory) {
+        if (!$ReuseMatchingStaging) { throw 'The dedicated test directory already exists.' }
+        Assert-ReusableTsfStaging $directory $hashes
+        [IO.File]::WriteAllText($stamp, "run $RunId" + [Environment]::NewLine)
+        $ownsFiles = $true
+        Write-Status 'reused matching staging'
+    } else {
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        $ownsFiles = $true
+        Write-Status "run $RunId"
+        foreach ($file in $sources.Keys) {
+            $target = Join-Path $directory $file
+            [IO.File]::Copy($sources[$file], $target)
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hashes[$file]) {
+                throw "A staged verification file does not match its checksum: $file"
+            }
         }
     }
 
@@ -129,5 +152,9 @@ try {
     } catch {
         Write-Status "cleanup error: $($_.Exception.Message)"
         throw
-    } finally { $machine.Dispose() }
+    } finally {
+        if ($locked) { $installerLock.ReleaseMutex() }
+        $installerLock.Dispose()
+        $machine.Dispose()
+    }
 }

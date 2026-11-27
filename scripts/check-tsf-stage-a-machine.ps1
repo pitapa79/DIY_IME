@@ -3,6 +3,7 @@ param(
     [string]$Cargo = 'cargo',
     [string]$StageBHostConfiguration,
     [ValidateRange(0, 300)][int]$ManualAppSeconds = 0,
+    [switch]$ReuseMatchingStaging,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
@@ -22,6 +23,7 @@ $staging = Join-Path $env:ProgramFiles "DIY-IME-Stage-A-$service"
 $installerStatus = Join-Path $staging 'test-status.txt'
 $machineInstaller = Join-Path $PSScriptRoot 'test-tsf-stage-a-registration.ps1'
 $systemPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
+. (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
 
 function Get-LanguageSettings {
     $query = '$ProgressPreference = "SilentlyContinue"; (Get-WinDefaultInputMethodOverride).InputMethodTip; foreach ($language in Get-WinUserLanguageList) { foreach ($method in $language.InputMethodTips) { $method } }'
@@ -54,9 +56,22 @@ foreach ($file in $requiredFiles) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test file $file" }
 }
 $languageBaseline = @(Get-LanguageSettings)
-if ((Test-DedicatedKeys) -or (Test-Path -LiteralPath $staging) -or
+if ((Test-DedicatedKeys) -or
     ($languageBaseline -match $profile) -or ((Get-TestRegistration) -notmatch 'registered=false enabled_for_current_user=false')) {
     throw 'A previous test profile is still present. Use a clean baseline.'
+}
+$hashes = @{
+    'diy-ime2-tsf-test-profile.exe' = (Get-FileHash -LiteralPath $tool).Hash
+    'diy_ime2_tsf.dll' = (Get-FileHash -LiteralPath $dll).Hash
+}
+if ($StageBHostConfiguration) {
+    $hashes['diy-ime2-external-host.exe'] = (Get-FileHash -LiteralPath $stageBHost).Hash
+    $hashes['ime-execution.json'] = (Get-FileHash -LiteralPath $StageBHostConfiguration).Hash
+}
+if (Test-Path -LiteralPath $staging) {
+    if (!$ReuseMatchingStaging) { throw 'A previous TSF staging directory remains.' }
+    Assert-ReusableTsfStaging $staging $hashes
+    'Previous TSF staging matches this test build and configuration.'
 }
 if ($CheckPrerequisites) {
     'The compiled test files and clean registration baseline were found.'
@@ -86,41 +101,47 @@ $executables = @(
 )
 if ($executables.Count -ne 1) { throw 'Expected exactly one Win32 test executable.' }
 
-$session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + [guid]::NewGuid().ToString('N'))
+$runId = [guid]::NewGuid()
+$session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + $runId.ToString('N'))
 [void][IO.Directory]::CreateDirectory($session)
 $release = Join-Path $session 'release.signal'
-$toolHash = (Get-FileHash -LiteralPath $tool).Hash
-$dllHash = (Get-FileHash -LiteralPath $dll).Hash
+$toolHash = $hashes['diy-ime2-tsf-test-profile.exe']
+$dllHash = $hashes['diy_ime2_tsf.dll']
 $seconds = if ($StageBHostConfiguration) { (300 + $ManualAppSeconds).ToString() } else { '150' }
 $arguments = @(
     '-NoProfile', '-File', ('"' + $machineInstaller + '"'),
     '-BuildDirectory', ('"' + $build + '"'), '-ReleaseFile', ('"' + $release + '"'),
-    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', $seconds
+    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', $seconds,
+    '-RunId', $runId.ToString()
 )
 if ($StageBHostConfiguration) {
     $arguments += @(
         '-StageBHostConfiguration', ('"' + $StageBHostConfiguration + '"'),
-        '-StageBConfigSha256', (Get-FileHash -LiteralPath $StageBHostConfiguration).Hash,
-        '-StageBHostSha256', (Get-FileHash -LiteralPath $stageBHost).Hash
+        '-StageBConfigSha256', $hashes['ime-execution.json'],
+        '-StageBHostSha256', $hashes['diy-ime2-external-host.exe']
     )
 }
+if ($ReuseMatchingStaging) { $arguments += '-ReuseMatchingStaging' }
 $installer = $null
 $enableAttempted = $false
 try {
     $installer = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $registrationTimeout = 45
+    $installed = $false
     do {
-        $status = Get-TestRegistration
-        if ($status -match 'registered=true') { break }
         if (Test-Path -LiteralPath $installerStatus -PathType Leaf) {
-            $installerError = Get-Content -LiteralPath $installerStatus -ErrorAction SilentlyContinue |
-                Where-Object { $_ -like 'error: *' } | Select-Object -Last 1
-            if ($installerError) { throw "Temporary registration failed: $installerError" }
+            $report = @(Get-Content -LiteralPath $installerStatus -ErrorAction SilentlyContinue)
+            if ($report -contains "run $runId") {
+                $installerError = $report | Where-Object { $_ -like 'error: *' } | Select-Object -Last 1
+                if ($installerError) { throw "Temporary registration failed: $installerError" }
+                $installed = ($report -contains 'installed') -and ((Get-TestRegistration) -match 'registered=true')
+                if ($installed) { break }
+            }
         }
         Start-Sleep -Milliseconds 250
     } while (!$installer.HasExited -and $clock.Elapsed.TotalSeconds -lt $registrationTimeout)
-    if ($status -notmatch 'registered=true') {
+    if (!$installed) {
         if ($installer.HasExited) { throw "The registration helper exited before verification (code $($installer.ExitCode))." }
         throw "The machine profile could not be verified within $registrationTimeout seconds."
     }
@@ -184,15 +205,18 @@ try {
                     $status = Get-TestRegistration
                     $languageAfter = @(Get-LanguageSettings)
                     $clean = ($status -match 'registered=false enabled_for_current_user=false') -and
-                        !($languageAfter -match $profile) -and !(Test-DedicatedKeys) -and
-                        !(Test-Path -LiteralPath $staging)
+                        !($languageAfter -match $profile) -and !(Test-DedicatedKeys)
                     if (!$clean) { Start-Sleep -Milliseconds 300 }
                 } while (!$clean -and $clock.Elapsed.TotalSeconds -lt 8)
-                if (!$clean) { throw 'A test registration or staging file remains after cleanup.' }
+                if (!$clean) { throw 'A test registration remains after cleanup.' }
                 if (($languageBaseline -join "`n") -cne ($languageAfter -join "`n")) {
                     throw 'The input-method or default override settings changed from the baseline.'
                 }
-                'The test profile and staged files are absent. The original input-method settings match.'
+                'The test profile is absent. The original input-method settings match.'
+                if (Test-Path -LiteralPath $staging) {
+                    throw 'The test staging files remain after cleanup.'
+                }
+                'The staged files are absent.'
             }
         } finally {
             if (!$installer -or $installer.HasExited) {
