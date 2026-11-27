@@ -1353,6 +1353,74 @@ fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
         .inspect_err(|_| eprintln!("waiting for the TSF test window to gain foreground focus"))
 }
 
+#[test]
+#[ignore = "requires the foreground Windows desktop for a probe of the built-in Edit control"]
+fn interactive_native_edit_context_probe() -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{WS_CHILD, WS_VISIBLE};
+
+    let _apartment = Apartment::open()?;
+    let thread: ITfThreadMgr =
+        unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
+    unsafe { thread.Activate()? };
+    let window = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("STATIC"),
+            windows_core::w!("DIY IME native Edit scope probe"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            460,
+            150,
+            None,
+            None,
+            None,
+            None,
+        )?
+    });
+    let edit = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("EDIT"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE,
+            10,
+            10,
+            400,
+            35,
+            window.0,
+            None,
+            None,
+            None,
+        )?
+    });
+    unsafe {
+        let _ = ShowWindow(window.0, SW_SHOW);
+        let _ = SetForegroundWindow(window.0);
+        let _ = SetFocus(edit.0);
+    }
+    let outcome = (|| -> Result<()> {
+        wait_for_app_focus(&thread)?;
+        assert_eq!(unsafe { GetFocus() }, edit.0);
+        let document = unsafe { thread.GetFocus() };
+        match document.and_then(|document| unsafe { document.GetTop() }) {
+            Ok(context) => {
+                let manager: ITfCompartmentMgr = context.cast()?;
+                let disabled = unsafe {
+                    manager
+                        .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+                        .GetValue()?
+                };
+                let variant = unsafe { disabled.as_raw().Anonymous.Anonymous.vt };
+                eprintln!("Native Edit TSF keyboard-disabled value variant: {variant}");
+            }
+            Err(error) => eprintln!("Native Edit did not expose a TSF context: {error}"),
+        }
+        Ok(())
+    })();
+    outcome.and(unsafe { thread.Deactivate() })
+}
+
 fn pump_messages() {
     let mut message = MSG::default();
     unsafe {

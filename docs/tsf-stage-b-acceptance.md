@@ -80,6 +80,8 @@ Windows 10で通常アプリの確認枠を開いた試行では、専用プロ�
 
 変換待ちにBackspaceがアプリへ渡った場合、専用Win32試験はTSFの前面サービス、キーボード状態の値の型、TSF compositionの有無を区別する。合成入力の専用試験では、通常欄を示すInputScopeがあってもキーボード状態を消すとキーがアプリに渡り、状態を有効にすると試験IMEが入力を扱うことを確認した。メモ帳やブラウザーで同じ状態になっていたかは未確認。[Microsoftのキーボード状態取得仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcompartment-getvalue)。
 
+同じWindows 10で、試験IMEを登録せず、空のWindows標準Editコントロールにフォーカスを置いてTSFを調べた。TSFコンテキストは取得できたが、キーボード無効状態は `VT_EMPTY`（値なし）だった。メモ帳とブラウザーの変換失敗については、入力欄のInputScopeと未確定文字の失効経路が未確認。
+
 | Windows 10の専用Win32試験、デバッグビルド | 単回観測 |
 | --- | ---: |
 | 最初の変換が可能になるまでのHost準備 | 7,639 ms |
