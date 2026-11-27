@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][string]$BuildDirectory,
     [string]$Cargo = 'cargo',
     [string]$StageBHostConfiguration,
-    [ValidateRange(0, 240)][int]$ManualAppSeconds = 0,
+    [ValidateRange(0, 300)][int]$ManualAppSeconds = 0,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
