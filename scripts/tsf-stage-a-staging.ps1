@@ -29,3 +29,15 @@ function Assert-ReusableTsfStaging([string]$Directory, [hashtable]$Hashes) {
         throw 'The previous TSF staging directory is missing the unregistration and cleanup record.'
     }
 }
+
+function Invoke-TsfProfileCleanup([string]$Tool, [ValidateSet('disable','remove')][string]$Action, [int]$TimeoutMs = 5000) {
+    $process = Start-Process -FilePath $Tool -ArgumentList $Action -WindowStyle Hidden -PassThru
+    try {
+        if (!$process.WaitForExit($TimeoutMs)) {
+            try { $process.Kill() } catch [InvalidOperationException] { if (!$process.HasExited) { throw } }
+            if (!$process.WaitForExit(2000)) { throw "The TSF profile tool did not exit after cancellation ($Action)." }
+            throw "The TSF profile tool timed out ($Action)."
+        }
+        if ($process.ExitCode -ne 0) { throw "The TSF profile tool failed ($Action, exit code $($process.ExitCode))." }
+    } finally { $process.Dispose() }
+}

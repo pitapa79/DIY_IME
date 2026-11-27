@@ -32,6 +32,9 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 $release = [IO.Path]::GetFullPath($ReleaseFile)
+# In an operator-ended run, the finish signal must reach the elevated helper
+# even if the controller is no longer able to forward it.
+$finish = if ($ControllerProcessId) { Join-Path (Split-Path -Parent $release) 'finish.signal' }
 $build = [IO.Path]::GetFullPath($BuildDirectory)
 $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
 $directory = Get-TsfStagingDirectory $RunId $FreshStaging.IsPresent
@@ -117,7 +120,7 @@ try {
         }
     }
 
-    if (!(Test-ControllerAlive) -or (Test-Path -LiteralPath $release)) {
+    if (!(Test-ControllerAlive) -or [IO.File]::Exists($release) -or ($finish -and [IO.File]::Exists($finish))) {
         throw 'The test controller ended before registration.'
     }
     $classes = $machine.OpenSubKey($classRoot, $true)
@@ -138,7 +141,7 @@ try {
     Write-Status 'installed'
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while (($ControllerProcessId -or $timer.Elapsed.TotalSeconds -lt $Seconds) -and
-        (Test-ControllerAlive) -and !(Test-Path -LiteralPath $release)) {
+        (Test-ControllerAlive) -and ![IO.File]::Exists($release) -and !($finish -and [IO.File]::Exists($finish))) {
         Start-Sleep -Milliseconds 300
     }
 } catch {
@@ -153,12 +156,13 @@ try {
 } finally {
     try {
         if ($ownsRegistration) {
+            Write-Status 'registration cleanup started'
             if ($ControllerProcessId) {
-                & $tool disable
-                if ($LASTEXITCODE -ne 0) { Write-Status 'current-user disable failed' }
+                try { Invoke-TsfProfileCleanup $tool disable }
+                catch { Write-Status "current-user disable: $($_.Exception.Message)" }
             }
-            $removeOutput = & $tool remove 2>&1
-            if ($LASTEXITCODE -ne 0) { Write-Status "TSF API cleanup: $($removeOutput -join ' ')" }
+            try { Invoke-TsfProfileCleanup $tool remove }
+            catch { Write-Status "TSF API cleanup: $($_.Exception.Message)" }
             foreach ($root in $classRoot, $tsfRoot) {
                 if (!(Test-RegistryKey "$root\$service")) { continue }
                 $container = $machine.OpenSubKey($root, $true)

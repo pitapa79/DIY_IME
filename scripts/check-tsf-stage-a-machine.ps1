@@ -236,7 +236,9 @@ try {
         "Manual application completion signal: $finish"
         'Return to the original input method and close test applications before completing.'
         while (![IO.File]::Exists($finish)) {
-            if ($installer.HasExited) { throw 'The registration helper ended during manual checks.' }
+            if ($installer.HasExited -and ![IO.File]::Exists($finish)) {
+                throw 'The registration helper ended during manual checks.'
+            }
             Start-Sleep -Milliseconds 300
         }
     } elseif ($ManualAppSeconds -gt 0) {
@@ -261,10 +263,10 @@ try {
     if ($failures.Count -ne 0) { throw "The Win32 TSF tests failed: $($failures -join ', ')" }
 } finally {
     try {
-        if ($enableAttempted) {
+        if ($enableAttempted -and !$ManualUntilStopped) {
             try {
-                & $tool disable
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'The TSF API did not disable the test profile.' }
+                try { Invoke-TsfProfileCleanup $tool disable }
+                catch { Write-Warning $_.Exception.Message }
             } finally {
                 $user = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
                 try {
