@@ -9,9 +9,9 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled},
         TextServices::{
-            GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, IS_DEFAULT,
-            ITfCompartmentMgr, ITfContext, ITfInputScope, ITfRange, TF_DEFAULT_SELECTION,
-            TF_SELECTION, TS_SD_READONLY,
+            GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED,
+            GUID_PROP_INPUTSCOPE, IS_DEFAULT, ITfCompartmentMgr, ITfContext, ITfInputScope,
+            ITfRange, TF_DEFAULT_SELECTION, TF_SELECTION, TS_SD_READONLY,
         },
         WindowsAndMessaging::{
             ES_PASSWORD, ES_READONLY, GWL_STYLE, GetClassNameW, GetWindowLongW, WS_CHILD,
@@ -41,7 +41,7 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
         } else {
             trace!("DIY IME Stage B: keyboard compartment has an unsupported value type");
         }
-        if fields.vt != VT_EMPTY.0 || native != Some(true) {
+        if fields.vt != VT_EMPTY.0 {
             #[cfg(feature = "stage-b-diagnostics")]
             trace_input_scope(context, cookie);
             return None;
@@ -49,6 +49,20 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     }
     if fields.vt == VT_I4.0 && unsafe { fields.Anonymous.lVal } != 0 {
         trace!("DIY IME Stage B: keyboard compartment explicitly disables input");
+        return None;
+    }
+    let empty = unsafe {
+        manager
+            .GetCompartment(&GUID_COMPARTMENT_EMPTYCONTEXT)
+            .ok()?
+            .GetValue()
+            .ok()?
+    };
+    let empty_fields = unsafe { empty.as_raw().Anonymous.Anonymous };
+    if empty_fields.vt != VT_EMPTY.0
+        && (empty_fields.vt != VT_I4.0 || unsafe { empty_fields.Anonymous.lVal } != 0)
+    {
+        trace!("DIY IME Stage B: empty context compartment rejects input");
         return None;
     }
     if unsafe { context.GetStatus().ok()?.dwDynamicFlags } & TS_SD_READONLY != 0 {

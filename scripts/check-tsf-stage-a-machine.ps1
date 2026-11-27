@@ -7,11 +7,15 @@ param(
     [switch]$ReuseMatchingStaging,
     [switch]$FreshStaging,
     [switch]$ManualUntilStopped,
+    [switch]$ManualOnly,
     [string]$TestExecutable,
     [string]$HostProbeExecutable,
     [switch]$CheckPrerequisites
 )
 $ErrorActionPreference = 'Stop'
+if ($ManualOnly -and !$ManualUntilStopped) {
+    throw 'ManualOnly requires ManualUntilStopped.'
+}
 if ($ManualUntilStopped -and (!$StageBHostConfiguration -or $ManualAppSeconds -gt 0 -or $WaitForManualReady)) {
     throw 'ManualUntilStopped requires a Stage B configuration and uses its own completion signal.'
 }
@@ -128,7 +132,7 @@ try {
     if ($StageBHostConfiguration) {
         Invoke-HostProbe $stageBHost $StageBHostConfiguration
     }
-    if (!$TestExecutable) {
+    if (!$TestExecutable -and !$ManualOnly) {
         $events = & $Cargo test --locked -p diy-ime2-tsf --test stage_a --no-run --message-format=json
         if ($LASTEXITCODE -ne 0) { throw 'The Win32 test executable could not be built.' }
     }
@@ -142,7 +146,7 @@ $executables = @(
         }
     }
 )
-if ($executables.Count -ne 1) { throw 'Expected exactly one Win32 test executable.' }
+if (!$ManualOnly -and $executables.Count -ne 1) { throw 'Expected exactly one Win32 test executable.' }
 
 $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + $runId.ToString('N'))
 [void][IO.Directory]::CreateDirectory($session)
@@ -211,9 +215,14 @@ try {
     if ((Get-TestRegistration) -notmatch 'registered=true enabled_for_current_user=true') {
         throw 'The current-user TSF profile did not become enabled.'
     }
-    $tests = @('interactive_machine_registered_app_routes_input')
-    if ($StageBHostConfiguration) {
-        $tests += @('interactive_machine_registered_stage_b','interactive_machine_registered_stage_b_protection')
+    $tests = @()
+    if ($ManualOnly) {
+        'Registered Win32 app tests skipped for this manual-only run.'
+    } else {
+        $tests = @('interactive_machine_registered_app_routes_input')
+        if ($StageBHostConfiguration) {
+            $tests += @('interactive_machine_registered_stage_b','interactive_machine_registered_stage_b_protection')
+        }
     }
     $failures = [System.Collections.Generic.List[string]]::new()
     foreach ($test in $tests) {

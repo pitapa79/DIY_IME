@@ -194,8 +194,8 @@ impl Bridge {
         })
     }
 
-    pub(crate) fn available(&self) -> bool {
-        !self.protected && !self.disconnected && self.input.is_some()
+    pub(crate) fn accepts_request(&self) -> bool {
+        !self.protected && !self.disconnected
     }
 
     pub(crate) fn has_work(&self) -> bool {
@@ -229,16 +229,19 @@ impl Bridge {
     }
 
     pub(crate) fn convert(&mut self, stamp: DocumentStamp, text: String, finalize: bool) {
-        if let Some(input) = self.input.as_mut() {
-            if let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable) {
-                self.invalidate(invalidation);
-            }
-            self.queued = Some(PendingInput {
-                stamp,
-                text,
-                finalize,
-            });
+        if !self.accepts_request() {
+            return;
         }
+        if let Some(input) = self.input.as_mut()
+            && let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable)
+        {
+            self.invalidate(invalidation);
+        }
+        self.queued = Some(PendingInput {
+            stamp,
+            text,
+            finalize,
+        });
     }
 
     fn invalidate(&mut self, invalidation: Invalidation) {
@@ -276,7 +279,13 @@ impl Bridge {
         let worker = self.worker.as_ref()?;
         let acknowledged = worker.acknowledged();
         match worker.poll() {
-            Ok(Some(Event::Ready(plan))) => self.input = Some(InputState::new(plan)),
+            Ok(Some(Event::Ready(plan))) => {
+                let pending = self.queued.take();
+                self.input = Some(InputState::new(plan));
+                if let Some(pending) = pending {
+                    self.convert(pending.stamp, pending.text, pending.finalize);
+                }
+            }
             Ok(Some(Event::Started(key))) => {
                 if let Some(input) = self.input.as_mut()
                     && let Some(submission) = self.submitted.as_ref()
@@ -349,5 +358,71 @@ impl Bridge {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn starting_bridge() -> Bridge {
+        set_test_host_configuration(
+            PathBuf::from("synthetic-host.exe"),
+            PathBuf::from("synthetic-config.json"),
+        );
+        Bridge::open(false).expect("synthetic test configuration")
+    }
+
+    fn stamp() -> DocumentStamp {
+        DocumentStamp {
+            focus: 1,
+            context: 1,
+            revision: 1,
+            selection: 1,
+        }
+    }
+
+    #[test]
+    fn conversion_before_host_ready_is_retained_until_cancelled() {
+        let mut bridge = starting_bridge();
+        assert!(bridge.input.is_none());
+        assert!(bridge.accepts_request());
+        bridge.convert(stamp(), "kousui".into(), false);
+        let pending = bridge
+            .queued
+            .as_ref()
+            .expect("first Space must retain conversion input");
+        assert_eq!(pending.text, "kousui");
+        assert_eq!(pending.stamp, stamp());
+        assert!(bridge.has_work());
+        bridge.cancel();
+        assert!(
+            !bridge.has_work(),
+            "cancel before readiness must discard the pending input"
+        );
+    }
+
+    #[test]
+    fn protection_and_disconnect_discard_startup_requests() {
+        let mut bridge = starting_bridge();
+        bridge.convert(stamp(), "kousui".into(), true);
+        assert!(
+            bridge
+                .queued
+                .as_ref()
+                .is_some_and(|pending| pending.finalize)
+        );
+        bridge.set_protection(true);
+        assert!(!bridge.has_work());
+        bridge.convert(stamp(), "synthetic-protected".into(), false);
+        assert!(!bridge.has_work(), "protected input must never be queued");
+        bridge.set_protection(false);
+        assert!(
+            !bridge.has_work(),
+            "unblocking must not restore the old request"
+        );
+        bridge.disconnected = true;
+        bridge.convert(stamp(), "synthetic-disconnected".into(), false);
+        assert!(!bridge.has_work());
     }
 }

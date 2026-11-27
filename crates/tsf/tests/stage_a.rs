@@ -786,13 +786,21 @@ fn verify_key_edit(
     unsafe {
         let key = WPARAM(usize::from(VK_A.0));
         scope.set(IS_DEFAULT);
-        // An explicit ordinary scope alone cannot establish that the keyboard is usable.
+        // Browsers can leave the disable compartment unset in ordinary fields.
         compartments
             .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
             .SetValue(client, &VARIANT::from(0_i32))?;
         compartments.ClearCompartment(client, &GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
+        scope.set(IS_PASSWORD);
         assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        scope.set(IS_DEFAULT);
+        assert!(keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
+        assert!(
+            keys.KeyDown(WPARAM(usize::from(VK_ESCAPE.0)), LPARAM(0))?
+                .as_bool()
+        );
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
 
@@ -1028,7 +1036,7 @@ fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()
     .inspect_err(|_| eprintln!("Windows did not focus the requested test document window"))
 }
 
-fn wait_for_conversion(
+fn wait_for_conversion_request(
     thread: &ITfThreadMgr,
     document: &ITfDocumentMgr,
     keys: &ITfKeystrokeMgr,
@@ -1074,7 +1082,7 @@ fn wait_for_conversion(
         }
         Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool())
     })
-    .inspect_err(|error| eprintln!("waiting for the Stage B Host to accept conversion: {error}"))
+    .inspect_err(|error| eprintln!("waiting for the Stage B adapter to accept conversion: {error}"))
 }
 
 fn verify_document_switch(
@@ -1150,16 +1158,16 @@ fn verify_conversion(
             (2, [u16::from(b'k'), u16::from(b'o')]),
             "the synthetic preedit must be displayed before waiting for the Host"
         );
-        let waiting_for_host = std::time::Instant::now();
-        wait_for_conversion(thread, document, keys, space)?;
-        let host_ready_ms = waiting_for_host.elapsed().as_millis();
+        let waiting_for_request = std::time::Instant::now();
+        wait_for_conversion_request(thread, document, keys, space)?;
+        let request_accepted_ms = waiting_for_request.elapsed().as_millis();
         let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         let conversion_callback_us = conversion_started.elapsed().as_micros();
         pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
             .inspect_err(|_| eprintln!("starting candidate list"))?;
         eprintln!(
-            "stage_b_host_ready_ms={host_ready_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
+            "stage_b_request_accepted_ms={request_accepted_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
             conversion_started.elapsed().as_millis()
         );
         let initial = candidate_list(thread, document)?.ok_or(E_FAIL)?;
@@ -1583,7 +1591,7 @@ fn verify_protection(
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         assert!(keys.KeyDown(letter, LPARAM(0))?.as_bool());
         let document = context.GetDocumentMgr()?;
-        wait_for_conversion(thread, &document, keys, space)?;
+        wait_for_conversion_request(thread, &document, keys, space)?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         if let Some(observation) = observation {
             pump_until(|| Ok(observation.dispatched() > before.unwrap_or(0)))?;
@@ -1641,7 +1649,7 @@ fn verify_protection(
                     .as_bool()
             );
         }
-        wait_for_conversion(thread, &document, keys, space)?;
+        wait_for_conversion_request(thread, &document, keys, space)?;
         assert_eq!(
             observation.map(Observation::dispatched),
             protected_count,

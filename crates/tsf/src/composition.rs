@@ -286,7 +286,7 @@ impl Preedit {
             && activation
                 .host
                 .try_borrow()
-                .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available));
+                .is_ok_and(|host| host.as_ref().is_some_and(Bridge::accepts_request));
         let writable = apply && !reading_host_input;
         let session: ITfEditSession = Session {
             _module: ModuleRef::new(),
@@ -546,11 +546,11 @@ impl ITfEditSession_Impl for Session_Impl {
         let mut candidate_update = CandidateUpdate::Close;
         let mut selected_surface = None;
         let mut committing = false;
-        let host_ready = self
+        let host_accepts_request = self
             .activation
             .host
             .try_borrow()
-            .is_ok_and(|host| host.as_ref().is_some_and(Bridge::available));
+            .is_ok_and(|host| host.as_ref().is_some_and(Bridge::accepts_request));
         let action = keymap::action(
             self.key,
             Context {
@@ -562,7 +562,7 @@ impl ITfEditSession_Impl for Session_Impl {
         if matches!(self.key, Key::Space) {
             if raw.is_empty() {
                 trace!("DIY IME Stage B: Space found no owned preedit");
-            } else if !host_ready && matches!(action, Some(Action::Convert)) {
+            } else if !host_accepts_request && matches!(action, Some(Action::Convert)) {
                 trace!("DIY IME Stage B: Space found preedit but Host unavailable");
             }
         }
@@ -577,7 +577,7 @@ impl ITfEditSession_Impl for Session_Impl {
                 candidate_update = CandidateUpdate::Select(index);
                 selected_surface = Some(text);
             }
-            Some(Action::Convert) if host_ready => {
+            Some(Action::Convert) if host_accepts_request => {
                 self.completed.set(Some(true));
                 if self.apply {
                     self.host_action.set(Some(HostAction::Convert));
@@ -591,7 +591,7 @@ impl ITfEditSession_Impl for Session_Impl {
                 }
                 return Ok(());
             }
-            Some(Action::Commit) if candidates.is_none() && host_ready => {
+            Some(Action::Commit) if candidates.is_none() && host_accepts_request => {
                 self.completed.set(Some(true));
                 if self.apply {
                     self.host_action.set(Some(HostAction::Finalize));

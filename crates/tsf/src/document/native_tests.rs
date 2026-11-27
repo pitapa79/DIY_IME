@@ -183,6 +183,25 @@ fn native_edit_attributes_preserve_protection() -> Result<()> {
             );
             set_input_scope(edit.0, IS_DEFAULT)?;
             assert!(eligible(&context, client)?);
+            let empty = unsafe { compartments.GetCompartment(&GUID_COMPARTMENT_EMPTYCONTEXT)? };
+            unsafe {
+                empty.SetValue(client, &VARIANT::from(1_i32))?;
+            }
+            assert!(
+                !eligible(&context, client)?,
+                "empty TSF context must deny input"
+            );
+            unsafe {
+                empty.SetValue(client, &VARIANT::from(windows_core::BSTR::from("unknown")))?;
+            }
+            assert!(
+                !eligible(&context, client)?,
+                "unknown empty-context type must deny input"
+            );
+            unsafe {
+                empty.SetValue(client, &VARIANT::from(0_i32))?;
+            }
+            assert!(eligible(&context, client)?);
             const EM_SETPASSWORDCHAR: u32 = 0x00cc;
             unsafe {
                 SendMessageW(
