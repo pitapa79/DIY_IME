@@ -124,6 +124,14 @@ try {
         if ($installer.HasExited) { throw "The registration helper exited before verification (code $($installer.ExitCode))." }
         throw "The machine profile could not be verified within $registrationTimeout seconds."
     }
+    if ($StageBHostConfiguration) {
+        Push-Location -LiteralPath $repo
+        try {
+            & $Cargo run --locked -p diy-ime2-ime-host --example ime_external_host_probe -- `
+                (Join-Path $staging 'diy-ime2-external-host.exe') (Join-Path $staging 'ime-execution.json')
+            if ($LASTEXITCODE -ne 0) { throw 'The staged Stage B Host failed the synthetic fixture check.' }
+        } finally { Pop-Location }
+    }
     $enableAttempted = $true
     & $tool enable
     if ($LASTEXITCODE -ne 0) { throw 'The current user could not enable the dedicated profile.' }

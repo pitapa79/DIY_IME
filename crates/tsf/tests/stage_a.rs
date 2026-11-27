@@ -515,17 +515,7 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
             &mut cookie,
         )?;
         document.Push(context.as_ref().expect("real TSF context"))?;
-        let mut previous = ptr::null_mut();
-        (thread_manager.vtable().AssociateFocus)(
-            thread_manager.as_raw(),
-            window.0,
-            document.as_raw(),
-            &mut previous,
-        )
-        .ok()?;
-        if !previous.is_null() {
-            drop(ITfDocumentMgr::from_raw(previous));
-        }
+        associate_document(&thread_manager, window.0, &document)?;
         // A hidden test-owned HWND is enough for the local registration path.
         if interactive {
             let _ = ShowWindow(window.0, SW_SHOW);
@@ -584,69 +574,84 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
     };
     profile.activate(machine_registered)?;
     let keys: ITfKeystrokeMgr = thread_manager.cast()?;
-    if interactive {
-        wait_for_app_focus(&thread_manager)?;
-        pump_until(|| {
-            Ok(unsafe { keys.GetForeground() }.is_ok_and(|service| service == TEST_SERVICE_CLSID))
-        })
-        .inspect_err(|_| {
-            eprintln!("waiting for the test profile to become the TSF foreground service")
-        })?;
-    }
-    assert_eq!(
-        unsafe { keys.GetForeground() }
-            .expect("query TSF foreground after activating test profile"),
-        TEST_SERVICE_CLSID
-    );
-    if interactive {
-        let context = context.as_ref().expect("real TSF context");
-        match &checks {
-            WindowChecks::Protection(observation) => verify_protection(
-                context,
-                &thread_manager,
-                &keys,
-                client,
-                &scope,
-                observation.as_ref(),
-            )?,
-            WindowChecks::Conversion => verify_conversion(
-                context,
-                &document,
-                &thread_manager,
-                &keys,
-                client,
-                &deny_writes,
-            )?,
-            WindowChecks::Keys | WindowChecks::FailedHost(_) => {
-                verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
-                verify_document_switch(context, &document, &thread_manager, &keys, client)?;
-                if let WindowChecks::FailedHost(observation) = &checks {
-                    assert_eq!(observation.dispatched(), 0);
+    let test = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+        if interactive {
+            wait_for_app_focus(&thread_manager)?;
+            pump_until(|| {
+                Ok(unsafe { keys.GetForeground() }
+                    .is_ok_and(|service| service == TEST_SERVICE_CLSID))
+            })
+            .inspect_err(|_| {
+                eprintln!("waiting for the test profile to become the TSF foreground service")
+            })?;
+        }
+        assert_eq!(
+            unsafe { keys.GetForeground() }
+                .expect("query TSF foreground after activating test profile"),
+            TEST_SERVICE_CLSID
+        );
+        if interactive {
+            let context = context.as_ref().expect("real TSF context");
+            match &checks {
+                WindowChecks::Protection(observation) => verify_protection(
+                    context,
+                    &thread_manager,
+                    &keys,
+                    client,
+                    &scope,
+                    observation.as_ref(),
+                )?,
+                WindowChecks::Conversion => verify_conversion(
+                    context,
+                    &document,
+                    &thread_manager,
+                    &keys,
+                    client,
+                    &deny_writes,
+                )?,
+                WindowChecks::Keys | WindowChecks::FailedHost(_) => {
+                    verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
+                    verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+                    if let WindowChecks::FailedHost(observation) = &checks {
+                        assert_eq!(observation.dispatched(), 0);
+                    }
                 }
+                WindowChecks::Activation => unreachable!("headless activation has no input checks"),
             }
-            WindowChecks::Activation => unreachable!("headless activation has no input checks"),
         }
-    }
-    profile.remove()?;
-    assert_ne!(
-        unsafe { keys.GetForeground() }
-            .expect("query TSF foreground after deactivating test profile"),
-        TEST_SERVICE_CLSID
-    );
-    unsafe {
-        document.Pop(TF_POPF_ALL)?;
-        thread_manager.Deactivate()?;
-    }
-    drop(registration);
-    if library.is_some() || !matches!(checks, WindowChecks::Activation | WindowChecks::Keys) {
-        if machine_registered || library.is_some() {
-            pump_until(installed_service_idle)?;
+        Ok(())
+    }));
+    let removed = profile.remove();
+    let foreground_released = unsafe { keys.GetForeground() }.and_then(|foreground| {
+        if foreground == TEST_SERVICE_CLSID {
+            Err(windows_core::Error::new(
+                E_FAIL,
+                "the test profile still owns the TSF foreground",
+            ))
         } else {
-            pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
+            Ok(())
         }
+    });
+    let popped = unsafe { document.Pop(TF_POPF_ALL) };
+    let deactivated = unsafe { thread_manager.Deactivate() };
+    drop(registration);
+    let unloaded = if machine_registered || library.is_some() {
+        pump_until(installed_service_idle)
+    } else {
+        pump_until(|| Ok(DllCanUnloadNow() == S_OK))
+    };
+    let cleanup = removed
+        .and(foreground_released)
+        .and(popped)
+        .and(deactivated)
+        .and(unloaded);
+    if let Err(error) = &cleanup {
+        eprintln!("TSF test cleanup failed: {error}");
     }
-    assert_eq!(DllCanUnloadNow(), S_OK);
-    Ok(())
+    match test {
+        Ok(result) => result.and(cleanup),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 use windows::Win32::{
@@ -972,11 +977,56 @@ fn second_document(
     Ok(other)
 }
 
+fn associate_document(
+    thread: &ITfThreadMgr,
+    window: HWND,
+    document: &ITfDocumentMgr,
+) -> Result<()> {
+    let mut previous = ptr::null_mut();
+    unsafe {
+        (thread.vtable().AssociateFocus)(thread.as_raw(), window, document.as_raw(), &mut previous)
+            .ok()?;
+        if !previous.is_null() {
+            drop(ITfDocumentMgr::from_raw(previous));
+        }
+    }
+    Ok(())
+}
+
 fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()> {
+    let window = unsafe { document.GetTop()?.GetActiveView()?.GetWnd()? };
+    associate_document(thread, window, document)?;
     unsafe { thread.SetFocus(document)? };
     pump_messages();
     assert_eq!(&unsafe { thread.GetFocus()? }, document);
     Ok(())
+}
+
+fn wait_for_conversion(
+    thread: &ITfThreadMgr,
+    document: &ITfDocumentMgr,
+    keys: &ITfKeystrokeMgr,
+    space: WPARAM,
+) -> Result<()> {
+    pump_until(|| unsafe {
+        if !thread.IsThreadFocus()?.as_bool() || thread.GetFocus()? != *document {
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "the test document lost the TSF foreground while waiting for conversion",
+            ));
+        }
+        if !keys
+            .TestKeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
+            .as_bool()
+        {
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "the test document no longer has active preedit while waiting for conversion",
+            ));
+        }
+        Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool())
+    })
+    .inspect_err(|error| eprintln!("waiting for the Stage B Host to accept conversion: {error}"))
 }
 
 fn verify_document_switch(
@@ -1047,8 +1097,7 @@ fn verify_conversion(
             );
         }
         let waiting_for_host = std::time::Instant::now();
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
-            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
+        wait_for_conversion(thread, document, keys, space)?;
         let host_ready_ms = waiting_for_host.elapsed().as_millis();
         let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
@@ -1324,10 +1373,9 @@ fn verify_protection(
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         assert!(keys.KeyDown(letter, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
-            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
-        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         let document = context.GetDocumentMgr()?;
+        wait_for_conversion(thread, &document, keys, space)?;
+        assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         if let Some(observation) = observation {
             pump_until(|| Ok(observation.dispatched() > before.unwrap_or(0)))?;
         } else {
@@ -1384,8 +1432,7 @@ fn verify_protection(
                     .as_bool()
             );
         }
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))
-            .inspect_err(|_| eprintln!("waiting for the Stage B Host to accept conversion"))?;
+        wait_for_conversion(thread, &document, keys, space)?;
         assert_eq!(
             observation.map(Observation::dispatched),
             protected_count,
