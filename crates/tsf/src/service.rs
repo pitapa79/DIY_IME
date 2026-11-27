@@ -281,6 +281,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Err(E_FAIL.into());
         }
         activation.active.set(true);
+        crate::diagnostics::trace!("DIY IME Stage B: TSF service activated");
         activation
             .manual
             .replace(ManualProtection::open(manager, &activation).ok());

@@ -63,6 +63,12 @@ Windows 10で通常アプリの確認枠を開いた試行では、専用プロ�
 
 結果にはOSビルド、アプリ名と版、アーキテクチャ、欄の種類、入力設定、登録と解除の結果を記録する。性能はHost準備、Spaceから候補表示まで、Enterから編集中の文書への確定までを分け、コールバック時間も記録する。少数回の測定は観測値として記載する。
 
+### Spaceが空白になる場合の診断
+
+合成入力専用の試験ビルドでは、上記のワークスペースビルドの後に、同じ出力先で `cargo build --locked -p diy-ime2-tsf --features stage-b-diagnostics` を実行する。デバッガーを試験対象のアプリプロセスに接続し、出力ウィンドウで `DIY IME Stage B:` を探す。試験DLLが再配置されたことを確認し、通常欄に合成文字列を入力してSpaceを押す。試験用のメッセージは固定文言で、入力文字・欄の内容・候補文字は出力しない。
+
+入力欄判定で止まった場合は `input field rejected by protection checks` を出力する。キーボード状態や取得済みのInputScopeが条件を満たさなかった場合は、その判定も出力する。Spaceより前に `TSF started composition` と、その後に `TSF terminated composition` または `external edit invalidated composition` が出れば、未確定入力が途中で失効したことを確認できる。Spaceで編集セッションが実行されない場合や、未確定入力はあるがHostを使えない場合にも、それぞれの判定を出力する。通常のビルドには診断出力を含めない。
+
 ## 検証記録
 
 照合した公開版 main は `b6c91aad1bdaa383eaa1a96c4740e56d9360d16f`（#208統合後）。同PRの必須Windows CIは再実行で成功した。今回の差分は検査コード、試験用の登録手順、合成データ構成の出力に限る。[PR #208のCI](https://github.com/pitapa79/DIY_IME/actions/runs/45816474413/attempts/2)。
@@ -81,6 +87,8 @@ Windows 10で通常アプリの確認枠を開いた試行では、専用プロ�
 変換待ちにBackspaceがアプリへ渡った場合、専用Win32試験はTSFの前面サービス、キーボード状態の値の型、TSF compositionの有無を区別する。合成入力の専用試験では、通常欄を示すInputScopeがあってもキーボード状態を消すとキーがアプリに渡り、状態を有効にすると試験IMEが入力を扱うことを確認した。メモ帳やブラウザーで同じ状態になっていたかは未確認。[Microsoftのキーボード状態取得仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcompartment-getvalue)。
 
 同じWindows 10で、試験IMEを登録せず、空のWindows標準Editコントロールにフォーカスを置いてTSFを調べた。TSFコンテキストは取得できたが、キーボード無効状態は `VT_EMPTY`（値なし）だった。メモ帳とブラウザーの変換失敗については、入力欄のInputScopeと未確定文字の失効経路が未確認。
+
+診断版でも標準Editの `VT_EMPTY` を再確認した。合成データ用Hostを使うプロセス内の専用Win32アプリでは、未確定入力の開始後にTSFの終了通知が届いた。変換を試せる状態になる前にBackspaceがアプリに渡り、その時点のキーボード状態の型は `VT_I4` で、TSFにcompositionは残っていなかった。この試行は後続の保護入力検査に到達しなかった。通常入力と保護入力のキー配送を確認する別の専用Win32試験は成功した。診断版の一時登録は、旧DLLをChatGPTとエクスプローラーが保持しており、前回の一時配置が残っていたため前提検査で停止した。
 
 | Windows 10の専用Win32試験、デバッグビルド | 単回観測 |
 | --- | ---: |

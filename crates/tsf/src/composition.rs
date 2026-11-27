@@ -22,6 +22,7 @@ use windows_core::{Interface, Result, VARIANT, implement};
 use crate::{
     ModuleRef,
     candidates::CandidateUi,
+    diagnostics::trace,
     display::PREEDIT_ATTRIBUTE,
     document::{editable_selection, is_utf16_boundary},
     host::{Bridge, Preview},
@@ -84,6 +85,7 @@ impl Observer_Impl {
 
 impl ITfCompositionSink_Impl for Observer_Impl {
     fn OnCompositionTerminated(&self, _: u32, _: Option<&ITfComposition>) -> Result<()> {
+        trace!("DIY IME Stage B: TSF terminated composition");
         self.validity.ended.set(true);
 
         self.close_candidates();
@@ -99,6 +101,7 @@ impl ITfTextEditSink_Impl for Observer_Impl {
         record: Option<&ITfEditRecord>,
     ) -> Result<()> {
         if !self.validity.own_edit.get() && record.is_none_or(has_document_change) {
+            trace!("DIY IME Stage B: external edit invalidated composition");
             self.validity.modified.set(true);
             self.close_candidates();
         }
@@ -208,6 +211,7 @@ impl Preedit {
         self.current.replace(None);
         self.pending_finalize.set(None);
         if let Some(owned) = owned.as_ref() {
+            trace!("DIY IME Stage B: service invalidated composition");
             close_candidates(&owned.candidates);
         }
         if let Some(owned) = owned
@@ -262,7 +266,11 @@ impl Preedit {
         apply: bool,
     ) -> Option<bool> {
         let generation = self.generation.get();
+        let converting = matches!(key, Key::Space);
         if generation == u64::MAX || self.uncertain.get() || !activation.owns_focus(context) {
+            if converting {
+                trace!("DIY IME Stage B: Space rejected before edit session");
+            }
             return Some(false);
         }
         if self.busy.replace(true) {
@@ -310,6 +318,9 @@ impl Preedit {
             validity.own_edit.set(false);
         }
         let handled = completed.replace(Some(false));
+        if converting && handled.is_none() {
+            trace!("DIY IME Stage B: Space edit session did not run");
+        }
         if let Some(owned) = self.pending_cleanup.take() {
             Self::cleanup(owned, activation.client_id);
         }
@@ -327,6 +338,9 @@ impl Preedit {
                     let stamp = self.stamp();
                     let finalize = matches!(action, HostAction::Finalize);
                     self.pending_finalize.set(finalize.then_some(stamp));
+                    if converting {
+                        trace!("DIY IME Stage B: Space submitted conversion to Host bridge");
+                    }
                     host.convert(stamp, owned.text.borrow().clone(), finalize);
                 }
             } else {
@@ -463,9 +477,13 @@ impl Session_Impl {
 
     fn inspect(&self, cookie: u32) -> Option<(ITfRange, Option<Rc<Owned>>, String)> {
         if !self.current() {
+            if matches!(self.key, Key::Space) {
+                trace!("DIY IME Stage B: Space lost current document");
+            }
             return None;
         }
         let Some(selection) = editable_selection(&self.context, cookie) else {
+            trace!("DIY IME Stage B: input field rejected by protection checks");
             if self.apply {
                 self.activation.protect();
             }
@@ -477,15 +495,26 @@ impl Session_Impl {
         let owned = self.activation.preedit.current.borrow().clone();
         let raw = match owned.as_ref() {
             Some(owned) if owned.context == self.context && owned.validity.owned() => {
-                let range = owned.verified_range(cookie)?;
+                let Some(range) = owned.verified_range(cookie) else {
+                    if matches!(self.key, Key::Space) {
+                        trace!("DIY IME Stage B: Space could not verify composition range");
+                    }
+                    return None;
+                };
                 if !unsafe { selection.IsEmpty(cookie).ok()?.as_bool() }
                     || unsafe { selection.CompareStart(cookie, &range, TF_ANCHOR_END).ok()? } != 0
                 {
+                    if matches!(self.key, Key::Space) {
+                        trace!("DIY IME Stage B: Space found selection outside composition end");
+                    }
                     return None;
                 }
                 owned.text.borrow().clone()
             }
             Some(owned) if !owned.validity.ended.get() => {
+                if matches!(self.key, Key::Space) {
+                    trace!("DIY IME Stage B: Space found invalidated composition");
+                }
                 if self.apply {
                     self.activation.cancel_host();
                     self.activation
@@ -530,6 +559,13 @@ impl ITfEditSession_Impl for Session_Impl {
                 selecting_candidate: candidates.is_some(),
             },
         );
+        if matches!(self.key, Key::Space) {
+            if raw.is_empty() {
+                trace!("DIY IME Stage B: Space found no owned preedit");
+            } else if !host_ready && matches!(action, Some(Action::Convert)) {
+                trace!("DIY IME Stage B: Space found preedit but Host unavailable");
+            }
+        }
         match action {
             Some(Action::Append(character)) if raw.len() < MAX_PREEDIT => raw.push(character),
             Some(Action::ReplaceWithPrefix(prefix)) => raw.truncate(prefix),
@@ -592,6 +628,7 @@ impl ITfEditSession_Impl for Session_Impl {
                     return Ok(());
                 }
                 let owned = self.start(cookie, &selection, original)?;
+                trace!("DIY IME Stage B: TSF started composition");
                 if !self.current() || !owned.validity.owned() {
                     let _ = unsafe { owned.composition.EndComposition(cookie) };
                     return Ok(());

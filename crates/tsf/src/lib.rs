@@ -3,6 +3,7 @@
 
 mod candidates;
 mod composition;
+mod diagnostics;
 mod display;
 mod host;
 mod protection;

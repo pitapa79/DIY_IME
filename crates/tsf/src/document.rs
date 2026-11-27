@@ -1,5 +1,6 @@
 use std::{mem::ManuallyDrop, os::raw::c_void, ptr};
 
+use crate::diagnostics::trace;
 use windows::Win32::{
     System::{Com::CoTaskMemFree, Variant::VT_I4},
     UI::TextServices::{
@@ -18,10 +19,12 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     };
     let flag = unsafe { compartment.GetValue().ok()? };
     let fields = unsafe { flag.as_raw().Anonymous.Anonymous };
-    if fields.vt != VT_I4.0
-        || unsafe { fields.Anonymous.lVal } != 0
-        || unsafe { context.GetStatus().ok()?.dwDynamicFlags } & TS_SD_READONLY != 0
-    {
+    if fields.vt != VT_I4.0 || unsafe { fields.Anonymous.lVal } != 0 {
+        trace!("DIY IME Stage B: keyboard compartment did not confirm enabled");
+        return None;
+    }
+    if unsafe { context.GetStatus().ok()?.dwDynamicFlags } & TS_SD_READONLY != 0 {
+        trace!("DIY IME Stage B: document is read-only");
         return None;
     }
     let mut selections = [TF_SELECTION::default()];
@@ -37,7 +40,11 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     let property = unsafe { context.GetAppProperty(&GUID_PROP_INPUTSCOPE).ok()? };
     let value = unsafe { property.GetValue(cookie, &range).ok()? };
     let scope: ITfInputScope = IUnknown::try_from(&value).ok()?.cast().ok()?;
-    ordinary_scope(&scope).then_some(range)
+    if !ordinary_scope(&scope) {
+        trace!("DIY IME Stage B: InputScope did not confirm ordinary field");
+        return None;
+    }
+    Some(range)
 }
 
 fn ordinary_scope(scope: &ITfInputScope) -> bool {
