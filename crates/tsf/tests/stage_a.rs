@@ -1356,12 +1356,27 @@ fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
 #[test]
 #[ignore = "requires the foreground Windows desktop for a probe of the built-in Edit control"]
 fn interactive_native_edit_context_probe() -> Result<()> {
-    use windows::Win32::UI::WindowsAndMessaging::{WS_CHILD, WS_VISIBLE};
+    use windows::Win32::UI::WindowsAndMessaging::{ES_PASSWORD, ES_READONLY};
+    for (label, style) in [
+        ("ordinary", 0),
+        ("password", ES_PASSWORD as u32),
+        ("read-only", ES_READONLY as u32),
+    ] {
+        eprintln!("Native Edit field classification: {label}");
+        probe_native_edit_context(style)?;
+    }
+    Ok(())
+}
+
+fn probe_native_edit_context(style: u32) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongW, WINDOW_STYLE, WS_CHILD, WS_VISIBLE,
+    };
 
     let _apartment = Apartment::open()?;
     let thread: ITfThreadMgr =
         unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
-    unsafe { thread.Activate()? };
+    let client = unsafe { thread.Activate()? };
     let window = Window(unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -1383,7 +1398,7 @@ fn interactive_native_edit_context_probe() -> Result<()> {
             WINDOW_EX_STYLE(0),
             windows_core::w!("EDIT"),
             PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE,
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
             10,
             10,
             400,
@@ -1402,6 +1417,9 @@ fn interactive_native_edit_context_probe() -> Result<()> {
     let outcome = (|| -> Result<()> {
         wait_for_app_focus(&thread)?;
         assert_eq!(unsafe { GetFocus() }, edit.0);
+        let actual_style = unsafe { GetWindowLongW(edit.0, GWL_STYLE) } as u32;
+        assert_eq!(actual_style & style, style);
+        eprintln!("Native Edit style flags: {actual_style:#x}");
         let document = unsafe { thread.GetFocus() };
         match document.and_then(|document| unsafe { document.GetTop() }) {
             Ok(context) => {
@@ -1413,12 +1431,81 @@ fn interactive_native_edit_context_probe() -> Result<()> {
                 };
                 let variant = unsafe { disabled.as_raw().Anonymous.Anonymous.vt };
                 eprintln!("Native Edit TSF keyboard-disabled value variant: {variant}");
+                if variant == windows::Win32::System::Variant::VT_I4.0 {
+                    eprintln!("Native Edit TSF keyboard-disabled flag: {}", unsafe {
+                        disabled.as_raw().Anonymous.Anonymous.Anonymous.lVal
+                    });
+                }
+                let ran = Rc::new(Cell::new(false));
+                let session: ITfEditSession = NativeScopeProbe {
+                    context: context.clone(),
+                    ran: ran.clone(),
+                }
+                .into();
+                let access = TF_CONTEXT_EDIT_CONTEXT_FLAGS(
+                    TF_ES_SYNC.0 | windows::Win32::UI::TextServices::TF_ES_READ.0,
+                );
+                unsafe { context.RequestEditSession(client, &session, access)?.ok()? };
+                assert!(
+                    ran.get(),
+                    "native InputScope probe edit session must execute"
+                );
             }
             Err(error) => eprintln!("Native Edit did not expose a TSF context: {error}"),
         }
         Ok(())
     })();
     outcome.and(unsafe { thread.Deactivate() })
+}
+
+#[implement(ITfEditSession)]
+struct NativeScopeProbe {
+    context: windows::Win32::UI::TextServices::ITfContext,
+    ran: Rc<Cell<bool>>,
+}
+
+impl ITfEditSession_Impl for NativeScopeProbe_Impl {
+    fn DoEditSession(&self, cookie: u32) -> Result<()> {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::{
+            System::Com::CoTaskMemFree,
+            UI::TextServices::{
+                GUID_PROP_INPUTSCOPE, ITfInputScope, TF_DEFAULT_SELECTION, TF_SELECTION,
+            },
+        };
+        self.ran.set(true);
+        let mut selections = [TF_SELECTION::default()];
+        let mut count = 0;
+        unsafe {
+            self.context
+                .GetSelection(cookie, TF_DEFAULT_SELECTION, &mut selections, &mut count)?
+        };
+        let [selection] = selections;
+        let range = ManuallyDrop::into_inner(selection.range).ok_or(E_FAIL)?;
+        assert_eq!(count, 1);
+        let property = unsafe { self.context.GetAppProperty(&GUID_PROP_INPUTSCOPE)? };
+        let value = unsafe { property.GetValue(cookie, &range)? };
+        eprintln!("Native Edit InputScope value variant: {}", unsafe {
+            value.as_raw().Anonymous.Anonymous.vt
+        });
+        let scope = IUnknown::try_from(&value).and_then(|value| value.cast::<ITfInputScope>());
+        match scope {
+            Ok(scope) => {
+                let mut values = ptr::null_mut();
+                let mut count = 0;
+                let result = unsafe { scope.GetInputScopes(&mut values, &mut count) };
+                if result.is_ok() && !values.is_null() && (0..=32).contains(&count) {
+                    let scopes = unsafe { std::slice::from_raw_parts(values, count as usize) };
+                    eprintln!("Native Edit InputScope classifications: {scopes:?}");
+                } else {
+                    eprintln!("Native Edit InputScope classifications unavailable");
+                }
+                unsafe { CoTaskMemFree(Some(values.cast::<c_void>())) };
+            }
+            Err(_) => eprintln!("Native Edit did not expose ITfInputScope"),
+        }
+        Ok(())
+    }
 }
 
 fn pump_messages() {

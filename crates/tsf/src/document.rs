@@ -2,7 +2,10 @@ use std::{mem::ManuallyDrop, os::raw::c_void, ptr};
 
 use crate::diagnostics::trace;
 use windows::Win32::{
-    System::{Com::CoTaskMemFree, Variant::VT_I4},
+    System::{
+        Com::CoTaskMemFree,
+        Variant::{VT_EMPTY, VT_I4},
+    },
     UI::TextServices::{
         GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, IS_DEFAULT, ITfCompartmentMgr,
         ITfContext, ITfInputScope, ITfRange, TF_DEFAULT_SELECTION, TF_SELECTION, TS_SD_READONLY,
@@ -19,8 +22,18 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
     };
     let flag = unsafe { compartment.GetValue().ok()? };
     let fields = unsafe { flag.as_raw().Anonymous.Anonymous };
-    if fields.vt != VT_I4.0 || unsafe { fields.Anonymous.lVal } != 0 {
-        trace!("DIY IME Stage B: keyboard compartment did not confirm enabled");
+    if fields.vt != VT_I4.0 {
+        if fields.vt == VT_EMPTY.0 {
+            trace!("DIY IME Stage B: keyboard compartment has no value (VT_EMPTY)");
+        } else {
+            trace!("DIY IME Stage B: keyboard compartment has an unsupported value type");
+        }
+        #[cfg(feature = "stage-b-diagnostics")]
+        trace_input_scope(context, cookie);
+        return None;
+    }
+    if unsafe { fields.Anonymous.lVal } != 0 {
+        trace!("DIY IME Stage B: keyboard compartment explicitly disables input");
         return None;
     }
     if unsafe { context.GetStatus().ok()?.dwDynamicFlags } & TS_SD_READONLY != 0 {
@@ -45,6 +58,39 @@ pub(crate) fn editable_selection(context: &ITfContext, cookie: u32) -> Option<IT
         return None;
     }
     Some(range)
+}
+
+#[cfg(feature = "stage-b-diagnostics")]
+fn trace_input_scope(context: &ITfContext, cookie: u32) {
+    // Inspect classification metadata only, even when text access is blocked.
+    let classification = (|| {
+        let mut selections = [TF_SELECTION::default()];
+        let mut count = 0;
+        let result = unsafe {
+            context.GetSelection(cookie, TF_DEFAULT_SELECTION, &mut selections, &mut count)
+        };
+        let [selection] = selections;
+        let range = ManuallyDrop::into_inner(selection.range)?;
+        result.ok()?;
+        if count != 1 {
+            return None;
+        }
+        let property = unsafe { context.GetAppProperty(&GUID_PROP_INPUTSCOPE).ok()? };
+        let value = unsafe { property.GetValue(cookie, &range).ok()? };
+        let scope: ITfInputScope = IUnknown::try_from(&value).ok()?.cast().ok()?;
+        Some(ordinary_scope(&scope))
+    })();
+    match classification {
+        Some(true) => {
+            trace!("DIY IME Stage B: blocked field exposes ordinary InputScope");
+        }
+        Some(false) => {
+            trace!("DIY IME Stage B: blocked field exposes non-default or invalid InputScope");
+        }
+        None => {
+            trace!("DIY IME Stage B: blocked field InputScope unavailable");
+        }
+    }
 }
 
 fn ordinary_scope(scope: &ITfInputScope) -> bool {

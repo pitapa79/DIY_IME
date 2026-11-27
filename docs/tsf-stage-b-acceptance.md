@@ -91,6 +91,12 @@ Windows 10で通常アプリの確認枠を開いた試行では、専用プロ�
 
 メンテナーからChrome Remote Desktop経由で操作している可能性が提示された。同じ環境でWindows標準IMEは変換できるとの報告がある。リモート操作との相性は未検証で、現時点の実測ではDIY IMEのキーボード状態判定による拒否までを特定した。
 
+登録不要の標準Edit診断を拡張し、同じWindows 10で通常・パスワード・読取専用の3欄を比較した。通常欄のWin32 styleは `0x50000000` で、キーボード状態とInputScopeの両方が `VT_EMPTY`、ITfInputScopeは取得できなかった。パスワード欄のstyleは `0x50000020`、読取専用欄は `0x50000800` で、両方ともTSFコンテキストを取得できなかった。この診断は本文を取得していない。実メモ帳への適用は未検証。
+
+キーボード状態の診断メッセージを、値なし・明示的な無効・想定外の型へ分けた。診断ビルドは値なし・想定外の型で拒否した場合、InputScopeの分類メタデータだけも調べる。これにより次のメモ帳試験で両信号を一度に確認できる。入力許可の条件は従来どおり。
+
+Microsoftの仕様では、コンパートメントが未設定の場合は `S_FALSE` と `VT_EMPTY` が返る。標準Editのパスワード表示・読取専用属性も調査した。代替属性を用いる通常欄の分類方法は検討中。[GetValue仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcompartment-getvalue)、[標準Editの属性](https://learn.microsoft.com/en-us/windows/win32/controls/edit-control-styles)。
+
 手動試験の終了指示後、マシン登録は解除されたが、最後の解除操作により専用HKCUのTSFキーが残った。専用キーを削除し、HKCU/HKLMの専用COM・TSFキーの不存在、試験プロファイルが未登録・無効であること、入力方式一覧と既定上書き設定に試験IMEがないことを確認した。今回の入力設定の事前値は失敗処理で削除されており、全項目の事前値との一致を再照合できなかった。スクリプトを更新し、登録側の終了後にユーザーキーを削除し、解除確認に失敗した場合は事前値を残す。一時配置のDLLは使用中で残っている。
 
 照合した公開版 main は `b6c91aad1bdaa383eaa1a96c4740e56d9360d16f`（#208統合後）。同PRの必須Windows CIは再実行で成功した。今回の差分は検査コード、試験用の登録手順、合成データ構成の出力に限る。[PR #208のCI](https://github.com/pitapa79/DIY_IME/actions/runs/45816474413/attempts/2)。
