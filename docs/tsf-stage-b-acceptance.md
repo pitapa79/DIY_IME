@@ -105,6 +105,8 @@ TSFアクティブビューのウィンドウがWindows標準の `Edit` クラ�
 
 登録不要の標準Edit回帰試験では、通常欄の許可、パスワード・読取専用style、途中のパスワード表示切替、明示的なキーボード無効、未知のコンパートメント型、パスワードInputScope、フォーカス外、ウィンドウ無効化の拒否が成功した。既存の専用Win32アプリの通常・保護入力試験と、TSFクレートの自動テスト10件、clippy、fmtも成功した。修正後の実メモ帳での候補表示・確定は未実施。
 
+修正コミット `2336ae3` の必須Windows CIは成功した。[CI結果](https://github.com/pitapa79/DIY_IME/actions/runs/45981650404)。修正DLLを試験プロセス内で直接読み込む `interactive_process_local_dll_converts` も成功し、既存の通常キー・文書切替・候補表示・確定・保護入力を確認した。この試験は専用のテキストストアを使う。単回観測はHost準備9,899 ms、Spaceコールバック384 µs、候補表示まで2,416 ms、Enterコールバック457 µs、確定まで2,296 msだった。試験後の専用プロファイルは未登録・無効だった。実メモ帳の修正版での再確認が残る。
+
 Microsoftの仕様では、コンパートメントが未設定の場合は `S_FALSE` と `VT_EMPTY` が返る。標準Editのパスワード表示・読取専用属性も調査した。[GetValue仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcompartment-getvalue)、[標準Editの属性](https://learn.microsoft.com/en-us/windows/win32/controls/edit-control-styles)。
 
 手動試験の終了指示後、マシン登録は解除されたが、最後の解除操作により専用HKCUのTSFキーが残った。専用キーを削除し、HKCU/HKLMの専用COM・TSFキーの不存在、試験プロファイルが未登録・無効であること、入力方式一覧と既定上書き設定に試験IMEがないことを確認した。今回の入力設定の事前値は失敗処理で削除されており、全項目の事前値との一致を再照合できなかった。スクリプトを更新し、登録側の終了後にユーザーキーを削除し、解除確認に失敗した場合は事前値を残す。一時配置のDLLは使用中で残っている。
