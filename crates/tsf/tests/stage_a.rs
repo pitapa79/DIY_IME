@@ -784,9 +784,19 @@ fn verify_key_edit(
     .into();
     let compartments: ITfCompartmentMgr = context.cast()?;
     unsafe {
-        let disabled = compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
         let key = WPARAM(usize::from(VK_A.0));
         scope.set(IS_DEFAULT);
+        // An explicit ordinary scope alone cannot establish that the keyboard is usable.
+        compartments
+            .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+            .SetValue(client, &VARIANT::from(0_i32))?;
+        compartments.ClearCompartment(client, &GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
+        assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (0, [0; 2]));
+
+        let disabled = compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
         disabled.SetValue(client, &VARIANT::from(1_i32))?;
         assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
@@ -1031,13 +1041,35 @@ fn wait_for_conversion(
                 "the test document lost the TSF foreground while waiting for conversion",
             ));
         }
+        if keys.GetForeground()? != TEST_SERVICE_CLSID {
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "the test profile lost the TSF foreground while waiting for conversion",
+            ));
+        }
         if !keys
             .TestKeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
             .as_bool()
         {
+            let context = document.GetTop()?;
+            let compartments: ITfCompartmentMgr = context.cast()?;
+            let flag = compartments
+                .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+                .GetValue()?;
+            let variant = flag.as_raw().Anonymous.Anonymous.vt;
+            let compositions: ITfContextComposition = context.cast()?;
+            let mut views = [None];
+            let mut fetched = 0;
+            compositions
+                .EnumCompositions()?
+                .Next(&mut views, &mut fetched)?;
+            eprintln!(
+                "Synthetic document after Backspace passthrough: keyboard flag variant={variant}, TSF composition present={}",
+                fetched != 0
+            );
             return Err(windows_core::Error::new(
                 E_FAIL,
-                "the test document no longer has active preedit while waiting for conversion",
+                "the test service passed Backspace through while waiting for conversion",
             ));
         }
         Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool())
