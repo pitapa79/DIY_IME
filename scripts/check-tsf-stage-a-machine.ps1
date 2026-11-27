@@ -230,6 +230,7 @@ try {
         if ($LASTEXITCODE -ne 0) { $failures.Add($test) }
     }
     if ($ManualUntilStopped) {
+        & (Join-Path $PSScriptRoot 'check-tsf-test-app.ps1') -StagingDirectory $staging
         'Manual application checks are ready until explicitly stopped.'
         "Manual application completion signal: $finish"
         'Return to the original input method and close test applications before completing.'
