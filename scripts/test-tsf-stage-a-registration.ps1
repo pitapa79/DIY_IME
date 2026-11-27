@@ -6,7 +6,7 @@ param(
     [string]$StageBHostConfiguration,
     [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBConfigSha256,
     [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBHostSha256,
-    [ValidateRange(30, 600)][int]$Seconds = 180,
+    [ValidateRange(30, 900)][int]$Seconds = 180,
     [switch]$ReuseMatchingStaging,
     [guid]$RunId = [guid]::NewGuid()
 )

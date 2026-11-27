@@ -3,6 +3,7 @@ param(
     [string]$Cargo = 'cargo',
     [string]$StageBHostConfiguration,
     [ValidateRange(0, 300)][int]$ManualAppSeconds = 0,
+    [switch]$WaitForManualReady,
     [switch]$ReuseMatchingStaging,
     [switch]$CheckPrerequisites
 )
@@ -12,6 +13,9 @@ if (![Environment]::Is64BitProcess -or ![Environment]::UserInteractive) {
 }
 if ($ManualAppSeconds -gt 0 -and !$StageBHostConfiguration) {
     throw 'Manual application checks require a Stage B Host configuration.'
+}
+if ($WaitForManualReady -and $ManualAppSeconds -eq 0) {
+    throw 'Waiting for manual readiness requires a manual application check duration.'
 }
 
 $service = '{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
@@ -44,6 +48,20 @@ function Test-DedicatedKeys {
         }
     }
     return $false
+}
+
+function Wait-TsfManualReady(
+    [Diagnostics.Process]$Installer,
+    [string]$Signal,
+    [int]$TimeoutSeconds
+) {
+    $wait = [Diagnostics.Stopwatch]::StartNew()
+    while ($wait.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        if ($Installer.HasExited) { throw 'The machine registration ended while waiting for IME selection.' }
+        if ([IO.File]::Exists($Signal)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'IME selection was not confirmed within the allowed time.'
 }
 
 $requiredFiles = @($tool, $dll)
@@ -105,13 +123,15 @@ $runId = [guid]::NewGuid()
 $session = Join-Path ([IO.Path]::GetTempPath()) ('diy-ime-tsf-' + $runId.ToString('N'))
 [void][IO.Directory]::CreateDirectory($session)
 $release = Join-Path $session 'release.signal'
+$ready = Join-Path $session 'ready.signal'
 $toolHash = $hashes['diy-ime2-tsf-test-profile.exe']
 $dllHash = $hashes['diy_ime2_tsf.dll']
-$seconds = if ($StageBHostConfiguration) { (300 + $ManualAppSeconds).ToString() } else { '150' }
+$readyWaitSeconds = if ($WaitForManualReady) { 300 } else { 0 }
+$seconds = if ($StageBHostConfiguration) { 300 + $readyWaitSeconds + $ManualAppSeconds } else { 150 }
 $arguments = @(
     '-NoProfile', '-File', ('"' + $machineInstaller + '"'),
     '-BuildDirectory', ('"' + $build + '"'), '-ReleaseFile', ('"' + $release + '"'),
-    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', $seconds,
+    '-ProfileToolSha256', $toolHash, '-ServiceDllSha256', $dllHash, '-Seconds', $seconds.ToString(),
     '-RunId', $runId.ToString()
 )
 if ($StageBHostConfiguration) {
@@ -169,7 +189,16 @@ try {
         if ($LASTEXITCODE -ne 0) { $failures.Add($test) }
     }
     if ($ManualAppSeconds -gt 0) {
-        if ($installer.HasExited -or $clock.Elapsed.TotalSeconds -ge 285) {
+        $manualStartDeadline = $seconds - $ManualAppSeconds - 15
+        if ($WaitForManualReady) {
+            $remaining = [int][Math]::Floor($manualStartDeadline - $clock.Elapsed.TotalSeconds)
+            $selectionTimeout = [Math]::Min($readyWaitSeconds, $remaining)
+            if ($selectionTimeout -le 0) { throw 'Too little registration time remains to confirm IME selection.' }
+            "Select the test IME and confirm readiness within $selectionTimeout seconds."
+            "Manual application readiness signal: $ready"
+            Wait-TsfManualReady $installer $ready $selectionTimeout
+        }
+        if ($installer.HasExited -or $clock.Elapsed.TotalSeconds -ge $manualStartDeadline) {
             throw 'Too little registration time remains for the manual application checks.'
         }
         "Manual application checks are ready for $ManualAppSeconds seconds."
@@ -221,6 +250,7 @@ try {
         } finally {
             if (!$installer -or $installer.HasExited) {
                 [IO.File]::Delete($release)
+                [IO.File]::Delete($ready)
                 [IO.Directory]::Delete($session)
             }
             if ($installer) { $installer.Dispose() }
