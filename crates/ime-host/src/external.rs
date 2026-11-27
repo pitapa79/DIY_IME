@@ -29,6 +29,28 @@ const TIMEOUT: Duration = Duration::from_secs(45);
 const WAIT: Duration = Duration::from_millis(10);
 const GRAPH: &str = include_str!("../../../examples/graphs/official-dictionary.json");
 
+// Diagnostics contain only fixed stage names and numeric OS/exit codes.
+#[cfg(all(windows, feature = "stage-b-diagnostics"))]
+fn startup_diagnostic(stage: &'static str, code: Option<i32>) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OutputDebugStringW(message: *const u16);
+    }
+    let message = match code {
+        Some(code) => format!("DIY IME Stage B: {stage}, code={code}"),
+        None => format!("DIY IME Stage B: {stage}"),
+    };
+    let wide: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    unsafe { OutputDebugStringW(wide.as_ptr()) };
+}
+
+macro_rules! startup_trace {
+    ($stage:literal, $code:expr) => {{
+        #[cfg(all(windows, feature = "stage-b-diagnostics"))]
+        startup_diagnostic($stage, $code);
+    }};
+}
+
 #[derive(Clone)]
 pub struct Configuration {
     pub executable: PathBuf,
@@ -126,8 +148,15 @@ impl Background {
                 )
                 .is_none()
                 {
+                    startup_trace!("Host background operation failed", None);
                     let _ = outbox.try_send(Event::Unavailable);
                 }
+            })
+            .inspect_err(|_error| {
+                startup_trace!(
+                    "Host background thread creation failed",
+                    _error.raw_os_error()
+                );
             })?;
         Ok(Self {
             requests,
@@ -214,12 +243,21 @@ fn supervise(
     )
     .ok()?;
     let graph = serde_json::from_str::<Value>(GRAPH).ok()?;
-    let review = host.call(json!({"method": "prepareOfficialIme", "graph": graph}))?;
+    startup_trace!("Host official IME preparation started", None);
+    let Some(review) = host.call(json!({"method": "prepareOfficialIme", "graph": graph})) else {
+        startup_trace!("Host official IME preparation failed", None);
+        return None;
+    };
     if !review["missing"].as_array()?.is_empty() {
+        startup_trace!("Host official IME requires permissions", None);
         return None;
     }
     let review_id = review["reviewId"].as_str()?;
-    let active = host.call(json!({"method": "activate", "reviewId": review_id}))?;
+    startup_trace!("Host plan activation started", None);
+    let Some(active) = host.call(json!({"method": "activate", "reviewId": review_id})) else {
+        startup_trace!("Host plan activation failed", None);
+        return None;
+    };
     if active["phase"] != "ready" || active["sessionEpoch"] != review["sessionEpoch"] {
         return None;
     }
@@ -228,6 +266,7 @@ fn supervise(
         version: serde_json::from_value(active["state"]["activePlanVersion"].clone()).ok()?,
     };
     outbox.try_send(Event::Ready(plan.clone())).ok()?;
+    startup_trace!("Host ready event sent", None);
     let mut applied = 0;
     while !shutdown.load(Ordering::Acquire) {
         let latest = revision.load(Ordering::Acquire);
@@ -425,6 +464,7 @@ impl Transport {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
+                startup_trace!("Host process launch failed", error.raw_os_error());
                 stopped.store(true, Ordering::Release);
                 return Err(error);
             }
@@ -505,9 +545,17 @@ impl Transport {
                     return value.as_object_mut()?.remove("data");
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                _ => return None,
+                Ok(_) => {
+                    startup_trace!("Host protocol response rejected", None);
+                    return None;
+                }
+                Err(_) => {
+                    startup_trace!("Host response pipe closed", None);
+                    return None;
+                }
             }
         }
+        startup_trace!("Host response wait ended", None);
         None
     }
 }
@@ -518,7 +566,10 @@ impl Drop for Transport {
         let deadline = Instant::now() + Duration::from_secs(5);
         let clean_exit = loop {
             match self.child.try_wait() {
-                Ok(Some(status)) => break status.success(),
+                Ok(Some(status)) => {
+                    startup_trace!("Host process exited", status.code());
+                    break status.success();
+                }
                 Ok(None) if Instant::now() < deadline => thread::sleep(WAIT),
                 _ => {
                     let _ = self.child.kill();

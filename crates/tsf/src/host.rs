@@ -48,15 +48,18 @@ pub fn set_test_host_configuration(executable: PathBuf, file: PathBuf) -> Observ
 fn installed_configuration() -> Option<Configuration> {
     let mut module = HMODULE::default();
     let mut path = [0; 1024];
-    let count = unsafe {
+    unsafe {
         GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             PCWSTR(installed_configuration as *const () as *const u16),
             &mut module,
         )
-        .ok()?;
-        GetModuleFileNameW(module, &mut path) as usize
-    };
+    }
+    .inspect_err(|_| {
+        crate::diagnostics::trace!("DIY IME Stage B: Host module lookup failed");
+    })
+    .ok()?;
+    let count = unsafe { GetModuleFileNameW(module, &mut path) as usize };
     if count == 0 || count >= path.len() {
         return None;
     }
@@ -92,11 +95,17 @@ impl Timer {
                 None,
             )
         }
+        .inspect_err(|_| {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer window creation failed");
+        })
         .ok()?;
         let timer = Self(window);
-        if !unsafe { SetWindowSubclass(window, Some(tick), 1, 0).as_bool() }
-            || unsafe { SetTimer(window, 1, 20, None) } == 0
-        {
+        if !unsafe { SetWindowSubclass(window, Some(tick), 1, 0).as_bool() } {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer subclass installation failed");
+            return None;
+        }
+        if unsafe { SetTimer(window, 1, 20, None) } == 0 {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer scheduling failed");
             return None;
         }
         TIMERS.with(|timers| {
@@ -273,6 +282,7 @@ impl Bridge {
             )
             .ok();
             if self.worker.is_none() {
+                crate::diagnostics::trace!("DIY IME Stage B: Host background creation failed");
                 self.disconnected = true;
             }
         }
@@ -280,6 +290,7 @@ impl Bridge {
         let acknowledged = worker.acknowledged();
         match worker.poll() {
             Ok(Some(Event::Ready(plan))) => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host bridge received ready event");
                 let pending = self.queued.take();
                 self.input = Some(InputState::new(plan));
                 if let Some(pending) = pending {
@@ -318,6 +329,7 @@ impl Bridge {
                 }
             }
             Ok(Some(Event::Unavailable)) | Err(_) => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host bridge disconnected");
                 self.cancel();
                 self.disconnected = true;
                 return None;

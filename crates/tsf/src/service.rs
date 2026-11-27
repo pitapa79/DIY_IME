@@ -287,11 +287,17 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             .replace(ManualProtection::open(manager, &activation).ok());
         let blocked = activation.manually_blocked();
         activation.protected.set(blocked);
-        if let Some(host) = Bridge::open(blocked)
-            && let Some(timer) = Timer::open(&activation)
-        {
-            activation.host.replace(Some(host));
-            activation.timer.replace(Some(timer));
+        if let Some(host) = Bridge::open(blocked) {
+            crate::diagnostics::trace!("DIY IME Stage B: Host configuration paths located");
+            if let Some(timer) = Timer::open(&activation) {
+                activation.host.replace(Some(host));
+                activation.timer.replace(Some(timer));
+                crate::diagnostics::trace!("DIY IME Stage B: Host polling timer ready");
+            } else {
+                crate::diagnostics::trace!("DIY IME Stage B: Host polling timer unavailable");
+            }
+        } else {
+            crate::diagnostics::trace!("DIY IME Stage B: Host configuration discovery failed");
         }
         Ok(())
     }
