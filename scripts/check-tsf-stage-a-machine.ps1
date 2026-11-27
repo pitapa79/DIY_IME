@@ -177,6 +177,7 @@ if ($ManualUntilStopped) {
 }
 $installer = $null
 $enableAttempted = $false
+$cleanupVerified = $false
 try {
     $installer = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -268,6 +269,16 @@ try {
             if ($installer) {
                 [IO.File]::WriteAllText($release, 'release')
                 if (!$installer.WaitForExit(20000)) { throw 'Machine registration cleanup has not exited.' }
+                # The helper's final disable/remove calls can recreate the user key.
+                if ($enableAttempted) {
+                    $user = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
+                    try {
+                        $tips = $user.OpenSubKey('Software\Microsoft\CTF\TIP', $true)
+                        if ($tips) {
+                            try { $tips.DeleteSubKeyTree($service, $false) } finally { $tips.Dispose() }
+                        }
+                    } finally { $user.Dispose() }
+                }
                 $clock = [Diagnostics.Stopwatch]::StartNew()
                 do {
                     $status = Get-TestRegistration
@@ -281,6 +292,7 @@ try {
                     throw 'The input-method or default override settings changed from the baseline.'
                 }
                 'The test profile is absent. The original input-method settings match.'
+                $cleanupVerified = $true
                 if (Test-Path -LiteralPath $staging) {
                     throw 'The test staging files remain after cleanup.'
                 }
@@ -291,8 +303,12 @@ try {
                 [IO.File]::Delete($release)
                 [IO.File]::Delete($ready)
                 [IO.File]::Delete($finish)
-                [IO.File]::Delete((Join-Path $session 'input-baseline.json'))
-                [IO.Directory]::Delete($session)
+                if ($cleanupVerified -or !$installer) {
+                    [IO.File]::Delete((Join-Path $session 'input-baseline.json'))
+                    [IO.Directory]::Delete($session)
+                } else {
+                    Write-Warning "Cleanup verification failed. Input settings baseline retained in $session"
+                }
             }
             if ($installer) { $installer.Dispose() }
         }
