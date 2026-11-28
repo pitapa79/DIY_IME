@@ -111,6 +111,7 @@ impl Activation {
     }
 
     pub(crate) fn cancel_host(&self) {
+        self.preedit.discard_preview();
         if let Ok(mut host) = self.host.try_borrow_mut()
             && let Some(host) = host.as_mut()
         {
@@ -148,9 +149,7 @@ impl Activation {
             };
             host.as_mut().and_then(Bridge::poll)
         };
-        if let Some(preview) = preview {
-            self.preedit.preview(self, preview);
-        }
+        self.preedit.apply_host_preview(self, preview);
         let still_pending = self
             .host
             .try_borrow()

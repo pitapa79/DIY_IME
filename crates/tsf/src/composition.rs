@@ -13,8 +13,8 @@ use windows::Win32::{
         ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
         ITfContextComposition, ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl,
         ITfRange, ITfSource, ITfTextEditSink, ITfTextEditSink_Impl, TF_AE_END, TF_ANCHOR_END,
-        TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC,
-        TF_GTP_INCL_TEXT, TF_SELECTION, TF_SELECTIONSTYLE,
+        TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_E_LOCKED, TF_E_SYNCHRONOUS, TF_ES_READ,
+        TF_ES_READWRITE, TF_ES_SYNC, TF_GTP_INCL_TEXT, TF_SELECTION, TF_SELECTIONSTYLE,
     },
 };
 use windows_core::{Interface, Result, VARIANT, implement};
@@ -42,6 +42,7 @@ pub(crate) struct Preedit {
     uncertain: Cell<bool>,
     display_atom: Cell<Option<u32>>,
     pending_finalize: Cell<Option<DocumentStamp>>,
+    pending_preview: RefCell<Option<Preview>>,
 }
 
 struct Owned {
@@ -210,6 +211,7 @@ impl Preedit {
         self.uncertain.set(false);
         self.current.replace(None);
         self.pending_finalize.set(None);
+        self.discard_preview();
         if let Some(owned) = owned.as_ref() {
             trace!("DIY IME Stage B: service invalidated composition");
             close_candidates(&owned.candidates);
@@ -337,6 +339,7 @@ impl Preedit {
                 {
                     let stamp = self.stamp();
                     let finalize = matches!(action, HostAction::Finalize);
+                    self.discard_preview();
                     self.pending_finalize.set(finalize.then_some(stamp));
                     if converting {
                         trace!("DIY IME Stage B: Space submitted conversion to Host bridge");
@@ -366,7 +369,13 @@ impl Preedit {
     }
 
     pub(crate) fn finish_host_request(&self) {
-        self.pending_finalize.set(None);
+        if self.pending_preview.borrow().is_none() {
+            self.pending_finalize.set(None);
+        }
+    }
+
+    pub(crate) fn discard_preview(&self) {
+        self.pending_preview.take();
     }
 
     pub(crate) fn showing_candidates(&self) -> bool {
@@ -384,7 +393,16 @@ impl Preedit {
         self.check_key(activation, &owned.context, Key::Space, false)
     }
 
-    pub(crate) fn preview(&self, activation: &Rc<Activation>, preview: Preview) {
+    pub(crate) fn apply_host_preview(&self, activation: &Rc<Activation>, preview: Option<Preview>) {
+        let pending = self.pending_preview.take();
+        if let Some(preview) = preview {
+            self.preview(activation, preview, true);
+        } else if let Some(preview) = pending {
+            self.preview(activation, preview, false);
+        }
+    }
+
+    fn preview(&self, activation: &Rc<Activation>, preview: Preview, can_retry: bool) {
         if preview.stamp != self.stamp()
             || self.revision.get() == u64::MAX
             || self.uncertain.get()
@@ -407,23 +425,35 @@ impl Preedit {
             activation: activation.clone(),
             owned: owned.clone(),
             stamp: preview.stamp,
-            text: preview.text,
+            text: preview.text.clone(),
             finalize: preview.finalize,
             armed: armed.clone(),
             anchor: anchor.clone(),
         }
         .into();
-        let _ = unsafe {
+        let status = unsafe {
             owned.context.RequestEditSession(
                 activation.client_id,
                 &session,
                 TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0),
             )
         };
-        armed.set(false);
+        let callback_not_run = armed.replace(false);
         owned.validity.own_edit.set(false);
         if let Some(owned) = self.pending_cleanup.take() {
             Self::cleanup(owned, activation.client_id);
+        }
+        if callback_not_run && temporarily_locked(status) {
+            trace!("DIY IME Stage B: Host result edit session temporarily refused");
+            if can_retry
+                && preview.stamp == self.stamp()
+                && owned.validity.owned()
+                && !activation.is_protected()
+                && activation.owns_focus(&owned.context)
+            {
+                self.pending_preview.replace(Some(preview));
+            }
+            return;
         }
         if let (Some(anchor), Some(selected)) = (anchor.take(), selected)
             && preview.stamp == self.stamp()
@@ -448,6 +478,11 @@ impl Preedit {
             }
         }
     }
+}
+
+fn temporarily_locked(result: Result<windows_core::HRESULT>) -> bool {
+    let status = result.unwrap_or_else(|error| error.code());
+    matches!(status, TF_E_LOCKED | TF_E_SYNCHRONOUS)
 }
 
 #[implement(ITfEditSession)]

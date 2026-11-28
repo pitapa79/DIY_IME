@@ -503,8 +503,10 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
     let mut cookie = 0;
     let scope = Rc::new(Cell::new(IS_DEFAULT));
     let deny_writes = Rc::new(Cell::new(false));
-    let owner: ITextStoreACP =
-        text_store::Store::new(window.0, scope.clone(), deny_writes.clone()).into();
+    let deny_next_write = Rc::new(Cell::new(false));
+    let owner: ITextStoreACP = text_store::Store::new(window.0, scope.clone(), deny_writes.clone())
+        .reject_one_write_with(deny_next_write.clone())
+        .into();
     let owner: IUnknown = owner.cast()?;
     unsafe {
         document.CreateContext(
@@ -608,6 +610,7 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
                     &keys,
                     client,
                     &deny_writes,
+                    &deny_next_write,
                 )?,
                 WindowChecks::Keys | WindowChecks::FailedHost(_) => {
                     verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
@@ -1145,6 +1148,7 @@ fn verify_conversion(
     keys: &ITfKeystrokeMgr,
     client: u32,
     deny_writes: &Cell<bool>,
+    deny_next_write: &Cell<bool>,
 ) -> Result<()> {
     let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
     let contents = Rc::new(Cell::new((0, [0; 2])));
@@ -1179,6 +1183,7 @@ fn verify_conversion(
         let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         let conversion_callback_us = conversion_started.elapsed().as_micros();
+        deny_next_write.set(true);
         pump_until(|| {
             verify_conversion_focus(thread, document, keys)?;
             if !has_composition(context)? {
@@ -1190,6 +1195,10 @@ fn verify_conversion(
             Ok(candidate_list(thread, document)?.is_some())
         })
         .inspect_err(|error| eprintln!("starting candidate list: {error}"))?;
+        assert!(
+            !deny_next_write.get(),
+            "the test must reject one write before showing candidates"
+        );
         eprintln!(
             "stage_b_request_accepted_ms={request_accepted_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
             conversion_started.elapsed().as_millis()
@@ -1541,9 +1550,13 @@ impl ITfEditSession_Impl for NativeScopeProbe_Impl {
 }
 
 fn pump_messages() {
+    let trace_messages = std::env::var_os("DIY_IME_TEST_TRACE_MESSAGES").is_some();
     let mut message = MSG::default();
     unsafe {
         while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            if trace_messages {
+                eprintln!("TSF test dispatch Win32 message 0x{:04x}", message.message);
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }

@@ -27,6 +27,7 @@ pub(super) struct Store {
     window: HWND,
     scope: Rc<Cell<InputScope>>,
     deny_writes: Rc<Cell<bool>>,
+    deny_next_write: Rc<Cell<bool>>,
     sink: RefCell<Option<ITextStoreACPSink>>,
     text: RefCell<Vec<u16>>,
     selection: Cell<TS_SELECTION_ACP>,
@@ -44,12 +45,18 @@ impl Store {
             window,
             scope,
             deny_writes,
+            deny_next_write: Rc::default(),
             sink: RefCell::default(),
             text: RefCell::default(),
             selection: Cell::default(),
             lock: Cell::default(),
             scope_requested: Cell::default(),
         }
+    }
+
+    pub(super) fn reject_one_write_with(mut self, control: Rc<Cell<bool>>) -> Self {
+        self.deny_next_write = control;
+        self
     }
 
     fn read_access(&self) -> Result<()> {
@@ -126,7 +133,8 @@ impl ITextStoreACP_Impl for Store_Impl {
 
     fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
         if self.lock.get() != 0
-            || (self.deny_writes.get() && flags & TS_LF_READWRITE.0 == TS_LF_READWRITE.0)
+            || (flags & TS_LF_READWRITE.0 == TS_LF_READWRITE.0
+                && (self.deny_writes.get() || self.deny_next_write.replace(false)))
         {
             return Ok(TS_E_SYNCHRONOUS);
         }
