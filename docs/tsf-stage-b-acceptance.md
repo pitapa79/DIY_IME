@@ -149,7 +149,15 @@ Host設定の発見、タイマーウィンドウ・subclass・タイマー登�
 
 ### 追加診断版の実アプリ再試験（2026-11-28 JST）
 
+MicrosoftのTsfPadには、アプリ側が `ITfMessagePump` 経由でメッセージを取得し、TSFに前後処理を任せる構成がある。専用Win32試験でも `DIY_IME_TEST_TSF_MESSAGE_PUMP=1` を指定すると `ITfMessagePump::PeekMessageW` を使い、指定しなければ通常の `PeekMessageW` を使う。変換ロジック、キーの注入、Host設定は同じ。プロセス内のクラスファクトリーを使い、実行順を交互に入れ替えた計6試行では、通常経路・TSF経路とも3回中3回で未確定入力が終了した。両経路とも候補表示には到達せず、メッセージ取得APIの違いだけでは解消しなかった。[TsfPadの実装](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/winui/input/tsf/tsfapps/tsfpad-hybrid/TsfPad.cpp) · [ITfMessagePump仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfmessagepump)。
+
 試験用のメッセージ配送ログとTSFの診断を同じ試行で取得した。Win32メッセージ番号 `0x0060` の配送の直後にcomposition終了通知が記録されたが、対応する公開仕様を確認できず、前後関係から因果関係は断定しない。
+
+同じ診断版を直接読み込む `interactive_process_local_dll_converts` では、通常経路とTSF経路が各1回成功した。どちらもキー入力、文書切替、書き込みを一度拒否した後の候補表示、確定、保護入力まで確認した。前段のキー入力・文書切替検査を省く `interactive_process_local_dll_conversion_only` では、通常経路もTSF経路も各2回で未確定入力が途中終了した。DLLを直接読み込むだけでは解消せず、変換前の試験手順または状態が結果に影響する可能性がある。
+
+同じプロセス内のクラスファクトリーを使う `interactive_app_converts_through_official_host` にも、前段のキー入力・文書切替検査を入れる対照を設けた（`DIY_IME_TEST_BEFORE_CONVERSION=keys`）。通常経路・TSF経路とも各1回成功した。単独で変換する試験は、初回の問題を検出するため既定のまま残す。
+
+前段を非表示ウィンドウでの有効化・無効化だけにした対照（`DIY_IME_TEST_BEFORE_CONVERSION=activation`）は、両経路とも後続の変換試験の前面フォーカス取得で停止した。キー入力や文書切替が必要かは判定できていない。この比較では製品側のTSF実装を変更せず、マシン登録も行っていない。
 
 別件として、変換結果の書き戻し時に一時的な編集ロック拒否が起きると結果が失われる経路を修正した。同期編集のコールバックが実行されなかったと確かめられたロック拒否だけ、次のタイマー処理で一度再試行する。文書切替・入力の更新・保護開始で待機結果を破棄し、再試行直前にも対象文書の状態を照合する。専用Win32の変換試験で、書き込みを一度だけ拒否したログが出た後、候補表示・確定・文書切替まで成功した。この成功試行でも `0x0060` の配送は記録された。[RequestEditSessionの仕様](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession)。
 

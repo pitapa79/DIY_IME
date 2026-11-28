@@ -35,10 +35,11 @@ use windows::Win32::{
         TextServices::{
             CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDisplayAttributeProvider,
             ITfDocumentMgr, ITfEditSession, ITfEditSession_Impl, ITfInputProcessorProfileMgr,
-            ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfTextInputProcessor,
-            ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE, TF_ES_SYNC,
-            TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS, TF_LBI_CLK_LEFT,
-            TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
+            ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfMessagePump,
+            ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE,
+            TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
+            TF_LBI_CLK_LEFT, TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS,
+            TF_URP_LOCALPROCESS,
         },
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
@@ -392,8 +393,8 @@ fn interactive_machine_registered_app_routes_input() -> Result<()> {
 #[test]
 #[ignore = "requires the built TSF DLL with an adjacent Stage B Host and an interactive Windows desktop"]
 fn interactive_process_local_dll_converts() -> Result<()> {
-    let dll = std::env::var_os("DIY_IME_TEST_DLL").expect("absolute path of staged test DLL");
-    let dll = Path::new(&dll);
+    let dll = test_dll_path();
+    let dll = dll.as_path();
     eprintln!("process-local DLL: ordinary keys and document switch");
     exercise_test_window(ProfileSource::ProcessLocalDll(dll), WindowChecks::Keys)?;
     eprintln!("process-local DLL: conversion, candidates and finalization");
@@ -408,11 +409,38 @@ fn interactive_process_local_dll_converts() -> Result<()> {
     )
 }
 
+fn test_dll_path() -> PathBuf {
+    std::env::var_os("DIY_IME_TEST_DLL")
+        .expect("absolute path of staged test DLL")
+        .into()
+}
+
+#[test]
+#[ignore = "requires the built TSF DLL with an adjacent Stage B Host and an interactive Windows desktop"]
+fn interactive_process_local_dll_conversion_only() -> Result<()> {
+    exercise_test_window(
+        ProfileSource::ProcessLocalDll(&test_dll_path()),
+        WindowChecks::Conversion,
+    )
+}
+
 #[test]
 #[ignore = "requires the approved isolated Host fixture and an interactive Windows desktop"]
 fn interactive_app_converts_through_official_host() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
+    let before = match std::env::var("DIY_IME_TEST_BEFORE_CONVERSION").as_deref() {
+        Ok("activation") => Some(WindowChecks::Activation),
+        Ok("keys") => Some(WindowChecks::Keys),
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("DIY_IME_TEST_BEFORE_CONVERSION must be activation or keys");
+        }
+        Err(std::env::VarError::NotPresent) => None,
+    };
+    if let Some(checks) = before {
+        diy_ime2_tsf::set_test_host_configuration(exe.clone().into(), config.clone().into());
+        exercise_test_window(ProfileSource::ProcessLocal, checks)?;
+    }
     diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
     exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Conversion)
 }
@@ -579,7 +607,7 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
     let test = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
         if interactive {
             wait_for_app_focus(&thread_manager)?;
-            pump_until(|| {
+            pump_until(&thread_manager, || {
                 Ok(unsafe { keys.GetForeground() }
                     .is_ok_and(|service| service == TEST_SERVICE_CLSID))
             })
@@ -639,9 +667,9 @@ fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Resu
     let deactivated = unsafe { thread_manager.Deactivate() };
     drop(registration);
     let unloaded = if machine_registered || library.is_some() {
-        pump_until(installed_service_idle)
+        pump_until(&thread_manager, installed_service_idle)
     } else {
-        pump_until(|| Ok(DllCanUnloadNow() == S_OK))
+        pump_until(&thread_manager, || Ok(DllCanUnloadNow() == S_OK))
     };
     let cleanup = removed
         .and(foreground_released)
@@ -1033,7 +1061,7 @@ fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()
         let _ = SetForegroundWindow(window);
         let _ = SetFocus(window);
     }
-    pump_until(|| unsafe {
+    pump_until(thread, || unsafe {
         Ok(GetFocus() == window && thread.GetFocus().is_ok_and(|focused| &focused == document))
     })
     .inspect_err(|_| eprintln!("Windows did not focus the requested test document window"))
@@ -1045,7 +1073,7 @@ fn wait_for_conversion_request(
     keys: &ITfKeystrokeMgr,
     space: WPARAM,
 ) -> Result<()> {
-    pump_until(|| unsafe {
+    pump_until(thread, || unsafe {
         verify_conversion_focus(thread, document, keys)?;
         if !keys
             .TestKeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
@@ -1184,7 +1212,7 @@ fn verify_conversion(
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         let conversion_callback_us = conversion_started.elapsed().as_micros();
         deny_next_write.set(true);
-        pump_until(|| {
+        pump_until(thread, || {
             verify_conversion_focus(thread, document, keys)?;
             if !has_composition(context)? {
                 return Err(windows_core::Error::new(
@@ -1245,7 +1273,7 @@ fn verify_conversion(
         assert_eq!(contents.get(), (2, [u16::from(b'k'), u16::from(b'o')]));
 
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
+        pump_until(thread, || Ok(candidate_list(thread, document)?.is_some()))
             .inspect_err(|_| eprintln!("candidate list after returning to raw input"))?;
         let enter = WPARAM(usize::from(VK_RETURN.0));
         let list = candidate_list(thread, document)?.ok_or(E_FAIL)?;
@@ -1273,7 +1301,7 @@ fn verify_conversion(
 
         let write = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         let n = WPARAM(usize::from(VK_N.0));
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
         let finalize_started = std::time::Instant::now();
@@ -1281,7 +1309,7 @@ fn verify_conversion(
         let finalize_callback_us = finalize_started.elapsed().as_micros();
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
         let nasal: Vec<_> = "ん".encode_utf16().collect();
-        pump_until(|| {
+        pump_until(thread, || {
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get().0 == 1 && contents.get().1[..1] == nasal)
         })
@@ -1295,7 +1323,7 @@ fn verify_conversion(
         assert!(candidate_list(thread, document)?.is_none());
 
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         for key in b"KOUSUI" {
             assert!(
                 keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
@@ -1303,12 +1331,12 @@ fn verify_conversion(
             );
         }
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
+        pump_until(thread, || Ok(candidate_list(thread, document)?.is_some()))?;
         let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         let (other, _other_window) = second_document(thread, client)?;
         focus_document(thread, &other)?;
         focus_document(thread, document)?;
-        pump_messages();
+        pump_messages(thread)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
         assert!(candidate_list(thread, document)?.is_none());
@@ -1317,12 +1345,12 @@ fn verify_conversion(
         assert!(!keys.TestKeyDown(space, LPARAM(0))?.as_bool());
 
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
         focus_document(thread, &other)?;
         focus_document(thread, document)?;
-        pump_messages();
+        pump_messages(thread)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
             contents.get(),
@@ -1390,8 +1418,11 @@ fn candidate_list(
 }
 
 fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
-    pump_until(|| Ok(unsafe { manager.IsThreadFocus()? }.as_bool()))
-        .inspect_err(|_| eprintln!("waiting for the TSF test window to gain foreground focus"))
+    pump_until(
+        manager,
+        || Ok(unsafe { manager.IsThreadFocus()? }.as_bool()),
+    )
+    .inspect_err(|_| eprintln!("waiting for the TSF test window to gain foreground focus"))
 }
 
 #[test]
@@ -1549,11 +1580,38 @@ impl ITfEditSession_Impl for NativeScopeProbe_Impl {
     }
 }
 
-fn pump_messages() {
+fn test_message_pump(thread: &ITfThreadMgr) -> Result<Option<ITfMessagePump>> {
+    std::env::var_os("DIY_IME_TEST_TSF_MESSAGE_PUMP")
+        .map(|_| thread.cast())
+        .transpose()
+}
+
+fn pump_messages(thread: &ITfThreadMgr) -> Result<()> {
+    dispatch_test_messages(test_message_pump(thread)?.as_ref())
+}
+
+fn dispatch_test_messages(pump: Option<&ITfMessagePump>) -> Result<()> {
     let trace_messages = std::env::var_os("DIY_IME_TEST_TRACE_MESSAGES").is_some();
     let mut message = MSG::default();
     unsafe {
-        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+        loop {
+            let available = if let Some(pump) = pump {
+                let mut available = windows::Win32::Foundation::BOOL::default();
+                pump.PeekMessageW(
+                    &mut message,
+                    HWND::default(),
+                    0,
+                    0,
+                    PM_REMOVE.0,
+                    &mut available,
+                )?;
+                available
+            } else {
+                PeekMessageW(&mut message, None, 0, 0, PM_REMOVE)
+            };
+            if !available.as_bool() {
+                return Ok(());
+            }
             if trace_messages {
                 eprintln!("TSF test dispatch Win32 message 0x{:04x}", message.message);
             }
@@ -1563,10 +1621,11 @@ fn pump_messages() {
     }
 }
 
-fn pump_until(mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
+fn pump_until(thread: &ITfThreadMgr, mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
+    let pump = test_message_pump(thread)?;
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(40);
     loop {
-        pump_messages();
+        dispatch_test_messages(pump.as_ref())?;
         if ready()? {
             return Ok(());
         }
@@ -1631,9 +1690,12 @@ fn verify_protection(
         wait_for_conversion_request(thread, &document, keys, space)?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         if let Some(observation) = observation {
-            pump_until(|| Ok(observation.dispatched() > before.unwrap_or(0)))?;
+            pump_until(
+                thread,
+                || Ok(observation.dispatched() > before.unwrap_or(0)),
+            )?;
         } else {
-            pump_until(|| Ok(candidate_list(thread, &document)?.is_some()))?;
+            pump_until(thread, || Ok(candidate_list(thread, &document)?.is_some()))?;
         }
 
         let manual_started = std::time::Instant::now();
@@ -1644,7 +1706,7 @@ fn verify_protection(
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
         if let Some(observation) = observation {
-            pump_until(|| Ok(observation.reaped() >= 1))?;
+            pump_until(thread, || Ok(observation.reaped() >= 1))?;
             eprintln!(
                 "stage_b_manual_protection_to_host_reaped_ms={}",
                 manual_started.elapsed().as_millis()
@@ -1673,13 +1735,13 @@ fn verify_protection(
         scope.set(IS_DEFAULT);
         disable.SetValue(client, &VARIANT::from(1_i32))?;
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
-        pump_messages();
+        pump_messages(thread)?;
         assert_eq!(observation.map(Observation::dispatched), protected_count);
         assert!(candidate_list(thread, &document)?.is_none());
 
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         for key in b"KOUSUI" {
             assert!(
                 keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
@@ -1693,7 +1755,7 @@ fn verify_protection(
             "old input was replayed"
         );
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| {
+        pump_until(thread, || {
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get() == (2, [0x964d, 0x6c34]))
         })?;
@@ -1707,13 +1769,13 @@ fn verify_protection(
         let automatic_started = std::time::Instant::now();
         scope.set(IS_PASSWORD);
         if let Some(observation) = observation {
-            pump_until(|| Ok(observation.reaped() > reaped.unwrap_or(0)))?;
+            pump_until(thread, || Ok(observation.reaped() > reaped.unwrap_or(0)))?;
             eprintln!(
                 "stage_b_automatic_protection_to_host_reaped_ms={}",
                 automatic_started.elapsed().as_millis()
             );
         } else {
-            pump_until(|| Ok(candidate_list(thread, &document)?.is_none()))?;
+            pump_until(thread, || Ok(candidate_list(thread, &document)?.is_none()))?;
         }
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
