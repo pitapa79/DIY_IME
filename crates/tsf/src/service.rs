@@ -318,6 +318,7 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         if let Some(activation) = self.activation.upgrade() {
             activation.foreground.set(foreground.as_bool());
             if !foreground.as_bool() {
+                crate::diagnostics::trace!("DIY IME Stage B: TSF key sink lost foreground");
                 activation.cancel_host();
                 activation.preedit.invalidate(None, activation.client_id);
             }
@@ -424,6 +425,9 @@ impl ITfThreadMgrEventSink_Impl for DocumentSink_Impl {
     ) -> Result<()> {
         if let Some(activation) = self.activation.upgrade() {
             let context = current.and_then(|doc| unsafe { doc.GetTop().ok() });
+            if !activation.preedit.matches(context.as_ref()) {
+                crate::diagnostics::trace!("DIY IME Stage B: TSF document focus changed");
+            }
             activation.observe_context(context.as_ref());
         }
         Ok(())

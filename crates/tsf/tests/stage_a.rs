@@ -1043,18 +1043,7 @@ fn wait_for_conversion_request(
     space: WPARAM,
 ) -> Result<()> {
     pump_until(|| unsafe {
-        if !thread.IsThreadFocus()?.as_bool() || thread.GetFocus()? != *document {
-            return Err(windows_core::Error::new(
-                E_FAIL,
-                "the test document lost the TSF foreground while waiting for conversion",
-            ));
-        }
-        if keys.GetForeground()? != TEST_SERVICE_CLSID {
-            return Err(windows_core::Error::new(
-                E_FAIL,
-                "the test profile lost the TSF foreground while waiting for conversion",
-            ));
-        }
+        verify_conversion_focus(thread, document, keys)?;
         if !keys
             .TestKeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
             .as_bool()
@@ -1065,15 +1054,9 @@ fn wait_for_conversion_request(
                 .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
                 .GetValue()?;
             let variant = flag.as_raw().Anonymous.Anonymous.vt;
-            let compositions: ITfContextComposition = context.cast()?;
-            let mut views = [None];
-            let mut fetched = 0;
-            compositions
-                .EnumCompositions()?
-                .Next(&mut views, &mut fetched)?;
             eprintln!(
                 "Synthetic document after Backspace passthrough: keyboard flag variant={variant}, TSF composition present={}",
-                fetched != 0
+                has_composition(&context)?
             );
             return Err(windows_core::Error::new(
                 E_FAIL,
@@ -1083,6 +1066,38 @@ fn wait_for_conversion_request(
         Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool())
     })
     .inspect_err(|error| eprintln!("waiting for the Stage B adapter to accept conversion: {error}"))
+}
+
+fn verify_conversion_focus(
+    thread: &ITfThreadMgr,
+    document: &ITfDocumentMgr,
+    keys: &ITfKeystrokeMgr,
+) -> Result<()> {
+    if !unsafe { thread.IsThreadFocus()? }.as_bool() || unsafe { thread.GetFocus()? } != *document {
+        return Err(windows_core::Error::new(
+            E_FAIL,
+            "the test document lost the TSF foreground during conversion",
+        ));
+    }
+    if unsafe { keys.GetForeground()? } != TEST_SERVICE_CLSID {
+        return Err(windows_core::Error::new(
+            E_FAIL,
+            "the test profile lost the TSF foreground during conversion",
+        ));
+    }
+    Ok(())
+}
+
+fn has_composition(context: &ITfContext) -> Result<bool> {
+    let compositions: ITfContextComposition = context.cast()?;
+    let mut views = [None];
+    let mut fetched = 0;
+    unsafe {
+        compositions
+            .EnumCompositions()?
+            .Next(&mut views, &mut fetched)?
+    };
+    Ok(fetched != 0)
 }
 
 fn verify_document_switch(
@@ -1164,8 +1179,17 @@ fn verify_conversion(
         let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
         let conversion_callback_us = conversion_started.elapsed().as_micros();
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
-            .inspect_err(|_| eprintln!("starting candidate list"))?;
+        pump_until(|| {
+            verify_conversion_focus(thread, document, keys)?;
+            if !has_composition(context)? {
+                return Err(windows_core::Error::new(
+                    E_FAIL,
+                    "TSF ended the composition before candidates appeared while the test document and profile had focus",
+                ));
+            }
+            Ok(candidate_list(thread, document)?.is_some())
+        })
+        .inspect_err(|error| eprintln!("starting candidate list: {error}"))?;
         eprintln!(
             "stage_b_request_accepted_ms={request_accepted_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
             conversion_started.elapsed().as_millis()
