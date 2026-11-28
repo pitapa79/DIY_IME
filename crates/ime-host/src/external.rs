@@ -7,7 +7,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread::{self, JoinHandle},
@@ -28,6 +28,10 @@ const RESPONSE_LIMIT: u64 = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(45);
 const WAIT: Duration = Duration::from_millis(10);
 const GRAPH: &str = include_str!("../../../examples/graphs/official-dictionary.json");
+const STOPPED: u8 = 1;
+const PERMISSION_BOOK_BUSY: u8 = 2;
+// Reserved by diy-ime2-external-host for contention before Worker setup.
+const PERMISSION_BOOK_BUSY_EXIT: i32 = 75;
 
 // Diagnostics contain only fixed stage names and numeric OS/exit codes.
 #[cfg(all(windows, feature = "stage-b-diagnostics"))]
@@ -85,11 +89,11 @@ impl Observation {
     }
 }
 
-pub struct Stopped(Arc<AtomicBool>);
+pub struct Stopped(Arc<AtomicU8>);
 
 impl Stopped {
     pub fn confirmed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire) != 0
     }
 }
 
@@ -99,7 +103,7 @@ pub struct Background {
     revision: Arc<AtomicU64>,
     acknowledged: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
 }
 
 impl Background {
@@ -128,7 +132,7 @@ impl Background {
         let acknowledged = Arc::new(AtomicU64::new(0));
         let applied_revision = acknowledged.clone();
         let closing = shutdown.clone();
-        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicU8::new(0));
         let witnessed = stopped.clone();
         thread::Builder::new()
             .name("DIY IME Host".into())
@@ -190,6 +194,10 @@ impl Background {
         Stopped(self.stopped.clone())
     }
 
+    pub fn permission_book_busy(&self) -> bool {
+        self.stopped.load(Ordering::Acquire) == PERMISSION_BOOK_BUSY
+    }
+
     pub fn acknowledged(&self) -> u64 {
         self.acknowledged.load(Ordering::Acquire)
     }
@@ -217,7 +225,7 @@ struct Signals {
     revision: Arc<AtomicU64>,
     acknowledged: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
     observation: Observation,
 }
 
@@ -436,7 +444,7 @@ struct Transport {
     pipes: Vec<JoinHandle<()>>,
     next_id: u64,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
     observation: Observation,
 }
 
@@ -445,7 +453,7 @@ impl Transport {
         exe: &Path,
         config: &Path,
         shutdown: Arc<AtomicBool>,
-        stopped: Arc<AtomicBool>,
+        stopped: Arc<AtomicU8>,
         observation: Observation,
     ) -> io::Result<Self> {
         let mut command = Command::new(exe);
@@ -465,7 +473,7 @@ impl Transport {
             Ok(child) => child,
             Err(error) => {
                 startup_trace!("Host process launch failed", error.raw_os_error());
-                stopped.store(true, Ordering::Release);
+                stopped.store(STOPPED, Ordering::Release);
                 return Err(error);
             }
         };
@@ -564,27 +572,29 @@ impl Drop for Transport {
     fn drop(&mut self) {
         self.writer.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        let clean_exit = loop {
+        let exit = loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     startup_trace!("Host process exited", status.code());
-                    break status.success();
+                    break status.code();
                 }
                 Ok(None) if Instant::now() < deadline => thread::sleep(WAIT),
                 _ => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
                     // A forced Host exit does not acknowledge its Worker recovery.
-                    break false;
+                    break None;
                 }
             }
         };
         for pipe in self.pipes.drain(..) {
             let _ = pipe.join();
         }
-        if clean_exit {
+        if exit == Some(0) {
             self.observation.reaped.fetch_add(1, Ordering::Release);
-            self.stopped.store(true, Ordering::Release);
+            self.stopped.store(STOPPED, Ordering::Release);
+        } else if exit == Some(PERMISSION_BOOK_BUSY_EXIT) {
+            self.stopped.store(PERMISSION_BOOK_BUSY, Ordering::Release);
         }
     }
 }

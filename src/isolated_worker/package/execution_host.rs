@@ -1058,6 +1058,11 @@ impl Runner {
 pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
     let official_assets = config.package_manager.official_review_assets();
     let policy = ResourcePolicy::from_value(config.resource_policy)?;
+    // An in-use permission book must be detected before acquiring any worker
+    // resources so a competing Host cannot leave work to be reaped.
+    fs::create_dir_all(&config.permission_root)
+        .map_err(|_| error("external-config", "permission directory unavailable"))?;
+    let book = PermissionBook::open(&config.permission_root, config.permission_bytes)?;
     let (catalog, mut verifier) = config
         .package_manager
         .prepare_assets(Some(policy.max_physical_jobs))?;
@@ -1066,9 +1071,6 @@ pub fn run(config: Configuration, domain: &str) -> Result<(), CoreError> {
             crate::isolated_worker::adapter::NetworkProvider::open(network)?,
         );
     }
-    fs::create_dir_all(&config.permission_root)
-        .map_err(|_| error("external-config", "permission directory unavailable"))?;
-    let book = PermissionBook::open(&config.permission_root, config.permission_bytes)?;
     let vault = config
         .secret_root
         .as_ref()

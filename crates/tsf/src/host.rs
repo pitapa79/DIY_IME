@@ -4,6 +4,7 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::PathBuf,
     rc::{Rc, Weak},
+    time::{Duration, Instant},
 };
 
 use diy_ime2_ime_host::{
@@ -163,7 +164,11 @@ pub(crate) struct Bridge {
     queued: Option<PendingInput>,
     submitted: Option<Submission>,
     disconnected: bool,
+    permission_retries: u8,
+    retry_after: Option<Instant>,
 }
+
+const MAX_PERMISSION_RETRIES: u8 = 4;
 
 struct PendingInput {
     stamp: DocumentStamp,
@@ -200,6 +205,8 @@ impl Bridge {
             queued: None,
             submitted: None,
             disconnected: false,
+            permission_retries: 0,
+            retry_after: None,
         })
     }
 
@@ -217,14 +224,21 @@ impl Bridge {
         }
         self.protected = enabled;
         if enabled {
-            if let Some(worker) = self.worker.take() {
-                self.stopping = Some(worker.request_stop());
-            }
-            self.queued = None;
-            self.submitted = None;
-            self.input = None;
-            self.invalidation = None;
+            self.suspend();
         }
+    }
+
+    pub(crate) fn suspend(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            crate::diagnostics::trace!("DIY IME Stage B: Host shutdown requested");
+            self.stopping = Some(worker.request_stop());
+        }
+        self.queued = None;
+        self.submitted = None;
+        self.input = None;
+        self.invalidation = None;
+        self.permission_retries = 0;
+        self.retry_after = None;
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -240,6 +254,9 @@ impl Bridge {
     pub(crate) fn convert(&mut self, stamp: DocumentStamp, text: String, finalize: bool) {
         if !self.accepts_request() {
             return;
+        }
+        if self.permission_retries > MAX_PERMISSION_RETRIES {
+            self.permission_retries = 0;
         }
         if let Some(input) = self.input.as_mut()
             && let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable)
@@ -267,6 +284,13 @@ impl Bridge {
             return None;
         }
         if self.worker.is_none() {
+            if self.permission_retries > MAX_PERMISSION_RETRIES
+                || self
+                    .retry_after
+                    .is_some_and(|deadline| Instant::now() < deadline)
+            {
+                return None;
+            }
             if self
                 .stopping
                 .as_ref()
@@ -275,6 +299,7 @@ impl Bridge {
                 return None;
             }
             self.stopping = None;
+            self.retry_after = None;
             self.worker = Background::spawn_observed(
                 self.config.clone(),
                 self.observer.clone(),
@@ -291,6 +316,7 @@ impl Bridge {
         match worker.poll() {
             Ok(Some(Event::Ready(plan))) => {
                 crate::diagnostics::trace!("DIY IME Stage B: Host bridge received ready event");
+                self.permission_retries = 0;
                 let pending = self.queued.take();
                 self.input = Some(InputState::new(plan));
                 if let Some(pending) = pending {
@@ -327,6 +353,17 @@ impl Bridge {
                         });
                     }
                 }
+            }
+            Ok(Some(Event::Unavailable)) | Err(_) if worker.permission_book_busy() => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host permission book busy");
+                self.worker.take();
+                self.permission_retries += 1;
+                if self.permission_retries > MAX_PERMISSION_RETRIES {
+                    self.cancel();
+                } else {
+                    self.retry_after = Some(Instant::now() + Duration::from_millis(350));
+                }
+                return None;
             }
             Ok(Some(Event::Unavailable)) | Err(_) => {
                 crate::diagnostics::trace!("DIY IME Stage B: Host bridge disconnected");
@@ -436,5 +473,19 @@ mod tests {
         bridge.disconnected = true;
         bridge.convert(stamp(), "synthetic-disconnected".into(), false);
         assert!(!bridge.has_work());
+    }
+
+    #[test]
+    fn focus_loss_discards_the_waiting_request_and_retry_schedule() {
+        let mut bridge = starting_bridge();
+        bridge.convert(stamp(), "synthetic-old-document".into(), true);
+        bridge.permission_retries = 2;
+        bridge.retry_after = Some(Instant::now() + Duration::from_secs(30));
+
+        bridge.suspend();
+
+        assert!(!bridge.has_work());
+        assert_eq!(bridge.permission_retries, 0);
+        assert!(bridge.retry_after.is_none());
     }
 }

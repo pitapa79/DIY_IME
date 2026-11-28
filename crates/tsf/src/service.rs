@@ -123,6 +123,10 @@ impl Activation {
         if !self.active.get() {
             return;
         }
+        if !self.thread_has_focus() {
+            self.suspend_host();
+            return;
+        }
         if self.manually_blocked() {
             self.protect();
             return;
@@ -161,12 +165,7 @@ impl Activation {
 
     pub(crate) fn owns_focus(&self, context: &ITfContext) -> bool {
         let matching = self.active.get()
-            && self.foreground.get()
-            && unsafe {
-                self.thread_manager
-                    .IsThreadFocus()
-                    .is_ok_and(|focus| focus.as_bool())
-            }
+            && self.thread_has_focus()
             && unsafe {
                 self.thread_manager
                     .GetFocus()
@@ -174,6 +173,25 @@ impl Activation {
                     .is_ok_and(|current| current == *context)
             };
         matching && self.active.get() && self.foreground.get()
+    }
+
+    fn thread_has_focus(&self) -> bool {
+        self.foreground.get()
+            && unsafe {
+                self.thread_manager
+                    .IsThreadFocus()
+                    .is_ok_and(|focus| focus.as_bool())
+            }
+    }
+
+    fn suspend_host(&self) {
+        self.preedit.discard_preview();
+        self.preedit.finish_host_request();
+        if let Ok(mut host) = self.host.try_borrow_mut()
+            && let Some(host) = host.as_mut()
+        {
+            host.suspend();
+        }
     }
 }
 
@@ -318,7 +336,7 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
             activation.foreground.set(foreground.as_bool());
             if !foreground.as_bool() {
                 crate::diagnostics::trace!("DIY IME Stage B: TSF key sink lost foreground");
-                activation.cancel_host();
+                activation.suspend_host();
                 activation.preedit.invalidate(None, activation.client_id);
             }
         }

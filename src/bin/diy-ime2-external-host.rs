@@ -12,8 +12,14 @@ fn main() {
         ))
     };
     if let Err(error) = result {
+        // Reserved for permission lock contention before Worker setup.
+        let exit = if error.code == "permission-in-use" {
+            75
+        } else {
+            1
+        };
         eprintln!("{error}");
-        std::process::exit(1);
+        std::process::exit(exit);
     }
 }
 #[cfg(not(all(windows, target_arch = "x86_64")))]
