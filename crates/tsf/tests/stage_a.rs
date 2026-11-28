@@ -3,6 +3,10 @@
 
 use std::{
     cell::Cell,
+    ffi::c_void,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    process::Command,
     ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard},
@@ -13,26 +17,34 @@ use diy_ime2_tsf::{
     DllCanUnloadNow, DllGetClassObject, JAPANESE_LANGID, TEST_PROFILE_GUID, TEST_SERVICE_CLSID,
 };
 use windows::Win32::{
-    Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, HWND, POINT, S_FALSE, S_OK},
+    Foundation::{
+        CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_UNEXPECTED, FreeLibrary, HMODULE, HWND, POINT,
+        S_FALSE, S_OK,
+    },
     System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         CoRegisterClassObject, CoRevokeClassObject, CoUninitialize, IClassFactory,
         REGCLS_MULTIPLEUSE,
+    },
+    System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        LoadLibraryExW,
     },
     UI::{
         Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout, HKL, SetFocus},
         TextServices::{
             CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfDisplayAttributeProvider,
             ITfDocumentMgr, ITfEditSession, ITfEditSession_Impl, ITfInputProcessorProfileMgr,
-            ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfTextInputProcessor,
-            ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE, TF_ES_SYNC,
-            TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS, TF_LBI_CLK_LEFT,
-            TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS, TF_URP_LOCALPROCESS,
+            ITfKeystrokeMgr, ITfLangBarItemButton, ITfLangBarItemMgr, ITfMessagePump,
+            ITfTextInputProcessor, ITfThreadMgr, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_ES_READWRITE,
+            TF_ES_SYNC, TF_INPUTPROCESSORPROFILE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
+            TF_LBI_CLK_LEFT, TF_POPF_ALL, TF_PROFILETYPE_INPUTPROCESSOR, TF_RP_LOCALPROCESS,
+            TF_URP_LOCALPROCESS,
         },
         WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
     },
 };
-use windows_core::{GUID, IUnknown, Interface, Result, implement};
+use windows_core::{GUID, HRESULT, IUnknown, Interface, PCWSTR, Result, implement, s};
 
 static PROCESS_PROFILE_TEST: Mutex<()> = Mutex::new(());
 
@@ -308,21 +320,108 @@ impl Drop for ClassRegistration {
     }
 }
 
+struct TestLibrary(HMODULE);
+
+impl TestLibrary {
+    fn open(path: &Path) -> Result<Self> {
+        assert!(path.is_absolute(), "use an absolute test DLL path");
+        let wide: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+        let library = unsafe {
+            LoadLibraryExW(
+                PCWSTR(wide.as_ptr()),
+                None,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            )?
+        };
+        Ok(Self(library))
+    }
+
+    fn factory(&self) -> Result<IClassFactory> {
+        type GetClass =
+            unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
+        let symbol = unsafe { GetProcAddress(self.0, s!("DllGetClassObject")) }.ok_or(E_FAIL)?;
+        let get_class: GetClass = unsafe { std::mem::transmute(symbol) };
+        let mut factory = ptr::null_mut();
+        unsafe {
+            get_class(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory).ok()?;
+            Ok(IClassFactory::from_raw(factory))
+        }
+    }
+}
+
+impl Drop for TestLibrary {
+    fn drop(&mut self) {
+        // The DLL's COM objects may still exist when a test unwinds. Let process
+        // exit unload it in that case, and never unload code that TSF holds.
+        if library_idle(self.0) == Some(true) {
+            let _ = unsafe { FreeLibrary(self.0) };
+        }
+    }
+}
+
+enum ProfileSource<'a> {
+    ProcessLocal,
+    ProcessLocalDll(&'a Path),
+    Machine,
+}
+
+enum WindowChecks {
+    Activation,
+    Keys,
+    Conversion,
+    Protection(Option<Observation>),
+    FailedHost(Observation),
+}
+
 #[test]
 fn private_window_selects_and_deactivates_the_test_service_through_tsf() -> Result<()> {
-    exercise_test_window(false, false, false, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Activation)
 }
 
 #[test]
 #[ignore = "requires a foreground window on an interactive x64 Windows desktop"]
 fn interactive_app_routes_ordinary_and_protected_input() -> Result<()> {
-    exercise_test_window(true, false, false, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Keys)
 }
 
 #[test]
 #[ignore = "requires the temporary machine profile enabled for the current user and desktop foreground"]
 fn interactive_machine_registered_app_routes_input() -> Result<()> {
-    exercise_test_window(true, true, false, None)
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Keys)
+}
+
+#[test]
+#[ignore = "requires the built TSF DLL with an adjacent Stage B Host and an interactive Windows desktop"]
+fn interactive_process_local_dll_converts() -> Result<()> {
+    let dll = test_dll_path();
+    let dll = dll.as_path();
+    eprintln!("process-local DLL: ordinary keys and document switch");
+    exercise_test_window(ProfileSource::ProcessLocalDll(dll), WindowChecks::Keys)?;
+    eprintln!("process-local DLL: conversion, candidates and finalization");
+    exercise_test_window(
+        ProfileSource::ProcessLocalDll(dll),
+        WindowChecks::Conversion,
+    )?;
+    eprintln!("process-local DLL: protected input");
+    exercise_test_window(
+        ProfileSource::ProcessLocalDll(dll),
+        WindowChecks::Protection(None),
+    )
+}
+
+fn test_dll_path() -> PathBuf {
+    std::env::var_os("DIY_IME_TEST_DLL")
+        .expect("absolute path of staged test DLL")
+        .into()
+}
+
+#[test]
+#[ignore = "requires the built TSF DLL with an adjacent Stage B Host and an interactive Windows desktop"]
+fn interactive_process_local_dll_conversion_only() -> Result<()> {
+    exercise_test_window(
+        ProfileSource::ProcessLocalDll(&test_dll_path()),
+        WindowChecks::Conversion,
+    )
 }
 
 #[test]
@@ -330,8 +429,20 @@ fn interactive_machine_registered_app_routes_input() -> Result<()> {
 fn interactive_app_converts_through_official_host() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
+    let before = match std::env::var("DIY_IME_TEST_BEFORE_CONVERSION").as_deref() {
+        Ok("activation") => Some(WindowChecks::Activation),
+        Ok("keys") => Some(WindowChecks::Keys),
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("DIY_IME_TEST_BEFORE_CONVERSION must be activation or keys");
+        }
+        Err(std::env::VarError::NotPresent) => None,
+    };
+    if let Some(checks) = before {
+        diy_ime2_tsf::set_test_host_configuration(exe.clone().into(), config.clone().into());
+        exercise_test_window(ProfileSource::ProcessLocal, checks)?;
+    }
     diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, false, true, None)
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Conversion)
 }
 
 #[test]
@@ -340,15 +451,57 @@ fn interactive_app_enforces_protection() -> Result<()> {
     let exe = std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable");
     let config = std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration");
     let observation = diy_ime2_tsf::set_test_host_configuration(exe.into(), config.into());
-    exercise_test_window(true, false, false, Some(observation))
+    exercise_test_window(
+        ProfileSource::ProcessLocal,
+        WindowChecks::Protection(Some(observation)),
+    )
 }
 
-fn exercise_test_window(
-    interactive: bool,
-    machine_registered: bool,
-    conversion: bool,
-    protection: Option<Observation>,
-) -> Result<()> {
+#[test]
+#[ignore = "requires the approved isolated Host fixture and an interactive Windows desktop"]
+fn interactive_app_recovers_after_host_startup_failure() -> Result<()> {
+    let exe = PathBuf::from(std::env::var_os("DIY_IME_TEST_HOST").expect("test Host executable"));
+    let config = PathBuf::from(
+        std::env::var_os("DIY_IME_TEST_HOST_CONFIG").expect("test Host configuration"),
+    );
+    assert!(config.is_file(), "the recovery configuration must exist");
+    let unavailable = config.join("nonexistent");
+    let failed_start = Command::new(&exe)
+        .arg(&unavailable)
+        .output()
+        .expect("start the real Host with the invalid configuration");
+    assert!(
+        !failed_start.status.success(),
+        "the Host must reject that path"
+    );
+    let failed = diy_ime2_tsf::set_test_host_configuration(exe.clone(), unavailable);
+    exercise_test_window(
+        ProfileSource::ProcessLocal,
+        WindowChecks::FailedHost(failed),
+    )?;
+    diy_ime2_tsf::set_test_host_configuration(exe, config);
+    exercise_test_window(ProfileSource::ProcessLocal, WindowChecks::Conversion)
+}
+
+#[test]
+#[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
+fn interactive_machine_registered_stage_b() -> Result<()> {
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Conversion)
+}
+
+#[test]
+#[ignore = "requires the temporarily installed Stage B profile and approved adjacent Host configuration"]
+fn interactive_machine_registered_stage_b_protection() -> Result<()> {
+    exercise_test_window(ProfileSource::Machine, WindowChecks::Protection(None))
+}
+
+fn exercise_test_window(source: ProfileSource<'_>, checks: WindowChecks) -> Result<()> {
+    let interactive = !matches!(checks, WindowChecks::Activation);
+    let library = match source {
+        ProfileSource::ProcessLocalDll(path) => Some(TestLibrary::open(path)?),
+        ProfileSource::ProcessLocal | ProfileSource::Machine => None,
+    };
+    let machine_registered = matches!(source, ProfileSource::Machine);
     let _apartment = Apartment::open()?;
     let window = Window(unsafe {
         CreateWindowExW(
@@ -378,8 +531,10 @@ fn exercise_test_window(
     let mut cookie = 0;
     let scope = Rc::new(Cell::new(IS_DEFAULT));
     let deny_writes = Rc::new(Cell::new(false));
-    let owner: ITextStoreACP =
-        text_store::Store::new(window.0, scope.clone(), deny_writes.clone()).into();
+    let deny_next_write = Rc::new(Cell::new(false));
+    let owner: ITextStoreACP = text_store::Store::new(window.0, scope.clone(), deny_writes.clone())
+        .reject_one_write_with(deny_next_write.clone())
+        .into();
     let owner: IUnknown = owner.cast()?;
     unsafe {
         document.CreateContext(
@@ -390,17 +545,7 @@ fn exercise_test_window(
             &mut cookie,
         )?;
         document.Push(context.as_ref().expect("real TSF context"))?;
-        let mut previous = ptr::null_mut();
-        (thread_manager.vtable().AssociateFocus)(
-            thread_manager.as_raw(),
-            window.0,
-            document.as_raw(),
-            &mut previous,
-        )
-        .ok()?;
-        if !previous.is_null() {
-            drop(ITfDocumentMgr::from_raw(previous));
-        }
+        associate_document(&thread_manager, window.0, &document)?;
         // A hidden test-owned HWND is enough for the local registration path.
         if interactive {
             let _ = ShowWindow(window.0, SW_SHOW);
@@ -434,11 +579,16 @@ fn exercise_test_window(
         )
     } else {
         // Discover the calling process's active layout without changing desktop input settings.
-        let mut factory_ptr = ptr::null_mut();
-        unsafe {
-            DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr).ok()?
+        let factory = if let Some(library) = library.as_ref() {
+            library.factory()?
+        } else {
+            let mut factory_ptr = ptr::null_mut();
+            unsafe {
+                DllGetClassObject(&TEST_SERVICE_CLSID, &IClassFactory::IID, &mut factory_ptr)
+                    .ok()?;
+                IClassFactory::from_raw(factory_ptr)
+            }
         };
-        let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
         let registration = ClassRegistration(unsafe {
             CoRegisterClassObject(
                 &TEST_SERVICE_CLSID,
@@ -454,46 +604,85 @@ fn exercise_test_window(
     };
     profile.activate(machine_registered)?;
     let keys: ITfKeystrokeMgr = thread_manager.cast()?;
-    assert_eq!(
-        unsafe { keys.GetForeground() }
-            .expect("query TSF foreground after activating test profile"),
-        TEST_SERVICE_CLSID
-    );
-    if interactive {
-        let context = context.as_ref().expect("real TSF context");
-        wait_for_app_focus(&thread_manager)?;
-        if let Some(observation) = protection.as_ref() {
-            verify_protection(context, &thread_manager, &keys, client, &scope, observation)?;
-        } else if conversion {
-            verify_conversion(
-                context,
-                &document,
-                &thread_manager,
-                &keys,
-                client,
-                &deny_writes,
-            )?;
-        } else {
-            verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
-            verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+    let test = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+        if interactive {
+            wait_for_app_focus(&thread_manager)?;
+            pump_until(&thread_manager, || {
+                Ok(unsafe { keys.GetForeground() }
+                    .is_ok_and(|service| service == TEST_SERVICE_CLSID))
+            })
+            .inspect_err(|_| {
+                eprintln!("waiting for the test profile to become the TSF foreground service")
+            })?;
         }
-    }
-    profile.remove()?;
-    assert_ne!(
-        unsafe { keys.GetForeground() }
-            .expect("query TSF foreground after deactivating test profile"),
-        TEST_SERVICE_CLSID
-    );
-    unsafe {
-        document.Pop(TF_POPF_ALL)?;
-        thread_manager.Deactivate()?;
-    }
+        assert_eq!(
+            unsafe { keys.GetForeground() }
+                .expect("query TSF foreground after activating test profile"),
+            TEST_SERVICE_CLSID
+        );
+        if interactive {
+            let context = context.as_ref().expect("real TSF context");
+            match &checks {
+                WindowChecks::Protection(observation) => verify_protection(
+                    context,
+                    &thread_manager,
+                    &keys,
+                    client,
+                    &scope,
+                    observation.as_ref(),
+                )?,
+                WindowChecks::Conversion => verify_conversion(
+                    context,
+                    &document,
+                    &thread_manager,
+                    &keys,
+                    client,
+                    &deny_writes,
+                    &deny_next_write,
+                )?,
+                WindowChecks::Keys | WindowChecks::FailedHost(_) => {
+                    verify_key_edit(context, &keys, client, &scope, &deny_writes)?;
+                    verify_document_switch(context, &document, &thread_manager, &keys, client)?;
+                    if let WindowChecks::FailedHost(observation) = &checks {
+                        assert_eq!(observation.dispatched(), 0);
+                    }
+                }
+                WindowChecks::Activation => unreachable!("headless activation has no input checks"),
+            }
+        }
+        Ok(())
+    }));
+    let removed = profile.remove();
+    let foreground_released = unsafe { keys.GetForeground() }.and_then(|foreground| {
+        if foreground == TEST_SERVICE_CLSID {
+            Err(windows_core::Error::new(
+                E_FAIL,
+                "the test profile still owns the TSF foreground",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    let popped = unsafe { document.Pop(TF_POPF_ALL) };
+    let deactivated = unsafe { thread_manager.Deactivate() };
     drop(registration);
-    if conversion || protection.is_some() {
-        pump_until(|| Ok(DllCanUnloadNow() == S_OK))?;
+    let unloaded = if machine_registered || library.is_some() {
+        pump_until(&thread_manager, installed_service_idle)
+    } else {
+        pump_until(&thread_manager, || Ok(DllCanUnloadNow() == S_OK))
+    };
+    let cleanup = removed
+        .and(foreground_released)
+        .and(popped)
+        .and(deactivated)
+        .and(unloaded);
+    if let Err(error) = &cleanup {
+        eprintln!("TSF test cleanup failed: {error}");
     }
-    assert_eq!(DllCanUnloadNow(), S_OK);
-    Ok(())
+    match test {
+        Ok(result) => result.and(cleanup),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 use windows::Win32::{
@@ -626,9 +815,27 @@ fn verify_key_edit(
     .into();
     let compartments: ITfCompartmentMgr = context.cast()?;
     unsafe {
-        let disabled = compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
         let key = WPARAM(usize::from(VK_A.0));
         scope.set(IS_DEFAULT);
+        // Browsers can leave the disable compartment unset in ordinary fields.
+        compartments
+            .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+            .SetValue(client, &VARIANT::from(0_i32))?;
+        compartments.ClearCompartment(client, &GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
+        scope.set(IS_PASSWORD);
+        assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
+        scope.set(IS_DEFAULT);
+        assert!(keys.TestKeyDown(key, LPARAM(0))?.as_bool());
+        assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
+        assert!(
+            keys.KeyDown(WPARAM(usize::from(VK_ESCAPE.0)), LPARAM(0))?
+                .as_bool()
+        );
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(contents.get(), (0, [0; 2]));
+
+        let disabled = compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?;
         disabled.SetValue(client, &VARIANT::from(1_i32))?;
         assert!(!keys.TestKeyDown(key, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(key, LPARAM(0))?.as_bool());
@@ -800,6 +1007,130 @@ fn change_selection(
     unsafe { context.RequestEditSession(client, &session, flags)?.ok() }
 }
 
+fn second_document(thread: &ITfThreadMgr, client: u32) -> Result<(ITfDocumentMgr, Window)> {
+    let window = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("STATIC"),
+            windows_core::w!("DIY IME TSF second document"),
+            WS_OVERLAPPEDWINDOW,
+            50,
+            50,
+            540,
+            180,
+            None,
+            None,
+            None,
+            None,
+        )?
+    });
+    let store: ITextStoreACP =
+        text_store::Store::new(window.0, Rc::new(Cell::new(IS_DEFAULT)), Rc::default()).into();
+    let owner: IUnknown = store.cast()?;
+    let other = unsafe { thread.CreateDocumentMgr()? };
+    let mut context = None;
+    let mut cookie = 0;
+    unsafe {
+        other.CreateContext(client, 0, &owner, &mut context, &mut cookie)?;
+        other.Push(&context.ok_or(E_FAIL)?)?;
+    }
+    associate_document(thread, window.0, &other)?;
+    Ok((other, window))
+}
+
+fn associate_document(
+    thread: &ITfThreadMgr,
+    window: HWND,
+    document: &ITfDocumentMgr,
+) -> Result<()> {
+    let mut previous = ptr::null_mut();
+    unsafe {
+        (thread.vtable().AssociateFocus)(thread.as_raw(), window, document.as_raw(), &mut previous)
+            .ok()?;
+        if !previous.is_null() {
+            drop(ITfDocumentMgr::from_raw(previous));
+        }
+    }
+    Ok(())
+}
+
+fn focus_document(thread: &ITfThreadMgr, document: &ITfDocumentMgr) -> Result<()> {
+    let window = unsafe { document.GetTop()?.GetActiveView()?.GetWnd()? };
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOW);
+        let _ = SetForegroundWindow(window);
+        let _ = SetFocus(window);
+    }
+    pump_until(thread, || unsafe {
+        Ok(GetFocus() == window && thread.GetFocus().is_ok_and(|focused| &focused == document))
+    })
+    .inspect_err(|_| eprintln!("Windows did not focus the requested test document window"))
+}
+
+fn wait_for_conversion_request(
+    thread: &ITfThreadMgr,
+    document: &ITfDocumentMgr,
+    keys: &ITfKeystrokeMgr,
+    space: WPARAM,
+) -> Result<()> {
+    pump_until(thread, || unsafe {
+        verify_conversion_focus(thread, document, keys)?;
+        if !keys
+            .TestKeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
+            .as_bool()
+        {
+            let context = document.GetTop()?;
+            let compartments: ITfCompartmentMgr = context.cast()?;
+            let flag = compartments
+                .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+                .GetValue()?;
+            let variant = flag.as_raw().Anonymous.Anonymous.vt;
+            eprintln!(
+                "Synthetic document after Backspace passthrough: keyboard flag variant={variant}, TSF composition present={}",
+                has_composition(&context)?
+            );
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "the test service passed Backspace through while waiting for conversion",
+            ));
+        }
+        Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool())
+    })
+    .inspect_err(|error| eprintln!("waiting for the Stage B adapter to accept conversion: {error}"))
+}
+
+fn verify_conversion_focus(
+    thread: &ITfThreadMgr,
+    document: &ITfDocumentMgr,
+    keys: &ITfKeystrokeMgr,
+) -> Result<()> {
+    if !unsafe { thread.IsThreadFocus()? }.as_bool() || unsafe { thread.GetFocus()? } != *document {
+        return Err(windows_core::Error::new(
+            E_FAIL,
+            "the test document lost the TSF foreground during conversion",
+        ));
+    }
+    if unsafe { keys.GetForeground()? } != TEST_SERVICE_CLSID {
+        return Err(windows_core::Error::new(
+            E_FAIL,
+            "the test profile lost the TSF foreground during conversion",
+        ));
+    }
+    Ok(())
+}
+
+fn has_composition(context: &ITfContext) -> Result<bool> {
+    let compositions: ITfContextComposition = context.cast()?;
+    let mut views = [None];
+    let mut fetched = 0;
+    unsafe {
+        compositions
+            .EnumCompositions()?
+            .Next(&mut views, &mut fetched)?
+    };
+    Ok(fetched != 0)
+}
+
 fn verify_document_switch(
     context: &ITfContext,
     document: &ITfDocumentMgr,
@@ -819,15 +1150,16 @@ fn verify_document_switch(
     let key = WPARAM(usize::from(VK_A.0));
     unsafe {
         assert!(keys.KeyDown(key, LPARAM(0))?.as_bool());
-        let other = thread.CreateDocumentMgr()?;
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
+        let (other, _other_window) = second_document(thread, client)?;
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
             contents.get(),
             (0, [0; 2]),
             "focus loss must cancel old preedit"
         );
+        other.Pop(TF_POPF_ALL)?;
         assert!(
             !keys
                 .KeyDown(WPARAM(usize::from(VK_BACK.0)), LPARAM(0))?
@@ -844,6 +1176,7 @@ fn verify_conversion(
     keys: &ITfKeystrokeMgr,
     client: u32,
     deny_writes: &Cell<bool>,
+    deny_next_write: &Cell<bool>,
 ) -> Result<()> {
     let flags = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READ.0);
     let contents = Rc::new(Cell::new((0, [0; 2])));
@@ -866,10 +1199,38 @@ fn verify_conversion(
                     .as_bool()
             );
         }
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        context.RequestEditSession(client, &reader, flags)?.ok()?;
+        assert_eq!(
+            contents.get(),
+            (2, [u16::from(b'k'), u16::from(b'o')]),
+            "the synthetic preedit must be displayed before waiting for the Host"
+        );
+        let waiting_for_request = std::time::Instant::now();
+        wait_for_conversion_request(thread, document, keys, space)?;
+        let request_accepted_ms = waiting_for_request.elapsed().as_millis();
+        let conversion_started = std::time::Instant::now();
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
-            .inspect_err(|_| eprintln!("starting candidate list"))?;
+        let conversion_callback_us = conversion_started.elapsed().as_micros();
+        deny_next_write.set(true);
+        pump_until(thread, || {
+            verify_conversion_focus(thread, document, keys)?;
+            if !has_composition(context)? {
+                return Err(windows_core::Error::new(
+                    E_FAIL,
+                    "TSF ended the composition before candidates appeared while the test document and profile had focus",
+                ));
+            }
+            Ok(candidate_list(thread, document)?.is_some())
+        })
+        .inspect_err(|error| eprintln!("starting candidate list: {error}"))?;
+        assert!(
+            !deny_next_write.get(),
+            "the test must reject one write before showing candidates"
+        );
+        eprintln!(
+            "stage_b_request_accepted_ms={request_accepted_ms} space_callback_us={conversion_callback_us} space_to_candidates_ms={}",
+            conversion_started.elapsed().as_millis()
+        );
         let initial = candidate_list(thread, document)?.ok_or(E_FAIL)?;
         assert!(initial.IsShown()?.as_bool());
         assert!(initial.GetCount()? >= 3);
@@ -912,7 +1273,7 @@ fn verify_conversion(
         assert_eq!(contents.get(), (2, [u16::from(b'k'), u16::from(b'o')]));
 
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))
+        pump_until(thread, || Ok(candidate_list(thread, document)?.is_some()))
             .inspect_err(|_| eprintln!("candidate list after returning to raw input"))?;
         let enter = WPARAM(usize::from(VK_RETURN.0));
         let list = candidate_list(thread, document)?.ok_or(E_FAIL)?;
@@ -940,23 +1301,29 @@ fn verify_conversion(
 
         let write = TF_CONTEXT_EDIT_CONTEXT_FLAGS(TF_ES_SYNC.0 | TF_ES_READWRITE.0);
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         let n = WPARAM(usize::from(VK_N.0));
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
+        let finalize_started = std::time::Instant::now();
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
+        let finalize_callback_us = finalize_started.elapsed().as_micros();
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
         let nasal: Vec<_> = "ん".encode_utf16().collect();
-        pump_until(|| {
+        pump_until(thread, || {
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get().0 == 1 && contents.get().1[..1] == nasal)
         })
-        .inspect_err(|_| eprintln!("finalize contents: {:?}", contents.get()))?;
+        .inspect_err(|_| eprintln!("finalize result did not reach the active test document"))?;
+        eprintln!(
+            "stage_b_enter_callback_us={finalize_callback_us} enter_to_commit_ms={}",
+            finalize_started.elapsed().as_millis()
+        );
         assert!(!keys.KeyDown(enter, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(escape, LPARAM(0))?.as_bool());
         assert!(candidate_list(thread, document)?.is_none());
 
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         for key in b"KOUSUI" {
             assert!(
                 keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
@@ -964,12 +1331,12 @@ fn verify_conversion(
             );
         }
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(candidate_list(thread, document)?.is_some()))?;
+        pump_until(thread, || Ok(candidate_list(thread, document)?.is_some()))?;
         let old = candidate_list(thread, document)?.ok_or(E_FAIL)?;
-        let other = thread.CreateDocumentMgr()?;
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
-        pump_messages();
+        let (other, _other_window) = second_document(thread, client)?;
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
+        pump_messages(thread)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
         assert!(candidate_list(thread, document)?.is_none());
@@ -978,21 +1345,48 @@ fn verify_conversion(
         assert!(!keys.TestKeyDown(space, LPARAM(0))?.as_bool());
 
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         assert!(keys.KeyDown(n, LPARAM(0))?.as_bool());
         assert!(keys.KeyDown(enter, LPARAM(0))?.as_bool());
-        thread.SetFocus(&other)?;
-        thread.SetFocus(document)?;
-        pump_messages();
+        focus_document(thread, &other)?;
+        focus_document(thread, document)?;
+        pump_messages(thread)?;
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(
             contents.get(),
             (0, [0; 2]),
             "pending finalize must not survive focus change"
         );
+        other.Pop(TF_POPF_ALL)?;
         assert!(!keys.TestKeyDown(enter, LPARAM(0))?.as_bool());
     }
     Ok(())
+}
+
+fn installed_service_idle() -> Result<bool> {
+    use windows::Win32::{
+        Foundation::ERROR_MOD_NOT_FOUND, System::LibraryLoader::GetModuleHandleExW,
+    };
+    use windows_core::w;
+    let mut module = HMODULE::default();
+    if let Err(error) = unsafe { GetModuleHandleExW(0, w!("diy_ime2_tsf.dll"), &mut module) } {
+        return if error.code() == ERROR_MOD_NOT_FOUND.to_hresult() {
+            Ok(true)
+        } else {
+            Err(error)
+        };
+    }
+    let idle = library_idle(module);
+    unsafe { FreeLibrary(module)? };
+    idle.ok_or(E_FAIL.into())
+}
+
+fn library_idle(module: HMODULE) -> Option<bool> {
+    unsafe { GetProcAddress(module, s!("DllCanUnloadNow")) }.map(|symbol| {
+        let can_unload: unsafe extern "system" fn() -> HRESULT =
+            unsafe { std::mem::transmute(symbol) };
+        unsafe { can_unload() == S_OK }
+    })
 }
 
 fn candidate_list(
@@ -1024,23 +1418,214 @@ fn candidate_list(
 }
 
 fn wait_for_app_focus(manager: &ITfThreadMgr) -> Result<()> {
-    pump_until(|| Ok(unsafe { manager.IsThreadFocus()? }.as_bool()))
+    pump_until(
+        manager,
+        || Ok(unsafe { manager.IsThreadFocus()? }.as_bool()),
+    )
+    .inspect_err(|_| eprintln!("waiting for the TSF test window to gain foreground focus"))
 }
 
-fn pump_messages() {
+#[test]
+#[ignore = "requires the foreground Windows desktop for a probe of the built-in Edit control"]
+fn interactive_native_edit_context_probe() -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{ES_PASSWORD, ES_READONLY};
+    for (label, style) in [
+        ("ordinary", 0),
+        ("password", ES_PASSWORD as u32),
+        ("read-only", ES_READONLY as u32),
+    ] {
+        eprintln!("Native Edit field classification: {label}");
+        probe_native_edit_context(style)?;
+    }
+    Ok(())
+}
+
+fn probe_native_edit_context(style: u32) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongW, WINDOW_STYLE, WS_CHILD, WS_VISIBLE,
+    };
+
+    let _apartment = Apartment::open()?;
+    let thread: ITfThreadMgr =
+        unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
+    let client = unsafe { thread.Activate()? };
+    let window = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("STATIC"),
+            windows_core::w!("DIY IME native Edit scope probe"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            460,
+            150,
+            None,
+            None,
+            None,
+            None,
+        )?
+    });
+    let edit = Window(unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            windows_core::w!("EDIT"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
+            10,
+            10,
+            400,
+            35,
+            window.0,
+            None,
+            None,
+            None,
+        )?
+    });
+    unsafe {
+        let _ = ShowWindow(window.0, SW_SHOW);
+        let _ = SetForegroundWindow(window.0);
+        let _ = SetFocus(edit.0);
+    }
+    let outcome = (|| -> Result<()> {
+        wait_for_app_focus(&thread)?;
+        assert_eq!(unsafe { GetFocus() }, edit.0);
+        let actual_style = unsafe { GetWindowLongW(edit.0, GWL_STYLE) } as u32;
+        assert_eq!(actual_style & style, style);
+        eprintln!("Native Edit style flags: {actual_style:#x}");
+        let document = unsafe { thread.GetFocus() };
+        match document.and_then(|document| unsafe { document.GetTop() }) {
+            Ok(context) => {
+                let manager: ITfCompartmentMgr = context.cast()?;
+                let disabled = unsafe {
+                    manager
+                        .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)?
+                        .GetValue()?
+                };
+                let variant = unsafe { disabled.as_raw().Anonymous.Anonymous.vt };
+                eprintln!("Native Edit TSF keyboard-disabled value variant: {variant}");
+                if variant == windows::Win32::System::Variant::VT_I4.0 {
+                    eprintln!("Native Edit TSF keyboard-disabled flag: {}", unsafe {
+                        disabled.as_raw().Anonymous.Anonymous.Anonymous.lVal
+                    });
+                }
+                let ran = Rc::new(Cell::new(false));
+                let session: ITfEditSession = NativeScopeProbe {
+                    context: context.clone(),
+                    ran: ran.clone(),
+                }
+                .into();
+                let access = TF_CONTEXT_EDIT_CONTEXT_FLAGS(
+                    TF_ES_SYNC.0 | windows::Win32::UI::TextServices::TF_ES_READ.0,
+                );
+                unsafe { context.RequestEditSession(client, &session, access)?.ok()? };
+                assert!(
+                    ran.get(),
+                    "native InputScope probe edit session must execute"
+                );
+            }
+            Err(error) => eprintln!("Native Edit did not expose a TSF context: {error}"),
+        }
+        Ok(())
+    })();
+    outcome.and(unsafe { thread.Deactivate() })
+}
+
+#[implement(ITfEditSession)]
+struct NativeScopeProbe {
+    context: windows::Win32::UI::TextServices::ITfContext,
+    ran: Rc<Cell<bool>>,
+}
+
+impl ITfEditSession_Impl for NativeScopeProbe_Impl {
+    fn DoEditSession(&self, cookie: u32) -> Result<()> {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::{
+            System::Com::CoTaskMemFree,
+            UI::TextServices::{
+                GUID_PROP_INPUTSCOPE, ITfInputScope, TF_DEFAULT_SELECTION, TF_SELECTION,
+            },
+        };
+        self.ran.set(true);
+        let mut selections = [TF_SELECTION::default()];
+        let mut count = 0;
+        unsafe {
+            self.context
+                .GetSelection(cookie, TF_DEFAULT_SELECTION, &mut selections, &mut count)?
+        };
+        let [selection] = selections;
+        let range = ManuallyDrop::into_inner(selection.range).ok_or(E_FAIL)?;
+        assert_eq!(count, 1);
+        let property = unsafe { self.context.GetAppProperty(&GUID_PROP_INPUTSCOPE)? };
+        let value = unsafe { property.GetValue(cookie, &range)? };
+        eprintln!("Native Edit InputScope value variant: {}", unsafe {
+            value.as_raw().Anonymous.Anonymous.vt
+        });
+        let scope = IUnknown::try_from(&value).and_then(|value| value.cast::<ITfInputScope>());
+        match scope {
+            Ok(scope) => {
+                let mut values = ptr::null_mut();
+                let mut count = 0;
+                let result = unsafe { scope.GetInputScopes(&mut values, &mut count) };
+                if result.is_ok() && !values.is_null() && (0..=32).contains(&count) {
+                    let scopes = unsafe { std::slice::from_raw_parts(values, count as usize) };
+                    eprintln!("Native Edit InputScope classifications: {scopes:?}");
+                } else {
+                    eprintln!("Native Edit InputScope classifications unavailable");
+                }
+                unsafe { CoTaskMemFree(Some(values.cast::<c_void>())) };
+            }
+            Err(_) => eprintln!("Native Edit did not expose ITfInputScope"),
+        }
+        Ok(())
+    }
+}
+
+fn test_message_pump(thread: &ITfThreadMgr) -> Result<Option<ITfMessagePump>> {
+    std::env::var_os("DIY_IME_TEST_TSF_MESSAGE_PUMP")
+        .map(|_| thread.cast())
+        .transpose()
+}
+
+fn pump_messages(thread: &ITfThreadMgr) -> Result<()> {
+    dispatch_test_messages(test_message_pump(thread)?.as_ref())
+}
+
+fn dispatch_test_messages(pump: Option<&ITfMessagePump>) -> Result<()> {
+    let trace_messages = std::env::var_os("DIY_IME_TEST_TRACE_MESSAGES").is_some();
     let mut message = MSG::default();
     unsafe {
-        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+        loop {
+            let available = if let Some(pump) = pump {
+                let mut available = windows::Win32::Foundation::BOOL::default();
+                pump.PeekMessageW(
+                    &mut message,
+                    HWND::default(),
+                    0,
+                    0,
+                    PM_REMOVE.0,
+                    &mut available,
+                )?;
+                available
+            } else {
+                PeekMessageW(&mut message, None, 0, 0, PM_REMOVE)
+            };
+            if !available.as_bool() {
+                return Ok(());
+            }
+            if trace_messages {
+                eprintln!("TSF test dispatch Win32 message 0x{:04x}", message.message);
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
 }
 
-fn pump_until(mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
+fn pump_until(thread: &ITfThreadMgr, mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
+    let pump = test_message_pump(thread)?;
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(40);
     loop {
-        pump_messages();
+        dispatch_test_messages(pump.as_ref())?;
         if ready()? {
             return Ok(());
         }
@@ -1075,7 +1660,7 @@ fn verify_protection(
     keys: &ITfKeystrokeMgr,
     client: u32,
     scope: &Cell<InputScope>,
-    observation: &Observation,
+    observation: Option<&Observation>,
 ) -> Result<()> {
     let items: ITfLangBarItemMgr = thread.cast()?;
     let button = ProtectionReset(unsafe { items.GetItem(&diy_ime2_tsf::PROTECTION_ITEM)? }.cast()?);
@@ -1095,27 +1680,41 @@ fn verify_protection(
     let space = WPARAM(usize::from(VK_SPACE.0));
     let x = WPARAM(usize::from(b'X'));
     let letter = WPARAM(usize::from(VK_A.0));
-    let before = observation.dispatched();
+    let before = observation.map(Observation::dispatched);
 
     unsafe {
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         assert!(keys.KeyDown(letter, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        let document = context.GetDocumentMgr()?;
+        wait_for_conversion_request(thread, &document, keys, space)?;
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(observation.dispatched() > before))?;
+        if let Some(observation) = observation {
+            pump_until(
+                thread,
+                || Ok(observation.dispatched() > before.unwrap_or(0)),
+            )?;
+        } else {
+            pump_until(thread, || Ok(candidate_list(thread, &document)?.is_some()))?;
+        }
 
+        let manual_started = std::time::Instant::now();
         button
             .0
             .OnClick(TF_LBI_CLK_LEFT, POINT::default(), ptr::null())?;
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オン");
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
-        pump_until(|| Ok(observation.reaped() >= 1))?;
-        let protected_count = observation.dispatched();
+        if let Some(observation) = observation {
+            pump_until(thread, || Ok(observation.reaped() >= 1))?;
+            eprintln!(
+                "stage_b_manual_protection_to_host_reaped_ms={}",
+                manual_started.elapsed().as_millis()
+            );
+        }
+        let protected_count = observation.map(Observation::dispatched);
         context.RequestEditSession(client, &reader, flags)?.ok()?;
         assert_eq!(contents.get(), (0, [0; 2]));
-        let document = context.GetDocumentMgr()?;
         assert!(candidate_list(thread, &document)?.is_none());
 
         scope.set(IS_PASSWORD);
@@ -1136,42 +1735,57 @@ fn verify_protection(
         scope.set(IS_DEFAULT);
         disable.SetValue(client, &VARIANT::from(1_i32))?;
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
-        pump_messages();
-        assert_eq!(observation.dispatched(), protected_count);
+        pump_messages(thread)?;
+        assert_eq!(observation.map(Observation::dispatched), protected_count);
         assert!(candidate_list(thread, &document)?.is_none());
 
         disable.SetValue(client, &VARIANT::from(0_i32))?;
         change_selection(context, client, write, Some(""), 0, 0)?;
-        pump_messages();
+        pump_messages(thread)?;
         for key in b"KOUSUI" {
             assert!(
                 keys.KeyDown(WPARAM(usize::from(*key)), LPARAM(0))?
                     .as_bool()
             );
         }
-        pump_until(|| Ok(keys.TestKeyDown(space, LPARAM(0))?.as_bool()))?;
+        wait_for_conversion_request(thread, &document, keys, space)?;
         assert_eq!(
-            observation.dispatched(),
+            observation.map(Observation::dispatched),
             protected_count,
             "old input was replayed"
         );
         assert!(keys.KeyDown(space, LPARAM(0))?.as_bool());
-        pump_until(|| {
+        pump_until(thread, || {
             context.RequestEditSession(client, &reader, flags)?.ok()?;
             Ok(contents.get() == (2, [0x964d, 0x6c34]))
         })?;
-        assert_eq!(observation.dispatched(), protected_count + 1);
+        assert_eq!(
+            observation.map(Observation::dispatched),
+            protected_count.map(|count| count + 1)
+        );
 
         let previous = candidate_list(thread, &document)?.ok_or(E_FAIL)?;
-        let reaped = observation.reaped();
+        let reaped = observation.map(Observation::reaped);
+        let automatic_started = std::time::Instant::now();
         scope.set(IS_PASSWORD);
-        pump_until(|| Ok(observation.reaped() > reaped))?;
+        if let Some(observation) = observation {
+            pump_until(thread, || Ok(observation.reaped() > reaped.unwrap_or(0)))?;
+            eprintln!(
+                "stage_b_automatic_protection_to_host_reaped_ms={}",
+                automatic_started.elapsed().as_millis()
+            );
+        } else {
+            pump_until(thread, || Ok(candidate_list(thread, &document)?.is_none()))?;
+        }
         assert_eq!(button.0.GetText()?.to_string(), "保護入力 オフ");
         assert!(!keys.TestKeyDown(x, LPARAM(0))?.as_bool());
         assert!(!keys.KeyDown(x, LPARAM(0))?.as_bool());
         assert!(candidate_list(thread, &document)?.is_none());
         assert_eq!(previous.GetCount()?, 0);
-        assert_eq!(observation.dispatched(), protected_count + 1);
+        assert_eq!(
+            observation.map(Observation::dispatched),
+            protected_count.map(|count| count + 1)
+        );
     }
     Ok(())
 }

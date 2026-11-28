@@ -135,11 +135,17 @@ impl PermissionBook {
             .share_mode(0)
             .custom_flags(0x00200000)
             .open(root.join("permissions.lock"))
-            .map_err(|_| {
-                err(
-                    "permission-busy",
-                    "permission book already owned/unavailable",
-                )
+            .map_err(|error| {
+                if error.raw_os_error()
+                    == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+                {
+                    err(
+                        "permission-in-use",
+                        "another Host holds the permission book",
+                    )
+                } else {
+                    err("permission-busy", "permission book unavailable")
+                }
             })?;
         let metadata = lock
             .metadata()
@@ -578,7 +584,13 @@ mod tests {
         let a = epoch('a');
         let once = subject('0');
         let saved = subject('1');
-        assert!(PermissionBook::open(&fixture.0, 1024 * 1024).is_err());
+        assert_eq!(
+            PermissionBook::open(&fixture.0, 1024 * 1024)
+                .err()
+                .expect("the first Host exclusively owns the book")
+                .code,
+            "permission-in-use"
+        );
         book.approve(
             &a,
             &generation(&book),

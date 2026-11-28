@@ -4,6 +4,7 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::PathBuf,
     rc::{Rc, Weak},
+    time::{Duration, Instant},
 };
 
 use diy_ime2_ime_host::{
@@ -48,15 +49,18 @@ pub fn set_test_host_configuration(executable: PathBuf, file: PathBuf) -> Observ
 fn installed_configuration() -> Option<Configuration> {
     let mut module = HMODULE::default();
     let mut path = [0; 1024];
-    let count = unsafe {
+    unsafe {
         GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             PCWSTR(installed_configuration as *const () as *const u16),
             &mut module,
         )
-        .ok()?;
-        GetModuleFileNameW(module, &mut path) as usize
-    };
+    }
+    .inspect_err(|_| {
+        crate::diagnostics::trace!("DIY IME Stage B: Host module lookup failed");
+    })
+    .ok()?;
+    let count = unsafe { GetModuleFileNameW(module, &mut path) as usize };
     if count == 0 || count >= path.len() {
         return None;
     }
@@ -92,11 +96,17 @@ impl Timer {
                 None,
             )
         }
+        .inspect_err(|_| {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer window creation failed");
+        })
         .ok()?;
         let timer = Self(window);
-        if !unsafe { SetWindowSubclass(window, Some(tick), 1, 0).as_bool() }
-            || unsafe { SetTimer(window, 1, 20, None) } == 0
-        {
+        if !unsafe { SetWindowSubclass(window, Some(tick), 1, 0).as_bool() } {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer subclass installation failed");
+            return None;
+        }
+        if unsafe { SetTimer(window, 1, 20, None) } == 0 {
+            crate::diagnostics::trace!("DIY IME Stage B: Host timer scheduling failed");
             return None;
         }
         TIMERS.with(|timers| {
@@ -154,7 +164,11 @@ pub(crate) struct Bridge {
     queued: Option<PendingInput>,
     submitted: Option<Submission>,
     disconnected: bool,
+    permission_retries: u8,
+    retry_after: Option<Instant>,
 }
+
+const MAX_PERMISSION_RETRIES: u8 = 4;
 
 struct PendingInput {
     stamp: DocumentStamp,
@@ -191,11 +205,13 @@ impl Bridge {
             queued: None,
             submitted: None,
             disconnected: false,
+            permission_retries: 0,
+            retry_after: None,
         })
     }
 
-    pub(crate) fn available(&self) -> bool {
-        !self.protected && !self.disconnected && self.input.is_some()
+    pub(crate) fn accepts_request(&self) -> bool {
+        !self.protected && !self.disconnected
     }
 
     pub(crate) fn has_work(&self) -> bool {
@@ -208,14 +224,21 @@ impl Bridge {
         }
         self.protected = enabled;
         if enabled {
-            if let Some(worker) = self.worker.take() {
-                self.stopping = Some(worker.request_stop());
-            }
-            self.queued = None;
-            self.submitted = None;
-            self.input = None;
-            self.invalidation = None;
+            self.suspend();
         }
+    }
+
+    pub(crate) fn suspend(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            crate::diagnostics::trace!("DIY IME Stage B: Host shutdown requested");
+            self.stopping = Some(worker.request_stop());
+        }
+        self.queued = None;
+        self.submitted = None;
+        self.input = None;
+        self.invalidation = None;
+        self.permission_retries = 0;
+        self.retry_after = None;
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -229,16 +252,22 @@ impl Bridge {
     }
 
     pub(crate) fn convert(&mut self, stamp: DocumentStamp, text: String, finalize: bool) {
-        if let Some(input) = self.input.as_mut() {
-            if let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable) {
-                self.invalidate(invalidation);
-            }
-            self.queued = Some(PendingInput {
-                stamp,
-                text,
-                finalize,
-            });
+        if !self.accepts_request() {
+            return;
         }
+        if self.permission_retries > MAX_PERMISSION_RETRIES {
+            self.permission_retries = 0;
+        }
+        if let Some(input) = self.input.as_mut()
+            && let Some(invalidation) = input.observe_document(Some(stamp), InputScope::Editable)
+        {
+            self.invalidate(invalidation);
+        }
+        self.queued = Some(PendingInput {
+            stamp,
+            text,
+            finalize,
+        });
     }
 
     fn invalidate(&mut self, invalidation: Invalidation) {
@@ -255,6 +284,13 @@ impl Bridge {
             return None;
         }
         if self.worker.is_none() {
+            if self.permission_retries > MAX_PERMISSION_RETRIES
+                || self
+                    .retry_after
+                    .is_some_and(|deadline| Instant::now() < deadline)
+            {
+                return None;
+            }
             if self
                 .stopping
                 .as_ref()
@@ -263,6 +299,7 @@ impl Bridge {
                 return None;
             }
             self.stopping = None;
+            self.retry_after = None;
             self.worker = Background::spawn_observed(
                 self.config.clone(),
                 self.observer.clone(),
@@ -270,13 +307,22 @@ impl Bridge {
             )
             .ok();
             if self.worker.is_none() {
+                crate::diagnostics::trace!("DIY IME Stage B: Host background creation failed");
                 self.disconnected = true;
             }
         }
         let worker = self.worker.as_ref()?;
         let acknowledged = worker.acknowledged();
         match worker.poll() {
-            Ok(Some(Event::Ready(plan))) => self.input = Some(InputState::new(plan)),
+            Ok(Some(Event::Ready(plan))) => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host bridge received ready event");
+                self.permission_retries = 0;
+                let pending = self.queued.take();
+                self.input = Some(InputState::new(plan));
+                if let Some(pending) = pending {
+                    self.convert(pending.stamp, pending.text, pending.finalize);
+                }
+            }
             Ok(Some(Event::Started(key))) => {
                 if let Some(input) = self.input.as_mut()
                     && let Some(submission) = self.submitted.as_ref()
@@ -308,7 +354,19 @@ impl Bridge {
                     }
                 }
             }
+            Ok(Some(Event::Unavailable)) | Err(_) if worker.permission_book_busy() => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host permission book busy");
+                self.worker.take();
+                self.permission_retries += 1;
+                if self.permission_retries > MAX_PERMISSION_RETRIES {
+                    self.cancel();
+                } else {
+                    self.retry_after = Some(Instant::now() + Duration::from_millis(350));
+                }
+                return None;
+            }
             Ok(Some(Event::Unavailable)) | Err(_) => {
+                crate::diagnostics::trace!("DIY IME Stage B: Host bridge disconnected");
                 self.cancel();
                 self.disconnected = true;
                 return None;
@@ -349,5 +407,85 @@ impl Bridge {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn starting_bridge() -> Bridge {
+        set_test_host_configuration(
+            PathBuf::from("synthetic-host.exe"),
+            PathBuf::from("synthetic-config.json"),
+        );
+        Bridge::open(false).expect("synthetic test configuration")
+    }
+
+    fn stamp() -> DocumentStamp {
+        DocumentStamp {
+            focus: 1,
+            context: 1,
+            revision: 1,
+            selection: 1,
+        }
+    }
+
+    #[test]
+    fn conversion_before_host_ready_is_retained_until_cancelled() {
+        let mut bridge = starting_bridge();
+        assert!(bridge.input.is_none());
+        assert!(bridge.accepts_request());
+        bridge.convert(stamp(), "kousui".into(), false);
+        let pending = bridge
+            .queued
+            .as_ref()
+            .expect("first Space must retain conversion input");
+        assert_eq!(pending.text, "kousui");
+        assert_eq!(pending.stamp, stamp());
+        assert!(bridge.has_work());
+        bridge.cancel();
+        assert!(
+            !bridge.has_work(),
+            "cancel before readiness must discard the pending input"
+        );
+    }
+
+    #[test]
+    fn protection_and_disconnect_discard_startup_requests() {
+        let mut bridge = starting_bridge();
+        bridge.convert(stamp(), "kousui".into(), true);
+        assert!(
+            bridge
+                .queued
+                .as_ref()
+                .is_some_and(|pending| pending.finalize)
+        );
+        bridge.set_protection(true);
+        assert!(!bridge.has_work());
+        bridge.convert(stamp(), "synthetic-protected".into(), false);
+        assert!(!bridge.has_work(), "protected input must never be queued");
+        bridge.set_protection(false);
+        assert!(
+            !bridge.has_work(),
+            "unblocking must not restore the old request"
+        );
+        bridge.disconnected = true;
+        bridge.convert(stamp(), "synthetic-disconnected".into(), false);
+        assert!(!bridge.has_work());
+    }
+
+    #[test]
+    fn focus_loss_discards_the_waiting_request_and_retry_schedule() {
+        let mut bridge = starting_bridge();
+        bridge.convert(stamp(), "synthetic-old-document".into(), true);
+        bridge.permission_retries = 2;
+        bridge.retry_after = Some(Instant::now() + Duration::from_secs(30));
+
+        bridge.suspend();
+
+        assert!(!bridge.has_work());
+        assert_eq!(bridge.permission_retries, 0);
+        assert!(bridge.retry_after.is_none());
     }
 }

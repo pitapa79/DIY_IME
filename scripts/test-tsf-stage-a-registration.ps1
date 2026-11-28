@@ -3,9 +3,25 @@ param(
     [Parameter(Mandatory)][string]$ReleaseFile,
     [Parameter(Mandatory)][ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$ProfileToolSha256,
     [Parameter(Mandatory)][ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$ServiceDllSha256,
-    [ValidateRange(30, 600)][int]$Seconds = 180
+    [string]$StageBHostConfiguration,
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBConfigSha256,
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$StageBHostSha256,
+    [ValidateRange(30, 900)][int]$Seconds = 180,
+    [switch]$ReuseMatchingStaging,
+    [switch]$FreshStaging,
+    [int]$ControllerProcessId,
+    [long]$ControllerStartTicks,
+    [guid]$RunId = [guid]::NewGuid()
 )
 $ErrorActionPreference = 'Stop'
+if (($ControllerProcessId -ne 0 -or $ControllerStartTicks -ne 0) -and
+    ($ControllerProcessId -le 0 -or $ControllerStartTicks -le 0)) {
+    throw 'Controller identity requires both a positive process ID and start timestamp.'
+}
+if ($FreshStaging -and $ReuseMatchingStaging) {
+    throw 'Choose either fresh staging or reuse of matching staging.'
+}
+. (Join-Path $PSScriptRoot 'tsf-stage-a-staging.ps1')
 $service = '{EECF857D-82EB-4C57-9592-257F6ECF62F1}'
 $classRoot = 'Software\Classes\CLSID'
 $tsfRoot = 'Software\Microsoft\CTF\TIP'
@@ -16,14 +32,23 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 $release = [IO.Path]::GetFullPath($ReleaseFile)
+# In an operator-ended run, the finish signal must reach the elevated helper
+# even if the controller is no longer able to forward it.
+$finish = if ($ControllerProcessId) { Join-Path (Split-Path -Parent $release) 'finish.signal' }
 $build = [IO.Path]::GetFullPath($BuildDirectory)
 $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
-$directory = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) "DIY-IME-Stage-A-$service"
+$directory = Get-TsfStagingDirectory $RunId $FreshStaging.IsPresent
 $dllName = 'diy_ime2_tsf.dll'
 $toolName = 'diy-ime2-tsf-test-profile.exe'
 $dll = Join-Path $directory $dllName
 $tool = Join-Path $directory $toolName
 $stamp = Join-Path $directory 'test-status.txt'
+$hostName = 'diy-ime2-external-host.exe'
+$hostFile = Join-Path $directory $hostName
+$hostConfiguration = Join-Path $directory 'ime-execution.json'
+if ($StageBHostConfiguration -and (!$StageBConfigSha256 -or !$StageBHostSha256)) {
+    throw 'The Stage B files require exact checksums.'
+}
 
 function Test-RegistryKey([string]$Path) {
     $key = $machine.OpenSubKey($Path)
@@ -37,24 +62,67 @@ function Write-Status([string]$Text) {
     if ($ownsFiles) { [IO.File]::AppendAllText($stamp, $Text + [Environment]::NewLine) }
 }
 
+function Test-ControllerAlive {
+    if (!$ControllerProcessId) { return $true }
+    try {
+        $controller = Get-Process -Id $ControllerProcessId -ErrorAction Stop
+        try {
+            return !$controller.HasExited -and $controller.StartTime.ToUniversalTime().Ticks -eq $ControllerStartTicks
+        } finally { $controller.Dispose() }
+    } catch { return $false }
+}
+
 $ownsFiles = $false
 $ownsRegistration = $false
+$installerLock = [Threading.Mutex]::new($false, "Global\DIY-IME-Stage-A-$service")
+$locked = $false
 try {
+    try {
+        $locked = $installerLock.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $locked = $true
+    }
+    if (!$locked) { throw 'Another TSF test registration is in progress.' }
+    if (!(Test-ControllerAlive)) { throw 'The test controller is no longer running.' }
     Write-Status 'started'
-    if ((Test-Path -LiteralPath $directory) -or
-        (Test-RegistryKey "$classRoot\$service") -or (Test-RegistryKey "$tsfRoot\$service")) {
-        throw 'The dedicated test directory or service already exists.'
+    if ((Test-RegistryKey "$classRoot\$service") -or (Test-RegistryKey "$tsfRoot\$service")) {
+        throw 'The dedicated test service already exists.'
     }
 
-    New-Item -ItemType Directory -Path $directory | Out-Null
-    $ownsFiles = $true
-    [IO.File]::Copy((Join-Path $build $dllName), $dll)
-    [IO.File]::Copy((Join-Path $build $toolName), $tool)
-    if ((Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash -ne $ServiceDllSha256 -or
-        (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash -ne $ProfileToolSha256) {
-        throw 'The staged verification files do not match their source checksums.'
+    $hashes = @{}
+    $hashes[$dllName] = $ServiceDllSha256
+    $hashes[$toolName] = $ProfileToolSha256
+    $sources = @{}
+    $sources[$dllName] = Join-Path $build $dllName
+    $sources[$toolName] = Join-Path $build $toolName
+    if ($StageBHostConfiguration) {
+        $hashes[$hostName] = $StageBHostSha256
+        $hashes['ime-execution.json'] = $StageBConfigSha256
+        $sources[$hostName] = Join-Path $build $hostName
+        $sources['ime-execution.json'] = [IO.Path]::GetFullPath($StageBHostConfiguration)
+    }
+    if (Test-Path -LiteralPath $directory) {
+        if (!$ReuseMatchingStaging) { throw 'The dedicated test directory already exists.' }
+        Assert-ReusableTsfStaging $directory $hashes
+        [IO.File]::WriteAllText($stamp, "run $RunId" + [Environment]::NewLine)
+        $ownsFiles = $true
+        Write-Status 'reused matching staging'
+    } else {
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        $ownsFiles = $true
+        Write-Status "run $RunId"
+        foreach ($file in $sources.Keys) {
+            $target = Join-Path $directory $file
+            [IO.File]::Copy($sources[$file], $target)
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hashes[$file]) {
+                throw "A staged verification file does not match its checksum: $file"
+            }
+        }
     }
 
+    if (!(Test-ControllerAlive) -or [IO.File]::Exists($release) -or ($finish -and [IO.File]::Exists($finish))) {
+        throw 'The test controller ended before registration.'
+    }
     $classes = $machine.OpenSubKey($classRoot, $true)
     try {
         $ownedClass = $classes.CreateSubKey($service)
@@ -72,17 +140,29 @@ try {
     if ($LASTEXITCODE -ne 0) { throw ($registerOutput -join ' ') }
     Write-Status 'installed'
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    while ($timer.Elapsed.TotalSeconds -lt $Seconds -and !(Test-Path -LiteralPath $release)) {
+    while (($ControllerProcessId -or $timer.Elapsed.TotalSeconds -lt $Seconds) -and
+        (Test-ControllerAlive) -and ![IO.File]::Exists($release) -and !($finish -and [IO.File]::Exists($finish))) {
         Start-Sleep -Milliseconds 300
     }
 } catch {
     Write-Status "error: $($_.Exception.Message)"
+    if ($ownsFiles) {
+        $reporting = [Diagnostics.Stopwatch]::StartNew()
+        while ($reporting.Elapsed.TotalSeconds -lt 8 -and !(Test-Path -LiteralPath $release)) {
+            Start-Sleep -Milliseconds 250
+        }
+    }
     throw
 } finally {
     try {
         if ($ownsRegistration) {
-            $removeOutput = & $tool remove 2>&1
-            if ($LASTEXITCODE -ne 0) { Write-Status "TSF API cleanup: $($removeOutput -join ' ')" }
+            Write-Status 'registration cleanup started'
+            if ($ControllerProcessId) {
+                try { Invoke-TsfProfileCleanup $tool disable }
+                catch { Write-Status "current-user disable: $($_.Exception.Message)" }
+            }
+            try { Invoke-TsfProfileCleanup $tool remove }
+            catch { Write-Status "TSF API cleanup: $($_.Exception.Message)" }
             foreach ($root in $classRoot, $tsfRoot) {
                 if (!(Test-RegistryKey "$root\$service")) { continue }
                 $container = $machine.OpenSubKey($root, $true)
@@ -94,7 +174,7 @@ try {
             Write-Status 'registration removed'
         }
         if ($ownsFiles) {
-            foreach ($path in $dll, $tool) {
+            foreach ($path in $dll, $tool, $hostFile, $hostConfiguration) {
                 if (Test-Path -LiteralPath $path) { [IO.File]::Delete($path) }
             }
             [IO.File]::Delete($stamp)
@@ -105,5 +185,9 @@ try {
     } catch {
         Write-Status "cleanup error: $($_.Exception.Message)"
         throw
-    } finally { $machine.Dispose() }
+    } finally {
+        if ($locked) { $installerLock.ReleaseMutex() }
+        $installerLock.Dispose()
+        $machine.Dispose()
+    }
 }

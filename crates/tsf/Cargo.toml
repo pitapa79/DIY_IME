@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+stage-b-diagnostics = [
+    "windows/Win32_System_Diagnostics_Debug",
+    "diy-ime2-ime-host/stage-b-diagnostics",
+]
+
 [lib]
 name = "diy_ime2_tsf"
 crate-type = ["cdylib", "rlib"]

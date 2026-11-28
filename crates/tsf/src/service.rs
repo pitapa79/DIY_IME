@@ -111,6 +111,7 @@ impl Activation {
     }
 
     pub(crate) fn cancel_host(&self) {
+        self.preedit.discard_preview();
         if let Ok(mut host) = self.host.try_borrow_mut()
             && let Some(host) = host.as_mut()
         {
@@ -120,6 +121,10 @@ impl Activation {
 
     pub(crate) fn poll_host(self: &Rc<Self>) {
         if !self.active.get() {
+            return;
+        }
+        if !self.thread_has_focus() {
+            self.suspend_host();
             return;
         }
         if self.manually_blocked() {
@@ -148,9 +153,7 @@ impl Activation {
             };
             host.as_mut().and_then(Bridge::poll)
         };
-        if let Some(preview) = preview {
-            self.preedit.preview(self, preview);
-        }
+        self.preedit.apply_host_preview(self, preview);
         let still_pending = self
             .host
             .try_borrow()
@@ -162,12 +165,7 @@ impl Activation {
 
     pub(crate) fn owns_focus(&self, context: &ITfContext) -> bool {
         let matching = self.active.get()
-            && self.foreground.get()
-            && unsafe {
-                self.thread_manager
-                    .IsThreadFocus()
-                    .is_ok_and(|focus| focus.as_bool())
-            }
+            && self.thread_has_focus()
             && unsafe {
                 self.thread_manager
                     .GetFocus()
@@ -175,6 +173,25 @@ impl Activation {
                     .is_ok_and(|current| current == *context)
             };
         matching && self.active.get() && self.foreground.get()
+    }
+
+    fn thread_has_focus(&self) -> bool {
+        self.foreground.get()
+            && unsafe {
+                self.thread_manager
+                    .IsThreadFocus()
+                    .is_ok_and(|focus| focus.as_bool())
+            }
+    }
+
+    fn suspend_host(&self) {
+        self.preedit.discard_preview();
+        self.preedit.finish_host_request();
+        if let Ok(mut host) = self.host.try_borrow_mut()
+            && let Some(host) = host.as_mut()
+        {
+            host.suspend();
+        }
     }
 }
 
@@ -281,16 +298,23 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Err(E_FAIL.into());
         }
         activation.active.set(true);
+        crate::diagnostics::trace!("DIY IME Stage B: TSF service activated");
         activation
             .manual
             .replace(ManualProtection::open(manager, &activation).ok());
         let blocked = activation.manually_blocked();
         activation.protected.set(blocked);
-        if let Some(host) = Bridge::open(blocked)
-            && let Some(timer) = Timer::open(&activation)
-        {
-            activation.host.replace(Some(host));
-            activation.timer.replace(Some(timer));
+        if let Some(host) = Bridge::open(blocked) {
+            crate::diagnostics::trace!("DIY IME Stage B: Host configuration paths located");
+            if let Some(timer) = Timer::open(&activation) {
+                activation.host.replace(Some(host));
+                activation.timer.replace(Some(timer));
+                crate::diagnostics::trace!("DIY IME Stage B: Host polling timer ready");
+            } else {
+                crate::diagnostics::trace!("DIY IME Stage B: Host polling timer unavailable");
+            }
+        } else {
+            crate::diagnostics::trace!("DIY IME Stage B: Host configuration discovery failed");
         }
         Ok(())
     }
@@ -311,7 +335,8 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         if let Some(activation) = self.activation.upgrade() {
             activation.foreground.set(foreground.as_bool());
             if !foreground.as_bool() {
-                activation.cancel_host();
+                crate::diagnostics::trace!("DIY IME Stage B: TSF key sink lost foreground");
+                activation.suspend_host();
                 activation.preedit.invalidate(None, activation.client_id);
             }
         }
@@ -417,6 +442,9 @@ impl ITfThreadMgrEventSink_Impl for DocumentSink_Impl {
     ) -> Result<()> {
         if let Some(activation) = self.activation.upgrade() {
             let context = current.and_then(|doc| unsafe { doc.GetTop().ok() });
+            if !activation.preedit.matches(context.as_ref()) {
+                crate::diagnostics::trace!("DIY IME Stage B: TSF document focus changed");
+            }
             activation.observe_context(context.as_ref());
         }
         Ok(())

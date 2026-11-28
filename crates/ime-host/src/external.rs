@@ -7,7 +7,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread::{self, JoinHandle},
@@ -28,6 +28,32 @@ const RESPONSE_LIMIT: u64 = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(45);
 const WAIT: Duration = Duration::from_millis(10);
 const GRAPH: &str = include_str!("../../../examples/graphs/official-dictionary.json");
+const STOPPED: u8 = 1;
+const PERMISSION_BOOK_BUSY: u8 = 2;
+// Reserved by diy-ime2-external-host for contention before Worker setup.
+const PERMISSION_BOOK_BUSY_EXIT: i32 = 75;
+
+// Diagnostics contain only fixed stage names and numeric OS/exit codes.
+#[cfg(all(windows, feature = "stage-b-diagnostics"))]
+fn startup_diagnostic(stage: &'static str, code: Option<i32>) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OutputDebugStringW(message: *const u16);
+    }
+    let message = match code {
+        Some(code) => format!("DIY IME Stage B: {stage}, code={code}"),
+        None => format!("DIY IME Stage B: {stage}"),
+    };
+    let wide: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    unsafe { OutputDebugStringW(wide.as_ptr()) };
+}
+
+macro_rules! startup_trace {
+    ($stage:literal, $code:expr) => {{
+        #[cfg(all(windows, feature = "stage-b-diagnostics"))]
+        startup_diagnostic($stage, $code);
+    }};
+}
 
 #[derive(Clone)]
 pub struct Configuration {
@@ -63,11 +89,11 @@ impl Observation {
     }
 }
 
-pub struct Stopped(Arc<AtomicBool>);
+pub struct Stopped(Arc<AtomicU8>);
 
 impl Stopped {
     pub fn confirmed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire) != 0
     }
 }
 
@@ -77,7 +103,7 @@ pub struct Background {
     revision: Arc<AtomicU64>,
     acknowledged: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
 }
 
 impl Background {
@@ -106,7 +132,7 @@ impl Background {
         let acknowledged = Arc::new(AtomicU64::new(0));
         let applied_revision = acknowledged.clone();
         let closing = shutdown.clone();
-        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicU8::new(0));
         let witnessed = stopped.clone();
         thread::Builder::new()
             .name("DIY IME Host".into())
@@ -126,8 +152,15 @@ impl Background {
                 )
                 .is_none()
                 {
+                    startup_trace!("Host background operation failed", None);
                     let _ = outbox.try_send(Event::Unavailable);
                 }
+            })
+            .inspect_err(|_error| {
+                startup_trace!(
+                    "Host background thread creation failed",
+                    _error.raw_os_error()
+                );
             })?;
         Ok(Self {
             requests,
@@ -161,6 +194,10 @@ impl Background {
         Stopped(self.stopped.clone())
     }
 
+    pub fn permission_book_busy(&self) -> bool {
+        self.stopped.load(Ordering::Acquire) == PERMISSION_BOOK_BUSY
+    }
+
     pub fn acknowledged(&self) -> u64 {
         self.acknowledged.load(Ordering::Acquire)
     }
@@ -188,7 +225,7 @@ struct Signals {
     revision: Arc<AtomicU64>,
     acknowledged: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
     observation: Observation,
 }
 
@@ -214,12 +251,21 @@ fn supervise(
     )
     .ok()?;
     let graph = serde_json::from_str::<Value>(GRAPH).ok()?;
-    let review = host.call(json!({"method": "prepareOfficialIme", "graph": graph}))?;
+    startup_trace!("Host official IME preparation started", None);
+    let Some(review) = host.call(json!({"method": "prepareOfficialIme", "graph": graph})) else {
+        startup_trace!("Host official IME preparation failed", None);
+        return None;
+    };
     if !review["missing"].as_array()?.is_empty() {
+        startup_trace!("Host official IME requires permissions", None);
         return None;
     }
     let review_id = review["reviewId"].as_str()?;
-    let active = host.call(json!({"method": "activate", "reviewId": review_id}))?;
+    startup_trace!("Host plan activation started", None);
+    let Some(active) = host.call(json!({"method": "activate", "reviewId": review_id})) else {
+        startup_trace!("Host plan activation failed", None);
+        return None;
+    };
     if active["phase"] != "ready" || active["sessionEpoch"] != review["sessionEpoch"] {
         return None;
     }
@@ -228,6 +274,7 @@ fn supervise(
         version: serde_json::from_value(active["state"]["activePlanVersion"].clone()).ok()?,
     };
     outbox.try_send(Event::Ready(plan.clone())).ok()?;
+    startup_trace!("Host ready event sent", None);
     let mut applied = 0;
     while !shutdown.load(Ordering::Acquire) {
         let latest = revision.load(Ordering::Acquire);
@@ -397,7 +444,7 @@ struct Transport {
     pipes: Vec<JoinHandle<()>>,
     next_id: u64,
     shutdown: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<AtomicU8>,
     observation: Observation,
 }
 
@@ -406,7 +453,7 @@ impl Transport {
         exe: &Path,
         config: &Path,
         shutdown: Arc<AtomicBool>,
-        stopped: Arc<AtomicBool>,
+        stopped: Arc<AtomicU8>,
         observation: Observation,
     ) -> io::Result<Self> {
         let mut command = Command::new(exe);
@@ -425,7 +472,8 @@ impl Transport {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                stopped.store(true, Ordering::Release);
+                startup_trace!("Host process launch failed", error.raw_os_error());
+                stopped.store(STOPPED, Ordering::Release);
                 return Err(error);
             }
         };
@@ -505,9 +553,17 @@ impl Transport {
                     return value.as_object_mut()?.remove("data");
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                _ => return None,
+                Ok(_) => {
+                    startup_trace!("Host protocol response rejected", None);
+                    return None;
+                }
+                Err(_) => {
+                    startup_trace!("Host response pipe closed", None);
+                    return None;
+                }
             }
         }
+        startup_trace!("Host response wait ended", None);
         None
     }
 }
@@ -516,24 +572,29 @@ impl Drop for Transport {
     fn drop(&mut self) {
         self.writer.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        let clean_exit = loop {
+        let exit = loop {
             match self.child.try_wait() {
-                Ok(Some(status)) => break status.success(),
+                Ok(Some(status)) => {
+                    startup_trace!("Host process exited", status.code());
+                    break status.code();
+                }
                 Ok(None) if Instant::now() < deadline => thread::sleep(WAIT),
                 _ => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
                     // A forced Host exit does not acknowledge its Worker recovery.
-                    break false;
+                    break None;
                 }
             }
         };
         for pipe in self.pipes.drain(..) {
             let _ = pipe.join();
         }
-        if clean_exit {
+        if exit == Some(0) {
             self.observation.reaped.fetch_add(1, Ordering::Release);
-            self.stopped.store(true, Ordering::Release);
+            self.stopped.store(STOPPED, Ordering::Release);
+        } else if exit == Some(PERMISSION_BOOK_BUSY_EXIT) {
+            self.stopped.store(PERMISSION_BOOK_BUSY, Ordering::Release);
         }
     }
 }
